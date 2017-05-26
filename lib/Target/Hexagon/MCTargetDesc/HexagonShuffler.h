@@ -45,7 +45,8 @@ public:
 
   // Check if the resources are in ascending slot order.
   static bool lessUnits(const HexagonResource &A, const HexagonResource &B) {
-    return (countPopulation(A.getUnits()) < countPopulation(B.getUnits()));
+    return (countPopulation(A.getUnits()) <
+            countPopulation(B.getUnits()));
   };
   // Check if the resources are in ascending weight order.
   static bool lessWeight(const HexagonResource &A, const HexagonResource &B) {
@@ -106,7 +107,7 @@ public:
   HexagonInstr(HexagonCVIResource::TypeUnitsAndLanes *T,
                MCInstrInfo const &MCII, MCInst const *id,
                MCInst const *Extender, unsigned s)
-      : ID(id), Extender(Extender), Core(s), CVI(T, MCII, s, id) {};
+      : ID(id), Extender(Extender), Core(s), CVI(T, MCII, s, id) {}
 
   MCInst const &getDesc() const { return *ID; };
 
@@ -135,21 +136,33 @@ class HexagonShuffler {
   HexagonPacket Packet;
   HexagonPacket PacketSave;
 
+  // Shuffling error code.
+  unsigned Error;
+
   HexagonCVIResource::TypeUnitsAndLanes TUL;
 
 protected:
-  MCContext &Context;
   int64_t BundleFlags;
   MCInstrInfo const &MCII;
   MCSubtargetInfo const &STI;
-  SMLoc Loc;
-  bool ReportErrors;
 
 public:
   typedef HexagonPacket::iterator iterator;
 
-  HexagonShuffler(MCContext &Context, bool ReportErrors,
-                  MCInstrInfo const &MCII, MCSubtargetInfo const &STI);
+  enum {
+    SHUFFLE_SUCCESS = 0,    ///< Successful operation.
+    SHUFFLE_ERROR_INVALID,  ///< Invalid bundle.
+    SHUFFLE_ERROR_STORES,   ///< No free slots for store insns.
+    SHUFFLE_ERROR_LOADS,    ///< No free slots for load insns.
+    SHUFFLE_ERROR_BRANCHES, ///< No free slots for branch insns.
+    SHUFFLE_ERROR_NOSLOTS,  ///< No free slots for other insns.
+    SHUFFLE_ERROR_SLOTS,    ///< Over-subscribed slots.
+    SHUFFLE_ERROR_ERRATA2, ///< Errata violation (v60).
+    SHUFFLE_ERROR_STORE_LOAD_CONFLICT, ///< store/load conflict
+    SHUFFLE_ERROR_UNKNOWN   ///< Unknown error.
+  };
+
+  explicit HexagonShuffler(MCInstrInfo const &MCII, MCSubtargetInfo const &STI);
 
   // Reset to initial state.
   void reset();
@@ -167,8 +180,9 @@ public:
   void append(MCInst const &ID, MCInst const *Extender, unsigned S);
 
   // Return the error code for the last check or shuffling of the bundle.
-  void reportError(llvm::Twine const &Msg);
+  void setError(unsigned Err) { Error = Err; };
+  unsigned getError() const { return (Error); };
 };
-} // namespace llvm
+}
 
 #endif // HEXAGONSHUFFLER_H

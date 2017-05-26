@@ -161,11 +161,7 @@ def main(builtinParameters = {}):
         main_with_tmp(builtinParameters)
     finally:
         if lit_tmp:
-            try:
-                shutil.rmtree(lit_tmp)
-            except:
-                # FIXME: Re-try after timeout on Windows.
-                pass
+            shutil.rmtree(lit_tmp)
 
 def main_with_tmp(builtinParameters):
     parser = argparse.ArgumentParser()

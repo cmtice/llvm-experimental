@@ -875,8 +875,8 @@ entry:
 ; P9LE: blr
 ; P8BE: lxvw4x
 ; P8BE: blr
-; P8LE: lvx
-; P8LE-NOT: xxswapd
+; P8LE: lxvd2x
+; P8LE: xxswapd
 ; P8LE: blr
 }
 
@@ -942,7 +942,8 @@ entry:
 ; P8BE: vperm
 ; P8BE: blr
 ; P8LE: lxvd2x
-; P8LE-DAG: lvx
+; P8LE-DAG: lxvd2x
+; P8LE-DAG: xxswapd
 ; P8LE: xxswapd
 ; P8LE: vperm
 ; P8LE: blr
@@ -1035,6 +1036,7 @@ entry:
 ; P8LE: sldi {{r[0-9]+}}, r4, 2
 ; P8LE-DAG: lxvd2x
 ; P8LE-DAG: lxvd2x
+; P8LE-DAG: xxswapd
 ; P8LE: xxswapd
 ; P8LE: vperm
 ; P8LE: blr
@@ -1287,8 +1289,8 @@ entry:
 ; P9LE: blr
 ; P8BE: lxvw4x
 ; P8BE: blr
-; P8LE: lvx
-; P8LE-NOT: xxswapd
+; P8LE: lxvd2x
+; P8LE: xxswapd
 ; P8LE: blr
 }
 
@@ -1313,7 +1315,7 @@ entry:
 ; P8BE: xvcvspsxws v2, [[REG1]]
 ; P8BE: blr
 ; P8LE: lxvd2x [[REG1:[vs0-9]+]], 0, r3
-; P8LE: xxswapd
+; P8LE: xxswapd v2, [[REG1]]
 ; P8LE: xvcvspsxws v2, v2
 ; P8LE: blr
 }
@@ -1357,7 +1359,8 @@ entry:
 ; P8BE: xvcvspsxws
 ; P8BE: blr
 ; P8LE: lxvd2x
-; P8LE-DAG: lvx
+; P8LE-DAG: lxvd2x
+; P8LE-DAG: xxswapd
 ; P8LE: xxswapd
 ; P8LE: vperm
 ; P8LE: xvcvspsxws
@@ -1563,8 +1566,8 @@ entry:
 ; P9LE: blr
 ; P8BE: lxvw4x
 ; P8BE: blr
-; P8LE: lvx
-; P8LE-NOT: xxswapd
+; P8LE: lxvd2x
+; P8LE: xxswapd
 ; P8LE: blr
 }
 
@@ -2033,8 +2036,8 @@ entry:
 ; P9LE: blr
 ; P8BE: lxvw4x
 ; P8BE: blr
-; P8LE: lvx
-; P8LE-NOT: xxswapd
+; P8LE: lxvd2x
+; P8LE: xxswapd
 ; P8LE: blr
 }
 
@@ -2100,8 +2103,8 @@ entry:
 ; P8BE: vperm
 ; P8BE: blr
 ; P8LE: lxvd2x
-; P8LE-DAG: lvx
-; P8LE-NOT: xxswapd
+; P8LE-DAG: lxvd2x
+; P8LE-DAG: xxswapd
 ; P8LE: xxswapd
 ; P8LE: vperm
 ; P8LE: blr
@@ -2192,8 +2195,10 @@ entry:
 ; P8BE: vperm
 ; P8BE: blr
 ; P8LE-DAG: sldi {{r[0-9]+}}, r4, 2
-; P8LE-DAG: lvx
-; P8LE-DAG: lvx
+; P8LE-DAG: lxvd2x
+; P8LE-DAG: lxvd2x
+; P8LE-DAG: xxswapd
+; P8LE: xxswapd
 ; P8LE: vperm
 ; P8LE: blr
 }
@@ -2445,8 +2450,8 @@ entry:
 ; P9LE: blr
 ; P8BE: lxvw4x
 ; P8BE: blr
-; P8LE: lvx
-; P8LE-NOT: xxswapd
+; P8LE: lxvd2x
+; P8LE: xxswapd
 ; P8LE: blr
 }
 
@@ -2514,8 +2519,9 @@ entry:
 ; P8BE: vperm
 ; P8BE: xvcvspuxws
 ; P8BE: blr
+; P8LE: lxvd2x
 ; P8LE-DAG: lxvd2x
-; P8LE-DAG: lvx
+; P8LE-DAG: xxswapd
 ; P8LE: xxswapd
 ; P8LE: vperm
 ; P8LE: xvcvspuxws
@@ -2721,8 +2727,8 @@ entry:
 ; P9LE: blr
 ; P8BE: lxvw4x
 ; P8BE: blr
-; P8LE: lvx
-; P8LE-NOT: xxswapd
+; P8LE: lxvd2x
+; P8LE: xxswapd
 ; P8LE: blr
 }
 

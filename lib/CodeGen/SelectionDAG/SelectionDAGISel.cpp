@@ -73,7 +73,6 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
@@ -593,7 +592,13 @@ bool SelectionDAGISel::runOnMachineFunction(MachineFunction &mf) {
     MRI.replaceRegWith(From, To);
   }
 
-  TLI->finalizeLowering(*MF);
+  if (TLI->hasCopyImplyingStackAdjustment(MF))
+    MFI.setHasCopyImplyingStackAdjustment(true);
+
+  // Freeze the set of reserved registers now that MachineFrameInfo has been
+  // set up. All the information required by getReservedRegs() should be
+  // available now.
+  MRI.freezeReservedRegs(*MF);
 
   // Release function-specific state. SDB and CurDAG are already cleared
   // at this point.
@@ -645,7 +650,8 @@ void SelectionDAGISel::ComputeLiveOutVRegInfo() {
 
   Worklist.push_back(CurDAG->getRoot().getNode());
 
-  KnownBits Known;
+  APInt KnownZero;
+  APInt KnownOne;
 
   do {
     SDNode *N = Worklist.pop_back_val();
@@ -674,8 +680,8 @@ void SelectionDAGISel::ComputeLiveOutVRegInfo() {
       continue;
 
     unsigned NumSignBits = CurDAG->ComputeNumSignBits(Src);
-    CurDAG->computeKnownBits(Src, Known);
-    FuncInfo->AddLiveOutRegInfo(DestReg, NumSignBits, Known);
+    CurDAG->computeKnownBits(Src, KnownZero, KnownOne);
+    FuncInfo->AddLiveOutRegInfo(DestReg, NumSignBits, KnownZero, KnownOne);
   } while (!Worklist.empty());
 }
 
@@ -1924,11 +1930,11 @@ bool SelectionDAGISel::CheckOrMask(SDValue LHS, ConstantSDNode *RHS,
   // either already zero or is not demanded.  Check for known zero input bits.
   APInt NeededMask = DesiredMask & ~ActualMask;
 
-  KnownBits Known;
-  CurDAG->computeKnownBits(LHS, Known);
+  APInt KnownZero, KnownOne;
+  CurDAG->computeKnownBits(LHS, KnownZero, KnownOne);
 
   // If all the missing bits in the or are already known to be set, match!
-  if (NeededMask.isSubsetOf(Known.One))
+  if ((NeededMask & KnownOne) == NeededMask)
     return true;
 
   // TODO: check to see if missing bits are just not demanded.

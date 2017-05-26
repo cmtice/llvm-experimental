@@ -31,7 +31,7 @@ private:
   /// Identify lowered values that originated from f128 arguments and record
   /// this for use by RetCC_MipsN.
   void PreAnalyzeCallResultForF128(const SmallVectorImpl<ISD::InputArg> &Ins,
-                                   const Type *RetTy, const char * Func);
+                                   const TargetLowering::CallLoweringInfo &CLI);
 
   /// Identify lowered values that originated from f128 arguments and record
   /// this for use by RetCC_MipsN.
@@ -42,7 +42,7 @@ private:
   void
   PreAnalyzeCallOperands(const SmallVectorImpl<ISD::OutputArg> &Outs,
                          std::vector<TargetLowering::ArgListEntry> &FuncArgs,
-                         const char *Func);
+                         const SDNode *CallNode);
 
   /// Identify lowered values that originated from f128 arguments and record
   /// this.
@@ -73,8 +73,8 @@ public:
   AnalyzeCallOperands(const SmallVectorImpl<ISD::OutputArg> &Outs,
                       CCAssignFn Fn,
                       std::vector<TargetLowering::ArgListEntry> &FuncArgs,
-                      const char *Func) {
-    PreAnalyzeCallOperands(Outs, FuncArgs, Func);
+                      const SDNode *CallNode) {
+    PreAnalyzeCallOperands(Outs, FuncArgs, CallNode);
     CCState::AnalyzeCallOperands(Outs, Fn);
     OriginalArgWasF128.clear();
     OriginalArgWasFloat.clear();
@@ -99,9 +99,9 @@ public:
   }
 
   void AnalyzeCallResult(const SmallVectorImpl<ISD::InputArg> &Ins,
-                         CCAssignFn Fn, const Type *RetTy,
-                         const char *Func) {
-    PreAnalyzeCallResultForF128(Ins, RetTy, Func);
+                         CCAssignFn Fn,
+                         const TargetLowering::CallLoweringInfo &CLI) {
+    PreAnalyzeCallResultForF128(Ins, CLI);
     CCState::AnalyzeCallResult(Ins, Fn);
     OriginalArgWasFloat.clear();
     OriginalArgWasF128.clear();

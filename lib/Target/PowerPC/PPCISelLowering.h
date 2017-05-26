@@ -606,7 +606,8 @@ namespace llvm {
                                SelectionDAG &DAG) const override;
 
     void computeKnownBitsForTargetNode(const SDValue Op,
-                                       KnownBits &Known,
+                                       APInt &KnownZero,
+                                       APInt &KnownOne,
                                        const APInt &DemandedElts,
                                        const SelectionDAG &DAG,
                                        unsigned Depth = 0) const override;
@@ -1017,14 +1018,6 @@ namespace llvm {
     SDValue
     combineElementTruncationToVectorTruncation(SDNode *N,
                                                DAGCombinerInfo &DCI) const;
-
-    bool supportsModuloShift(ISD::NodeType Inst,
-                             EVT ReturnType) const override {
-      assert((Inst == ISD::SHL || Inst == ISD::SRA || Inst == ISD::SRL) &&
-             "Expect a shift instruction");
-      assert(isOperationLegal(Inst, ReturnType));
-      return ReturnType.isVector();
-    }
   };
 
   namespace PPC {

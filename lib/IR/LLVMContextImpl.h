@@ -552,7 +552,6 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
   Metadata *TemplateParams;
   Metadata *Declaration;
   Metadata *Variables;
-  Metadata *ThrownTypes;
 
   MDNodeKeyImpl(Metadata *Scope, MDString *Name, MDString *LinkageName,
                 Metadata *File, unsigned Line, Metadata *Type,
@@ -560,8 +559,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
                 Metadata *ContainingType, unsigned Virtuality,
                 unsigned VirtualIndex, int ThisAdjustment, unsigned Flags,
                 bool IsOptimized, Metadata *Unit, Metadata *TemplateParams,
-                Metadata *Declaration, Metadata *Variables,
-                Metadata *ThrownTypes)
+                Metadata *Declaration, Metadata *Variables)
       : Scope(Scope), Name(Name), LinkageName(LinkageName), File(File),
         Line(Line), Type(Type), IsLocalToUnit(IsLocalToUnit),
         IsDefinition(IsDefinition), ScopeLine(ScopeLine),
@@ -569,7 +567,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
         VirtualIndex(VirtualIndex), ThisAdjustment(ThisAdjustment),
         Flags(Flags), IsOptimized(IsOptimized), Unit(Unit),
         TemplateParams(TemplateParams), Declaration(Declaration),
-        Variables(Variables), ThrownTypes(ThrownTypes) {}
+        Variables(Variables) {}
   MDNodeKeyImpl(const DISubprogram *N)
       : Scope(N->getRawScope()), Name(N->getRawName()),
         LinkageName(N->getRawLinkageName()), File(N->getRawFile()),
@@ -580,8 +578,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
         ThisAdjustment(N->getThisAdjustment()), Flags(N->getFlags()),
         IsOptimized(N->isOptimized()), Unit(N->getRawUnit()),
         TemplateParams(N->getRawTemplateParams()),
-        Declaration(N->getRawDeclaration()), Variables(N->getRawVariables()),
-        ThrownTypes(N->getRawThrownTypes()) {}
+        Declaration(N->getRawDeclaration()), Variables(N->getRawVariables()) {}
 
   bool isKeyOf(const DISubprogram *RHS) const {
     return Scope == RHS->getRawScope() && Name == RHS->getRawName() &&
@@ -598,8 +595,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
            Unit == RHS->getUnit() &&
            TemplateParams == RHS->getRawTemplateParams() &&
            Declaration == RHS->getRawDeclaration() &&
-           Variables == RHS->getRawVariables() &&
-           ThrownTypes == RHS->getRawThrownTypes();
+           Variables == RHS->getRawVariables();
   }
   unsigned getHashValue() const {
     // If this is a declaration inside an ODR type, only hash the type and the
@@ -699,21 +695,26 @@ template <> struct MDNodeKeyImpl<DILexicalBlockFile> {
 
 template <> struct MDNodeKeyImpl<DINamespace> {
   Metadata *Scope;
+  Metadata *File;
   MDString *Name;
+  unsigned Line;
   bool ExportSymbols;
 
-  MDNodeKeyImpl(Metadata *Scope, MDString *Name, bool ExportSymbols)
-      : Scope(Scope), Name(Name), ExportSymbols(ExportSymbols) {}
+  MDNodeKeyImpl(Metadata *Scope, Metadata *File, MDString *Name, unsigned Line,
+                bool ExportSymbols)
+      : Scope(Scope), File(File), Name(Name), Line(Line),
+        ExportSymbols(ExportSymbols) {}
   MDNodeKeyImpl(const DINamespace *N)
-      : Scope(N->getRawScope()), Name(N->getRawName()),
-        ExportSymbols(N->getExportSymbols()) {}
+      : Scope(N->getRawScope()), File(N->getRawFile()), Name(N->getRawName()),
+        Line(N->getLine()), ExportSymbols(N->getExportSymbols()) {}
 
   bool isKeyOf(const DINamespace *RHS) const {
-    return Scope == RHS->getRawScope() && Name == RHS->getRawName() &&
+    return Scope == RHS->getRawScope() && File == RHS->getRawFile() &&
+           Name == RHS->getRawName() && Line == RHS->getLine() &&
            ExportSymbols == RHS->getExportSymbols();
   }
   unsigned getHashValue() const {
-    return hash_combine(Scope, Name);
+    return hash_combine(Scope, File, Name, Line);
   }
 };
 

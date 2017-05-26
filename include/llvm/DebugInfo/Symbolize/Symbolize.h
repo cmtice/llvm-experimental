@@ -56,9 +56,8 @@ public:
   Expected<DIGlobal> symbolizeData(const std::string &ModuleName,
                                    uint64_t ModuleOffset);
   void flush();
-  static std::string
-  DemangleName(const std::string &Name,
-               const SymbolizableModule *DbiModuleDescriptor);
+  static std::string DemangleName(const std::string &Name,
+                                  const SymbolizableModule *ModInfo);
 
 private:
   // Bundles together object file with code/data and object file with

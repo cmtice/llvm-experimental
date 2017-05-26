@@ -3,7 +3,7 @@
 ; CHECK-LABEL:	.section	__LLVM_STACKMAPS,__llvm_stackmaps
 ; CHECK-NEXT: __LLVM_StackMaps:
 ; version
-; CHECK-NEXT: 	.byte	3
+; CHECK-NEXT: 	.byte	2
 ; reserved
 ; CHECK-NEXT: 	.byte	0
 ; reserved
@@ -38,17 +38,12 @@
 ; ConstantIndex
 ; CHECK-NEXT: 	.byte	5
 ; reserved
-; CHECK-NEXT:   .byte	0
-; size
-; CHECK-NEXT: 	.short	8
+; CHECK-NEXT: 	.byte	8
 ; Dwarf RegNum
 ; CHECK-NEXT: 	.short	0
-; reserved
-; CHECK-NEXT:   .short  0
 ; Offset
 ; CHECK-NEXT: 	.long	0
 ; padding
-; CHECK-NEXT: 	.p2align 3
 ; CHECK-NEXT: 	.short	0
 ; NumLiveOuts
 ; CHECK-NEXT: 	.short	0
@@ -73,17 +68,12 @@ define void @foo() {
 ; ConstantIndex
 ; CHECK-NEXT: 	.byte	5
 ; reserved
-; CHECK-NEXT:   .byte	0
-; size
-; CHECK-NEXT: 	.short	8
+; CHECK-NEXT: 	.byte	8
 ; Dwarf RegNum
 ; CHECK-NEXT: 	.short	0
-; reserved
-; CHECK-NEXT:    .short 0
 ; Offset
 ; CHECK-NEXT: 	.long	1
 ; padding
-; CHECK-NEXT:  .p2align 3
 ; CHECK-NEXT: 	.short	0
 ; NumLiveOuts
 ; CHECK-NEXT: 	.short	0

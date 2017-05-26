@@ -63,7 +63,7 @@ using namespace llvm;
 
 namespace {
 
-using SectionIndexMapTy = DenseMap<const MCSectionELF *, uint32_t>;
+typedef DenseMap<const MCSectionELF *, uint32_t> SectionIndexMapTy;
 
 class ELFObjectWriter;
 
@@ -194,8 +194,8 @@ public:
                    ELFSymbolData &MSD, const MCAsmLayout &Layout);
 
   // Start and end offset of each section
-  using SectionOffsetsTy =
-      std::map<const MCSectionELF *, std::pair<uint64_t, uint64_t>>;
+  typedef std::map<const MCSectionELF *, std::pair<uint64_t, uint64_t>>
+      SectionOffsetsTy;
 
   bool shouldRelocateWithSymbol(const MCAssembler &Asm,
                                 const MCSymbolRefExpr *RefA,
@@ -208,7 +208,7 @@ public:
                         uint64_t &FixedValue) override;
 
   // Map from a signature symbol to the group section index
-  using RevGroupMapTy = DenseMap<const MCSymbol *, unsigned>;
+  typedef DenseMap<const MCSymbol *, unsigned> RevGroupMapTy;
 
   /// Compute the symbol table data
   ///

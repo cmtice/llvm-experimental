@@ -15,9 +15,9 @@
 #include "llvm/DebugInfo/PDB/Native/DbiStream.h"
 #include "llvm/DebugInfo/PDB/Native/GlobalsStream.h"
 #include "llvm/DebugInfo/PDB/Native/InfoStream.h"
-#include "llvm/DebugInfo/PDB/Native/PDBStringTable.h"
 #include "llvm/DebugInfo/PDB/Native/PublicsStream.h"
 #include "llvm/DebugInfo/PDB/Native/RawError.h"
+#include "llvm/DebugInfo/PDB/Native/StringTable.h"
 #include "llvm/DebugInfo/PDB/Native/SymbolStream.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
 #include "llvm/Support/BinaryStream.h"
@@ -337,8 +337,8 @@ Expected<SymbolStream &> PDBFile::getPDBSymbolStream() {
   return *Symbols;
 }
 
-Expected<PDBStringTable &> PDBFile::getStringTable() {
-  if (!Strings || !PDBStringTableStream) {
+Expected<StringTable &> PDBFile::getStringTable() {
+  if (!Strings || !StringTableStream) {
     auto IS = getPDBInfoStream();
     if (!IS)
       return IS.takeError();
@@ -351,11 +351,11 @@ Expected<PDBStringTable &> PDBFile::getStringTable() {
       return NS.takeError();
 
     BinaryStreamReader Reader(**NS);
-    auto N = llvm::make_unique<PDBStringTable>();
+    auto N = llvm::make_unique<StringTable>();
     if (auto EC = N->load(Reader))
       return std::move(EC);
     Strings = std::move(N);
-    PDBStringTableStream = std::move(*NS);
+    StringTableStream = std::move(*NS);
   }
   return *Strings;
 }
@@ -389,7 +389,7 @@ bool PDBFile::hasPDBSymbolStream() {
 
 bool PDBFile::hasPDBTpiStream() const { return StreamTPI < getNumStreams(); }
 
-bool PDBFile::hasPDBStringTable() {
+bool PDBFile::hasStringTable() {
   auto IS = getPDBInfoStream();
   if (!IS)
     return false;

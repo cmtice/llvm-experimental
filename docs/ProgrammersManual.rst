@@ -776,21 +776,22 @@ readability.
 Using cantFail to simplify safe callsites
 """""""""""""""""""""""""""""""""""""""""
 
-Some functions may only fail for a subset of their inputs, so calls using known
-safe inputs can be assumed to succeed.
+Some functions may only fail for a subset of their inputs. For such functions
+call-sites using known-safe inputs can assume that the result will be a success
+value.
 
 The cantFail functions encapsulate this by wrapping an assertion that their
 argument is a success value and, in the case of Expected<T>, unwrapping the
-T value:
+T value from the Expected<T> argument:
 
 .. code-block:: c++
 
-  Error onlyFailsForSomeXValues(int X);
-  Expected<int> onlyFailsForSomeXValues2(int X);
+  Error mayFail(int X);
+  Expected<int> mayFail2(int X);
 
   void foo() {
-    cantFail(onlyFailsForSomeXValues(KnownSafeValue));
-    int Y = cantFail(onlyFailsForSomeXValues2(KnownSafeValue));
+    cantFail(mayFail(KnownSafeValue));
+    int Y = cantFail(mayFail2(KnownSafeValue));
     ...
   }
 
@@ -800,8 +801,8 @@ terminate the program on an error input, cantFile simply asserts that the result
 is success. In debug builds this will result in an assertion failure if an error
 is encountered. In release builds the behavior of cantFail for failure values is
 undefined. As such, care must be taken in the use of cantFail: clients must be
-certain that a cantFail wrapped call really can not fail with the given
-arguments.
+certain that a cantFail wrapped call really can not fail under any
+circumstances.
 
 Use of the cantFail functions should be rare in library code, but they are
 likely to be of more use in tool and unit-test code where inputs and/or

@@ -669,8 +669,7 @@ getExprOpValue(const MCExpr *Expr, SmallVectorImpl<MCFixup> &Fixups,
                                    : Mips::fixup_Mips_DTPREL_LO;
       break;
     case MipsMCExpr::MEK_GOTTPREL:
-      FixupKind = isMicroMips(STI) ? Mips::fixup_MICROMIPS_GOTTPREL
-                                   : Mips::fixup_Mips_GOTTPREL;
+      FixupKind = Mips::fixup_Mips_GOTTPREL;
       break;
     case MipsMCExpr::MEK_GOT:
       FixupKind = isMicroMips(STI) ? Mips::fixup_MICROMIPS_GOT16

@@ -245,21 +245,12 @@ struct IncomingValueHandler : public CallLowering::ValueHandler {
       // that's what we should load.
       Size = 4;
       assert(MRI.getType(ValVReg).isScalar() && "Only scalars supported atm");
-
-      auto LoadVReg = MRI.createGenericVirtualRegister(LLT::scalar(32));
-      buildLoad(LoadVReg, Addr, Size, /* Alignment */ 0, MPO);
-      MIRBuilder.buildTrunc(ValVReg, LoadVReg);
-    } else {
-      // If the value is not extended, a simple load will suffice.
-      buildLoad(ValVReg, Addr, Size, /* Alignment */ 0, MPO);
+      MRI.setType(ValVReg, LLT::scalar(32));
     }
-  }
 
-  void buildLoad(unsigned Val, unsigned Addr, uint64_t Size, unsigned Alignment,
-                 MachinePointerInfo &MPO) {
     auto MMO = MIRBuilder.getMF().getMachineMemOperand(
-        MPO, MachineMemOperand::MOLoad, Size, Alignment);
-    MIRBuilder.buildLoad(Val, Addr, *MMO);
+        MPO, MachineMemOperand::MOLoad, Size, /* Alignment */ 0);
+    MIRBuilder.buildLoad(ValVReg, Addr, *MMO);
   }
 
   void assignValueToReg(unsigned ValVReg, unsigned PhysReg,

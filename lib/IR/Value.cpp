@@ -578,9 +578,9 @@ unsigned Value::getPointerDereferenceableBytes(const DataLayout &DL,
       CanBeNull = true;
     }
   } else if (auto CS = ImmutableCallSite(this)) {
-    DerefBytes = CS.getDereferenceableBytes(AttributeList::ReturnIndex);
+    DerefBytes = CS.getDereferenceableBytes(0);
     if (DerefBytes == 0) {
-      DerefBytes = CS.getDereferenceableOrNullBytes(AttributeList::ReturnIndex);
+      DerefBytes = CS.getDereferenceableOrNullBytes(0);
       CanBeNull = true;
     }
   } else if (const LoadInst *LI = dyn_cast<LoadInst>(this)) {
@@ -649,7 +649,7 @@ unsigned Value::getPointerAlignment(const DataLayout &DL) const {
         Align = DL.getPrefTypeAlignment(AllocatedType);
     }
   } else if (auto CS = ImmutableCallSite(this))
-    Align = CS.getAttributes().getRetAlignment();
+    Align = CS.getAttributes().getParamAlignment(AttributeList::ReturnIndex);
   else if (const LoadInst *LI = dyn_cast<LoadInst>(this))
     if (MDNode *MD = LI->getMetadata(LLVMContext::MD_align)) {
       ConstantInt *CI = mdconst::extract<ConstantInt>(MD->getOperand(0));
@@ -711,7 +711,7 @@ void ValueHandleBase::AddToExistingUseList(ValueHandleBase **List) {
   setPrevPtr(List);
   if (Next) {
     Next->setPrevPtr(&Next);
-    assert(getValPtr() == Next->getValPtr() && "Added to wrong list?");
+    assert(V == Next->V && "Added to wrong list?");
   }
 }
 
@@ -726,14 +726,14 @@ void ValueHandleBase::AddToExistingUseListAfter(ValueHandleBase *List) {
 }
 
 void ValueHandleBase::AddToUseList() {
-  assert(getValPtr() && "Null pointer doesn't have a use list!");
+  assert(V && "Null pointer doesn't have a use list!");
 
-  LLVMContextImpl *pImpl = getValPtr()->getContext().pImpl;
+  LLVMContextImpl *pImpl = V->getContext().pImpl;
 
-  if (getValPtr()->HasValueHandle) {
+  if (V->HasValueHandle) {
     // If this value already has a ValueHandle, then it must be in the
     // ValueHandles map already.
-    ValueHandleBase *&Entry = pImpl->ValueHandles[getValPtr()];
+    ValueHandleBase *&Entry = pImpl->ValueHandles[V];
     assert(Entry && "Value doesn't have any handles?");
     AddToExistingUseList(&Entry);
     return;
@@ -747,10 +747,10 @@ void ValueHandleBase::AddToUseList() {
   DenseMap<Value*, ValueHandleBase*> &Handles = pImpl->ValueHandles;
   const void *OldBucketPtr = Handles.getPointerIntoBucketsArray();
 
-  ValueHandleBase *&Entry = Handles[getValPtr()];
+  ValueHandleBase *&Entry = Handles[V];
   assert(!Entry && "Value really did already have handles?");
   AddToExistingUseList(&Entry);
-  getValPtr()->HasValueHandle = true;
+  V->HasValueHandle = true;
 
   // If reallocation didn't happen or if this was the first insertion, don't
   // walk the table.
@@ -762,14 +762,14 @@ void ValueHandleBase::AddToUseList() {
   // Okay, reallocation did happen.  Fix the Prev Pointers.
   for (DenseMap<Value*, ValueHandleBase*>::iterator I = Handles.begin(),
        E = Handles.end(); I != E; ++I) {
-    assert(I->second && I->first == I->second->getValPtr() &&
+    assert(I->second && I->first == I->second->V &&
            "List invariant broken!");
     I->second->setPrevPtr(&I->second);
   }
 }
 
 void ValueHandleBase::RemoveFromUseList() {
-  assert(getValPtr() && getValPtr()->HasValueHandle &&
+  assert(V && V->HasValueHandle &&
          "Pointer doesn't have a use list!");
 
   // Unlink this from its use list.
@@ -786,11 +786,11 @@ void ValueHandleBase::RemoveFromUseList() {
   // If the Next pointer was null, then it is possible that this was the last
   // ValueHandle watching VP.  If so, delete its entry from the ValueHandles
   // map.
-  LLVMContextImpl *pImpl = getValPtr()->getContext().pImpl;
+  LLVMContextImpl *pImpl = V->getContext().pImpl;
   DenseMap<Value*, ValueHandleBase*> &Handles = pImpl->ValueHandles;
   if (Handles.isPointerIntoBucketsArray(PrevPtr)) {
-    Handles.erase(getValPtr());
-    getValPtr()->HasValueHandle = false;
+    Handles.erase(V);
+    V->HasValueHandle = false;
   }
 }
 
@@ -820,10 +820,13 @@ void ValueHandleBase::ValueIsDeleted(Value *V) {
     switch (Entry->getKind()) {
     case Assert:
       break;
+    case Tracking:
+      // Mark that this value has been deleted by setting it to an invalid Value
+      // pointer.
+      Entry->operator=(DenseMapInfo<Value *>::getTombstoneKey());
+      break;
     case Weak:
-    case WeakTracking:
-      // WeakTracking and Weak just go to null, which unlinks them
-      // from the list.
+      // Weak just goes to null, which will unlink it from the list.
       Entry->operator=(nullptr);
       break;
     case Callback:
@@ -871,10 +874,16 @@ void ValueHandleBase::ValueIsRAUWd(Value *Old, Value *New) {
 
     switch (Entry->getKind()) {
     case Assert:
-    case Weak:
-      // Asserting and Weak handles do not follow RAUW implicitly.
+      // Asserting handle does not follow RAUW implicitly.
       break;
-    case WeakTracking:
+    case Tracking:
+      // Tracking goes to new value like a WeakVH. Note that this may make it
+      // something incompatible with its templated type. We don't want to have a
+      // virtual (or inline) interface to handle this though, so instead we make
+      // the TrackingVH accessors guarantee that a client never sees this value.
+
+      LLVM_FALLTHROUGH;
+    case Weak:
       // Weak goes to the new value, which will unlink it from Old's list.
       Entry->operator=(New);
       break;
@@ -886,17 +895,18 @@ void ValueHandleBase::ValueIsRAUWd(Value *Old, Value *New) {
   }
 
 #ifndef NDEBUG
-  // If any new weak value handles were added while processing the
+  // If any new tracking or weak value handles were added while processing the
   // list, then complain about it now.
   if (Old->HasValueHandle)
     for (Entry = pImpl->ValueHandles[Old]; Entry; Entry = Entry->Next)
       switch (Entry->getKind()) {
-      case WeakTracking:
+      case Tracking:
+      case Weak:
         dbgs() << "After RAUW from " << *Old->getType() << " %"
                << Old->getName() << " to " << *New->getType() << " %"
                << New->getName() << "\n";
-        llvm_unreachable(
-            "A weak tracking value handle still pointed to the  old value!\n");
+        llvm_unreachable("A tracking or weak value handle still pointed to the"
+                         " old value!\n");
       default:
         break;
       }

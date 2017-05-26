@@ -242,8 +242,7 @@ static void reservePreviousStackSlotForValue(const Value *IncomingValue,
 
   // Cache this slot so we find it when going through the normal
   // assignment loop.
-  SDValue Loc =
-      Builder.DAG.getTargetFrameIndex(*Index, Builder.getFrameIndexTy());
+  SDValue Loc = Builder.DAG.getTargetFrameIndex(*Index, Incoming.getValueType());
   Builder.StatepointLowering.setLocation(Incoming, Loc);
 }
 
@@ -344,7 +343,7 @@ spillIncomingStatepointValue(SDValue Incoming, SDValue Chain,
                                                        Builder);
     int Index = cast<FrameIndexSDNode>(Loc)->getIndex();
     // We use TargetFrameIndex so that isel will not select it into LEA
-    Loc = Builder.DAG.getTargetFrameIndex(Index, Builder.getFrameIndexTy());
+    Loc = Builder.DAG.getTargetFrameIndex(Index, Incoming.getValueType());
 
     // TODO: We can create TokenFactor node instead of
     //       chaining stores one after another, this may allow
@@ -392,10 +391,8 @@ static void lowerIncomingStatepointValue(SDValue Incoming, bool LiveInOnly,
     // This handles allocas as arguments to the statepoint (this is only
     // really meaningful for a deopt value.  For GC, we'd be trying to
     // relocate the address of the alloca itself?)
-    assert(Incoming.getValueType() == Builder.getFrameIndexTy() &&
-           "Incoming value is a frame index!");
     Ops.push_back(Builder.DAG.getTargetFrameIndex(FI->getIndex(),
-                                                  Builder.getFrameIndexTy()));
+                                                  Incoming.getValueType()));
   } else if (LiveInOnly) {
     // If this value is live in (not live-on-return, or live-through), we can
     // treat it the same way patchpoint treats it's "live in" values.  We'll 
@@ -530,10 +527,8 @@ lowerStatepointMetaArgs(SmallVectorImpl<SDValue> &Ops,
     SDValue Incoming = Builder.getValue(V);
     if (FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Incoming)) {
       // This handles allocas as arguments to the statepoint
-      assert(Incoming.getValueType() == Builder.getFrameIndexTy() &&
-             "Incoming value is a frame index!");
       Ops.push_back(Builder.DAG.getTargetFrameIndex(FI->getIndex(),
-                                                    Builder.getFrameIndexTy()));
+                                                    Incoming.getValueType()));
     }
   }
 
@@ -954,8 +949,8 @@ void SelectionDAGBuilder::visitGCRelocate(const GCRelocateInst &Relocate) {
     return;
   }
 
-  SDValue SpillSlot =
-      DAG.getTargetFrameIndex(*DerivedPtrLocation, getFrameIndexTy());
+  SDValue SpillSlot = DAG.getTargetFrameIndex(*DerivedPtrLocation,
+                                              SD.getValueType());
 
   // Be conservative: flush all pending loads
   // TODO: Probably we can be less restrictive on this,
@@ -963,9 +958,7 @@ void SelectionDAGBuilder::visitGCRelocate(const GCRelocateInst &Relocate) {
   SDValue Chain = getRoot();
 
   SDValue SpillLoad =
-      DAG.getLoad(DAG.getTargetLoweringInfo().getValueType(DAG.getDataLayout(),
-                                                           Relocate.getType()),
-                  getCurSDLoc(), Chain, SpillSlot,
+      DAG.getLoad(SpillSlot.getValueType(), getCurSDLoc(), Chain, SpillSlot,
                   MachinePointerInfo::getFixedStack(DAG.getMachineFunction(),
                                                     *DerivedPtrLocation));
 

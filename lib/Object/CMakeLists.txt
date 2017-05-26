@@ -11,6 +11,7 @@ add_llvm_library(LLVMObject
   IRSymtab.cpp
   MachOObjectFile.cpp
   MachOUniversal.cpp
+  ModuleSummaryIndexObjectFile.cpp
   ModuleSymbolTable.cpp
   Object.cpp
   ObjectFile.cpp

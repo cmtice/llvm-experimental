@@ -39,9 +39,8 @@ void DWARFGdbIndex::dumpAddressArea(raw_ostream &OS) const {
      << '\n';
   for (const AddressEntry &Addr : AddressArea)
     OS << format(
-        "    Low/High address = [0x%llx, 0x%llx) (Size: 0x%llx), CU id = %d\n",
-        Addr.LowAddress, Addr.HighAddress, Addr.HighAddress - Addr.LowAddress,
-        Addr.CuIndex);
+        "    Low address = 0x%llx, High address = 0x%llx, CU index = %d\n",
+        Addr.LowAddress, Addr.HighAddress, Addr.CuIndex);
 }
 
 void DWARFGdbIndex::dumpSymbolTable(raw_ostream &OS) const {

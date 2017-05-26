@@ -23,12 +23,9 @@ namespace llvm {
 
 class ARMAsmPrinter;
 class ARMBaseTargetMachine;
-class ARMRegisterBankInfo;
-class ARMSubtarget;
 struct BasicBlockInfo;
 class Function;
 class FunctionPass;
-class InstructionSelector;
 class MachineBasicBlock;
 class MachineFunction;
 class MachineInstr;
@@ -46,9 +43,6 @@ FunctionPass *createThumb2ITBlockPass();
 FunctionPass *createARMOptimizeBarriersPass();
 FunctionPass *createThumb2SizeReductionPass(
     std::function<bool(const Function &)> Ftor = nullptr);
-InstructionSelector *
-createARMInstructionSelector(const ARMBaseTargetMachine &TM, const ARMSubtarget &STI,
-                             const ARMRegisterBankInfo &RBI);
 
 void LowerARMMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
                                   ARMAsmPrinter &AP);

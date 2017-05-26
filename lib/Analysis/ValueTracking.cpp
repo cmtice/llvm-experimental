@@ -38,7 +38,6 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Statepoint.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <array>
@@ -131,15 +130,15 @@ static const Instruction *safeCxtI(const Value *V, const Instruction *CxtI) {
   return nullptr;
 }
 
-static void computeKnownBits(const Value *V, KnownBits &Known,
+static void computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
                              unsigned Depth, const Query &Q);
 
-void llvm::computeKnownBits(const Value *V, KnownBits &Known,
+void llvm::computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
                             const DataLayout &DL, unsigned Depth,
                             AssumptionCache *AC, const Instruction *CxtI,
                             const DominatorTree *DT,
                             OptimizationRemarkEmitter *ORE) {
-  ::computeKnownBits(V, Known, Depth,
+  ::computeKnownBits(V, KnownZero, KnownOne, Depth,
                      Query(DL, AC, safeCxtI(V, CxtI), DT, ORE));
 }
 
@@ -152,11 +151,11 @@ bool llvm::haveNoCommonBitsSet(const Value *LHS, const Value *RHS,
   assert(LHS->getType()->isIntOrIntVectorTy() &&
          "LHS and RHS should be integers");
   IntegerType *IT = cast<IntegerType>(LHS->getType()->getScalarType());
-  KnownBits LHSKnown(IT->getBitWidth());
-  KnownBits RHSKnown(IT->getBitWidth());
-  computeKnownBits(LHS, LHSKnown, DL, 0, AC, CxtI, DT);
-  computeKnownBits(RHS, RHSKnown, DL, 0, AC, CxtI, DT);
-  return (LHSKnown.Zero | RHSKnown.Zero).isAllOnesValue();
+  APInt LHSKnownZero(IT->getBitWidth(), 0), LHSKnownOne(IT->getBitWidth(), 0);
+  APInt RHSKnownZero(IT->getBitWidth(), 0), RHSKnownOne(IT->getBitWidth(), 0);
+  computeKnownBits(LHS, LHSKnownZero, LHSKnownOne, DL, 0, AC, CxtI, DT);
+  computeKnownBits(RHS, RHSKnownZero, RHSKnownOne, DL, 0, AC, CxtI, DT);
+  return (LHSKnownZero | RHSKnownZero).isAllOnesValue();
 }
 
 static void ComputeSignBit(const Value *V, bool &KnownZero, bool &KnownOne,
@@ -253,65 +252,67 @@ unsigned llvm::ComputeNumSignBits(const Value *V, const DataLayout &DL,
 
 static void computeKnownBitsAddSub(bool Add, const Value *Op0, const Value *Op1,
                                    bool NSW,
-                                   KnownBits &KnownOut, KnownBits &Known2,
+                                   APInt &KnownZero, APInt &KnownOne,
+                                   APInt &KnownZero2, APInt &KnownOne2,
                                    unsigned Depth, const Query &Q) {
-  unsigned BitWidth = KnownOut.getBitWidth();
+  unsigned BitWidth = KnownZero.getBitWidth();
 
   // If an initial sequence of bits in the result is not needed, the
   // corresponding bits in the operands are not needed.
-  KnownBits LHSKnown(BitWidth);
-  computeKnownBits(Op0, LHSKnown, Depth + 1, Q);
-  computeKnownBits(Op1, Known2, Depth + 1, Q);
+  APInt LHSKnownZero(BitWidth, 0), LHSKnownOne(BitWidth, 0);
+  computeKnownBits(Op0, LHSKnownZero, LHSKnownOne, Depth + 1, Q);
+  computeKnownBits(Op1, KnownZero2, KnownOne2, Depth + 1, Q);
 
   // Carry in a 1 for a subtract, rather than a 0.
   uint64_t CarryIn = 0;
   if (!Add) {
     // Sum = LHS + ~RHS + 1
-    std::swap(Known2.Zero, Known2.One);
+    std::swap(KnownZero2, KnownOne2);
     CarryIn = 1;
   }
 
-  APInt PossibleSumZero = ~LHSKnown.Zero + ~Known2.Zero + CarryIn;
-  APInt PossibleSumOne = LHSKnown.One + Known2.One + CarryIn;
+  APInt PossibleSumZero = ~LHSKnownZero + ~KnownZero2 + CarryIn;
+  APInt PossibleSumOne = LHSKnownOne + KnownOne2 + CarryIn;
 
   // Compute known bits of the carry.
-  APInt CarryKnownZero = ~(PossibleSumZero ^ LHSKnown.Zero ^ Known2.Zero);
-  APInt CarryKnownOne = PossibleSumOne ^ LHSKnown.One ^ Known2.One;
+  APInt CarryKnownZero = ~(PossibleSumZero ^ LHSKnownZero ^ KnownZero2);
+  APInt CarryKnownOne = PossibleSumOne ^ LHSKnownOne ^ KnownOne2;
 
   // Compute set of known bits (where all three relevant bits are known).
-  APInt LHSKnownUnion = LHSKnown.Zero | LHSKnown.One;
-  APInt RHSKnownUnion = Known2.Zero | Known2.One;
-  APInt CarryKnownUnion = CarryKnownZero | CarryKnownOne;
-  APInt Known = LHSKnownUnion & RHSKnownUnion & CarryKnownUnion;
+  APInt LHSKnown = LHSKnownZero | LHSKnownOne;
+  APInt RHSKnown = KnownZero2 | KnownOne2;
+  APInt CarryKnown = CarryKnownZero | CarryKnownOne;
+  APInt Known = LHSKnown & RHSKnown & CarryKnown;
 
   assert((PossibleSumZero & Known) == (PossibleSumOne & Known) &&
          "known bits of sum differ");
 
   // Compute known bits of the result.
-  KnownOut.Zero = ~PossibleSumOne & Known;
-  KnownOut.One = PossibleSumOne & Known;
+  KnownZero = ~PossibleSumOne & Known;
+  KnownOne = PossibleSumOne & Known;
 
   // Are we still trying to solve for the sign bit?
   if (!Known.isSignBitSet()) {
     if (NSW) {
       // Adding two non-negative numbers, or subtracting a negative number from
       // a non-negative one, can't wrap into negative.
-      if (LHSKnown.isNonNegative() && Known2.isNonNegative())
-        KnownOut.makeNonNegative();
+      if (LHSKnownZero.isSignBitSet() && KnownZero2.isSignBitSet())
+        KnownZero.setSignBit();
       // Adding two negative numbers, or subtracting a non-negative number from
       // a negative one, can't wrap into non-negative.
-      else if (LHSKnown.isNegative() && Known2.isNegative())
-        KnownOut.makeNegative();
+      else if (LHSKnownOne.isSignBitSet() && KnownOne2.isSignBitSet())
+        KnownOne.setSignBit();
     }
   }
 }
 
 static void computeKnownBitsMul(const Value *Op0, const Value *Op1, bool NSW,
-                                KnownBits &Known, KnownBits &Known2,
+                                APInt &KnownZero, APInt &KnownOne,
+                                APInt &KnownZero2, APInt &KnownOne2,
                                 unsigned Depth, const Query &Q) {
-  unsigned BitWidth = Known.getBitWidth();
-  computeKnownBits(Op1, Known, Depth + 1, Q);
-  computeKnownBits(Op0, Known2, Depth + 1, Q);
+  unsigned BitWidth = KnownZero.getBitWidth();
+  computeKnownBits(Op1, KnownZero, KnownOne, Depth + 1, Q);
+  computeKnownBits(Op0, KnownZero2, KnownOne2, Depth + 1, Q);
 
   bool isKnownNegative = false;
   bool isKnownNonNegative = false;
@@ -321,10 +322,10 @@ static void computeKnownBitsMul(const Value *Op0, const Value *Op1, bool NSW,
       // The product of a number with itself is non-negative.
       isKnownNonNegative = true;
     } else {
-      bool isKnownNonNegativeOp1 = Known.isNonNegative();
-      bool isKnownNonNegativeOp0 = Known2.isNonNegative();
-      bool isKnownNegativeOp1 = Known.isNegative();
-      bool isKnownNegativeOp0 = Known2.isNegative();
+      bool isKnownNonNegativeOp1 = KnownZero.isSignBitSet();
+      bool isKnownNonNegativeOp0 = KnownZero2.isSignBitSet();
+      bool isKnownNegativeOp1 = KnownOne.isSignBitSet();
+      bool isKnownNegativeOp0 = KnownOne2.isSignBitSet();
       // The product of two numbers with the same sign is non-negative.
       isKnownNonNegative = (isKnownNegativeOp1 && isKnownNegativeOp0) ||
         (isKnownNonNegativeOp1 && isKnownNonNegativeOp0);
@@ -342,38 +343,39 @@ static void computeKnownBitsMul(const Value *Op0, const Value *Op1, bool NSW,
   // Also compute a conservative estimate for high known-0 bits.
   // More trickiness is possible, but this is sufficient for the
   // interesting case of alignment computation.
-  Known.One.clearAllBits();
-  unsigned TrailZ = Known.Zero.countTrailingOnes() +
-                    Known2.Zero.countTrailingOnes();
-  unsigned LeadZ =  std::max(Known.Zero.countLeadingOnes() +
-                             Known2.Zero.countLeadingOnes(),
+  KnownOne.clearAllBits();
+  unsigned TrailZ = KnownZero.countTrailingOnes() +
+                    KnownZero2.countTrailingOnes();
+  unsigned LeadZ =  std::max(KnownZero.countLeadingOnes() +
+                             KnownZero2.countLeadingOnes(),
                              BitWidth) - BitWidth;
 
   TrailZ = std::min(TrailZ, BitWidth);
   LeadZ = std::min(LeadZ, BitWidth);
-  Known.Zero.clearAllBits();
-  Known.Zero.setLowBits(TrailZ);
-  Known.Zero.setHighBits(LeadZ);
+  KnownZero.clearAllBits();
+  KnownZero.setLowBits(TrailZ);
+  KnownZero.setHighBits(LeadZ);
 
   // Only make use of no-wrap flags if we failed to compute the sign bit
   // directly.  This matters if the multiplication always overflows, in
   // which case we prefer to follow the result of the direct computation,
   // though as the program is invoking undefined behaviour we can choose
   // whatever we like here.
-  if (isKnownNonNegative && !Known.isNegative())
-    Known.makeNonNegative();
-  else if (isKnownNegative && !Known.isNonNegative())
-    Known.makeNegative();
+  if (isKnownNonNegative && !KnownOne.isSignBitSet())
+    KnownZero.setSignBit();
+  else if (isKnownNegative && !KnownZero.isSignBitSet())
+    KnownOne.setSignBit();
 }
 
 void llvm::computeKnownBitsFromRangeMetadata(const MDNode &Ranges,
-                                             KnownBits &Known) {
-  unsigned BitWidth = Known.getBitWidth();
+                                             APInt &KnownZero,
+                                             APInt &KnownOne) {
+  unsigned BitWidth = KnownZero.getBitWidth();
   unsigned NumRanges = Ranges.getNumOperands() / 2;
   assert(NumRanges >= 1);
 
-  Known.Zero.setAllBits();
-  Known.One.setAllBits();
+  KnownZero.setAllBits();
+  KnownOne.setAllBits();
 
   for (unsigned i = 0; i < NumRanges; ++i) {
     ConstantInt *Lower =
@@ -387,8 +389,8 @@ void llvm::computeKnownBitsFromRangeMetadata(const MDNode &Ranges,
         (Range.getUnsignedMax() ^ Range.getUnsignedMin()).countLeadingZeros();
 
     APInt Mask = APInt::getHighBitsSet(BitWidth, CommonPrefixBits);
-    Known.One &= Range.getUnsignedMax() & Mask;
-    Known.Zero &= ~Range.getUnsignedMax() & Mask;
+    KnownOne &= Range.getUnsignedMax() & Mask;
+    KnownZero &= ~Range.getUnsignedMax() & Mask;
   }
 }
 
@@ -497,14 +499,15 @@ bool llvm::isValidAssumeForContext(const Instruction *Inv,
   return !isEphemeralValueOf(Inv, CxtI);
 }
 
-static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
-                                       unsigned Depth, const Query &Q) {
+static void computeKnownBitsFromAssume(const Value *V, APInt &KnownZero,
+                                       APInt &KnownOne, unsigned Depth,
+                                       const Query &Q) {
   // Use of assumptions is context-sensitive. If we don't have a context, we
   // cannot use them!
   if (!Q.AC || !Q.CxtI)
     return;
 
-  unsigned BitWidth = Known.getBitWidth();
+  unsigned BitWidth = KnownZero.getBitWidth();
 
   // Note that the patterns below need to be kept in sync with the code
   // in AssumptionCache::updateAffectedValues.
@@ -529,15 +532,15 @@ static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
 
     if (Arg == V && isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
       assert(BitWidth == 1 && "assume operand is not i1?");
-      Known.Zero.clearAllBits();
-      Known.One.setAllBits();
+      KnownZero.clearAllBits();
+      KnownOne.setAllBits();
       return;
     }
     if (match(Arg, m_Not(m_Specific(V))) &&
         isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
       assert(BitWidth == 1 && "assume operand is not i1?");
-      Known.Zero.setAllBits();
-      Known.One.clearAllBits();
+      KnownZero.setAllBits();
+      KnownOne.clearAllBits();
       return;
     }
 
@@ -555,126 +558,126 @@ static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
     // assume(v = a)
     if (match(Arg, m_c_ICmp(Pred, m_V, m_Value(A))) &&
         Pred == ICmpInst::ICMP_EQ && isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      Known.Zero |= RHSKnown.Zero;
-      Known.One  |= RHSKnown.One;
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      KnownZero |= RHSKnownZero;
+      KnownOne  |= RHSKnownOne;
     // assume(v & b = a)
     } else if (match(Arg,
                      m_c_ICmp(Pred, m_c_And(m_V, m_Value(B)), m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      KnownBits MaskKnown(BitWidth);
-      computeKnownBits(B, MaskKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      APInt MaskKnownZero(BitWidth, 0), MaskKnownOne(BitWidth, 0);
+      computeKnownBits(B, MaskKnownZero, MaskKnownOne, Depth+1, Query(Q, I));
 
       // For those bits in the mask that are known to be one, we can propagate
       // known bits from the RHS to V.
-      Known.Zero |= RHSKnown.Zero & MaskKnown.One;
-      Known.One  |= RHSKnown.One  & MaskKnown.One;
+      KnownZero |= RHSKnownZero & MaskKnownOne;
+      KnownOne  |= RHSKnownOne  & MaskKnownOne;
     // assume(~(v & b) = a)
     } else if (match(Arg, m_c_ICmp(Pred, m_Not(m_c_And(m_V, m_Value(B))),
                                    m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      KnownBits MaskKnown(BitWidth);
-      computeKnownBits(B, MaskKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      APInt MaskKnownZero(BitWidth, 0), MaskKnownOne(BitWidth, 0);
+      computeKnownBits(B, MaskKnownZero, MaskKnownOne, Depth+1, Query(Q, I));
 
       // For those bits in the mask that are known to be one, we can propagate
       // inverted known bits from the RHS to V.
-      Known.Zero |= RHSKnown.One  & MaskKnown.One;
-      Known.One  |= RHSKnown.Zero & MaskKnown.One;
+      KnownZero |= RHSKnownOne  & MaskKnownOne;
+      KnownOne  |= RHSKnownZero & MaskKnownOne;
     // assume(v | b = a)
     } else if (match(Arg,
                      m_c_ICmp(Pred, m_c_Or(m_V, m_Value(B)), m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      KnownBits BKnown(BitWidth);
-      computeKnownBits(B, BKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      APInt BKnownZero(BitWidth, 0), BKnownOne(BitWidth, 0);
+      computeKnownBits(B, BKnownZero, BKnownOne, Depth+1, Query(Q, I));
 
       // For those bits in B that are known to be zero, we can propagate known
       // bits from the RHS to V.
-      Known.Zero |= RHSKnown.Zero & BKnown.Zero;
-      Known.One  |= RHSKnown.One  & BKnown.Zero;
+      KnownZero |= RHSKnownZero & BKnownZero;
+      KnownOne  |= RHSKnownOne  & BKnownZero;
     // assume(~(v | b) = a)
     } else if (match(Arg, m_c_ICmp(Pred, m_Not(m_c_Or(m_V, m_Value(B))),
                                    m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      KnownBits BKnown(BitWidth);
-      computeKnownBits(B, BKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      APInt BKnownZero(BitWidth, 0), BKnownOne(BitWidth, 0);
+      computeKnownBits(B, BKnownZero, BKnownOne, Depth+1, Query(Q, I));
 
       // For those bits in B that are known to be zero, we can propagate
       // inverted known bits from the RHS to V.
-      Known.Zero |= RHSKnown.One  & BKnown.Zero;
-      Known.One  |= RHSKnown.Zero & BKnown.Zero;
+      KnownZero |= RHSKnownOne  & BKnownZero;
+      KnownOne  |= RHSKnownZero & BKnownZero;
     // assume(v ^ b = a)
     } else if (match(Arg,
                      m_c_ICmp(Pred, m_c_Xor(m_V, m_Value(B)), m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      KnownBits BKnown(BitWidth);
-      computeKnownBits(B, BKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      APInt BKnownZero(BitWidth, 0), BKnownOne(BitWidth, 0);
+      computeKnownBits(B, BKnownZero, BKnownOne, Depth+1, Query(Q, I));
 
       // For those bits in B that are known to be zero, we can propagate known
       // bits from the RHS to V. For those bits in B that are known to be one,
       // we can propagate inverted known bits from the RHS to V.
-      Known.Zero |= RHSKnown.Zero & BKnown.Zero;
-      Known.One  |= RHSKnown.One  & BKnown.Zero;
-      Known.Zero |= RHSKnown.One  & BKnown.One;
-      Known.One  |= RHSKnown.Zero & BKnown.One;
+      KnownZero |= RHSKnownZero & BKnownZero;
+      KnownOne  |= RHSKnownOne  & BKnownZero;
+      KnownZero |= RHSKnownOne  & BKnownOne;
+      KnownOne  |= RHSKnownZero & BKnownOne;
     // assume(~(v ^ b) = a)
     } else if (match(Arg, m_c_ICmp(Pred, m_Not(m_c_Xor(m_V, m_Value(B))),
                                    m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
-      KnownBits BKnown(BitWidth);
-      computeKnownBits(B, BKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
+      APInt BKnownZero(BitWidth, 0), BKnownOne(BitWidth, 0);
+      computeKnownBits(B, BKnownZero, BKnownOne, Depth+1, Query(Q, I));
 
       // For those bits in B that are known to be zero, we can propagate
       // inverted known bits from the RHS to V. For those bits in B that are
       // known to be one, we can propagate known bits from the RHS to V.
-      Known.Zero |= RHSKnown.One  & BKnown.Zero;
-      Known.One  |= RHSKnown.Zero & BKnown.Zero;
-      Known.Zero |= RHSKnown.Zero & BKnown.One;
-      Known.One  |= RHSKnown.One  & BKnown.One;
+      KnownZero |= RHSKnownOne  & BKnownZero;
+      KnownOne  |= RHSKnownZero & BKnownZero;
+      KnownZero |= RHSKnownZero & BKnownOne;
+      KnownOne  |= RHSKnownOne  & BKnownOne;
     // assume(v << c = a)
     } else if (match(Arg, m_c_ICmp(Pred, m_Shl(m_V, m_ConstantInt(C)),
                                    m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
       // For those bits in RHS that are known, we can propagate them to known
       // bits in V shifted to the right by C.
-      RHSKnown.Zero.lshrInPlace(C->getZExtValue());
-      Known.Zero |= RHSKnown.Zero;
-      RHSKnown.One.lshrInPlace(C->getZExtValue());
-      Known.One  |= RHSKnown.One;
+      RHSKnownZero.lshrInPlace(C->getZExtValue());
+      KnownZero |= RHSKnownZero;
+      RHSKnownOne.lshrInPlace(C->getZExtValue());
+      KnownOne  |= RHSKnownOne;
     // assume(~(v << c) = a)
     } else if (match(Arg, m_c_ICmp(Pred, m_Not(m_Shl(m_V, m_ConstantInt(C))),
                                    m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
       // For those bits in RHS that are known, we can propagate them inverted
       // to known bits in V shifted to the right by C.
-      RHSKnown.One.lshrInPlace(C->getZExtValue());
-      Known.Zero |= RHSKnown.One;
-      RHSKnown.Zero.lshrInPlace(C->getZExtValue());
-      Known.One  |= RHSKnown.Zero;
+      RHSKnownOne.lshrInPlace(C->getZExtValue());
+      KnownZero |= RHSKnownOne;
+      RHSKnownZero.lshrInPlace(C->getZExtValue());
+      KnownOne  |= RHSKnownZero;
     // assume(v >> c = a)
     } else if (match(Arg,
                      m_c_ICmp(Pred, m_CombineOr(m_LShr(m_V, m_ConstantInt(C)),
@@ -682,12 +685,12 @@ static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
                               m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
       // For those bits in RHS that are known, we can propagate them to known
       // bits in V shifted to the right by C.
-      Known.Zero |= RHSKnown.Zero << C->getZExtValue();
-      Known.One  |= RHSKnown.One  << C->getZExtValue();
+      KnownZero |= RHSKnownZero << C->getZExtValue();
+      KnownOne  |= RHSKnownOne  << C->getZExtValue();
     // assume(~(v >> c) = a)
     } else if (match(Arg, m_c_ICmp(Pred, m_Not(m_CombineOr(
                                              m_LShr(m_V, m_ConstantInt(C)),
@@ -695,78 +698,78 @@ static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
                                    m_Value(A))) &&
                Pred == ICmpInst::ICMP_EQ &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
       // For those bits in RHS that are known, we can propagate them inverted
       // to known bits in V shifted to the right by C.
-      Known.Zero |= RHSKnown.One  << C->getZExtValue();
-      Known.One  |= RHSKnown.Zero << C->getZExtValue();
+      KnownZero |= RHSKnownOne  << C->getZExtValue();
+      KnownOne  |= RHSKnownZero << C->getZExtValue();
     // assume(v >=_s c) where c is non-negative
     } else if (match(Arg, m_ICmp(Pred, m_V, m_Value(A))) &&
                Pred == ICmpInst::ICMP_SGE &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
 
-      if (RHSKnown.isNonNegative()) {
+      if (RHSKnownZero.isSignBitSet()) {
         // We know that the sign bit is zero.
-        Known.makeNonNegative();
+        KnownZero.setSignBit();
       }
     // assume(v >_s c) where c is at least -1.
     } else if (match(Arg, m_ICmp(Pred, m_V, m_Value(A))) &&
                Pred == ICmpInst::ICMP_SGT &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
 
-      if (RHSKnown.One.isAllOnesValue() || RHSKnown.isNonNegative()) {
+      if (RHSKnownOne.isAllOnesValue() || RHSKnownZero.isSignBitSet()) {
         // We know that the sign bit is zero.
-        Known.makeNonNegative();
+        KnownZero.setSignBit();
       }
     // assume(v <=_s c) where c is negative
     } else if (match(Arg, m_ICmp(Pred, m_V, m_Value(A))) &&
                Pred == ICmpInst::ICMP_SLE &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
 
-      if (RHSKnown.isNegative()) {
+      if (RHSKnownOne.isSignBitSet()) {
         // We know that the sign bit is one.
-        Known.makeNegative();
+        KnownOne.setSignBit();
       }
     // assume(v <_s c) where c is non-positive
     } else if (match(Arg, m_ICmp(Pred, m_V, m_Value(A))) &&
                Pred == ICmpInst::ICMP_SLT &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
 
-      if (RHSKnown.Zero.isAllOnesValue() || RHSKnown.isNegative()) {
+      if (RHSKnownZero.isAllOnesValue() || RHSKnownOne.isSignBitSet()) {
         // We know that the sign bit is one.
-        Known.makeNegative();
+        KnownOne.setSignBit();
       }
     // assume(v <=_u c)
     } else if (match(Arg, m_ICmp(Pred, m_V, m_Value(A))) &&
                Pred == ICmpInst::ICMP_ULE &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
 
       // Whatever high bits in c are zero are known to be zero.
-      Known.Zero.setHighBits(RHSKnown.Zero.countLeadingOnes());
+      KnownZero.setHighBits(RHSKnownZero.countLeadingOnes());
     // assume(v <_u c)
     } else if (match(Arg, m_ICmp(Pred, m_V, m_Value(A))) &&
                Pred == ICmpInst::ICMP_ULT &&
                isValidAssumeForContext(I, Q.CxtI, Q.DT)) {
-      KnownBits RHSKnown(BitWidth);
-      computeKnownBits(A, RHSKnown, Depth+1, Query(Q, I));
+      APInt RHSKnownZero(BitWidth, 0), RHSKnownOne(BitWidth, 0);
+      computeKnownBits(A, RHSKnownZero, RHSKnownOne, Depth+1, Query(Q, I));
 
       // Whatever high bits in c are zero are known to be zero (if c is a power
       // of 2, then one more).
       if (isKnownToBeAPowerOfTwo(A, false, Depth + 1, Query(Q, I)))
-        Known.Zero.setHighBits(RHSKnown.Zero.countLeadingOnes()+1);
+        KnownZero.setHighBits(RHSKnownZero.countLeadingOnes()+1);
       else
-        Known.Zero.setHighBits(RHSKnown.Zero.countLeadingOnes());
+        KnownZero.setHighBits(RHSKnownZero.countLeadingOnes());
     }
   }
 
@@ -775,9 +778,9 @@ static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
   // so this isn't a real bug. On the other hand, the program may have undefined
   // behavior, or we might have a bug in the compiler. We can't assert/crash, so
   // clear out the known bits, try to warn the user, and hope for the best.
-  if (Known.Zero.intersects(Known.One)) {
-    Known.Zero.clearAllBits();
-    Known.One.clearAllBits();
+  if (KnownZero.intersects(KnownOne)) {
+    KnownZero.clearAllBits();
+    KnownOne.clearAllBits();
 
     if (Q.ORE) {
       auto *CxtI = const_cast<Instruction *>(Q.CxtI);
@@ -790,57 +793,57 @@ static void computeKnownBitsFromAssume(const Value *V, KnownBits &Known,
 }
 
 // Compute known bits from a shift operator, including those with a
-// non-constant shift amount. Known is the outputs of this function. Known2 is a
-// pre-allocated temporary with the/ same bit width as Known. KZF and KOF are
-// operator-specific functors that, given the known-zero or known-one bits
-// respectively, and a shift amount, compute the implied known-zero or known-one
-// bits of the shift operator's result respectively for that shift amount. The
-// results from calling KZF and KOF are conservatively combined for all
-// permitted shift amounts.
+// non-constant shift amount. KnownZero and KnownOne are the outputs of this
+// function. KnownZero2 and KnownOne2 are pre-allocated temporaries with the
+// same bit width as KnownZero and KnownOne. KZF and KOF are operator-specific
+// functors that, given the known-zero or known-one bits respectively, and a
+// shift amount, compute the implied known-zero or known-one bits of the shift
+// operator's result respectively for that shift amount. The results from calling
+// KZF and KOF are conservatively combined for all permitted shift amounts.
 static void computeKnownBitsFromShiftOperator(
-    const Operator *I, KnownBits &Known, KnownBits &Known2,
-    unsigned Depth, const Query &Q,
+    const Operator *I, APInt &KnownZero, APInt &KnownOne, APInt &KnownZero2,
+    APInt &KnownOne2, unsigned Depth, const Query &Q,
     function_ref<APInt(const APInt &, unsigned)> KZF,
     function_ref<APInt(const APInt &, unsigned)> KOF) {
-  unsigned BitWidth = Known.getBitWidth();
+  unsigned BitWidth = KnownZero.getBitWidth();
 
   if (auto *SA = dyn_cast<ConstantInt>(I->getOperand(1))) {
     unsigned ShiftAmt = SA->getLimitedValue(BitWidth-1);
 
-    computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
-    Known.Zero = KZF(Known.Zero, ShiftAmt);
-    Known.One  = KOF(Known.One, ShiftAmt);
-    // If there is conflict between Known.Zero and Known.One, this must be an
-    // overflowing left shift, so the shift result is undefined. Clear Known
-    // bits so that other code could propagate this undef.
-    if ((Known.Zero & Known.One) != 0) {
-      Known.Zero.clearAllBits();
-      Known.One.clearAllBits();
+    computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
+    KnownZero = KZF(KnownZero, ShiftAmt);
+    KnownOne  = KOF(KnownOne, ShiftAmt);
+    // If there is conflict between KnownZero and KnownOne, this must be an
+    // overflowing left shift, so the shift result is undefined. Clear KnownZero
+    // and KnownOne bits so that other code could propagate this undef.
+    if ((KnownZero & KnownOne) != 0) {
+      KnownZero.clearAllBits();
+      KnownOne.clearAllBits();
     }
 
     return;
   }
 
-  computeKnownBits(I->getOperand(1), Known, Depth + 1, Q);
+  computeKnownBits(I->getOperand(1), KnownZero, KnownOne, Depth + 1, Q);
 
   // If the shift amount could be greater than or equal to the bit-width of the LHS, the
   // value could be undef, so we don't know anything about it.
-  if ((~Known.Zero).uge(BitWidth)) {
-    Known.Zero.clearAllBits();
-    Known.One.clearAllBits();
+  if ((~KnownZero).uge(BitWidth)) {
+    KnownZero.clearAllBits();
+    KnownOne.clearAllBits();
     return;
   }
 
-  // Note: We cannot use Known.Zero.getLimitedValue() here, because if
+  // Note: We cannot use KnownZero.getLimitedValue() here, because if
   // BitWidth > 64 and any upper bits are known, we'll end up returning the
   // limit value (which implies all bits are known).
-  uint64_t ShiftAmtKZ = Known.Zero.zextOrTrunc(64).getZExtValue();
-  uint64_t ShiftAmtKO = Known.One.zextOrTrunc(64).getZExtValue();
+  uint64_t ShiftAmtKZ = KnownZero.zextOrTrunc(64).getZExtValue();
+  uint64_t ShiftAmtKO = KnownOne.zextOrTrunc(64).getZExtValue();
 
   // It would be more-clearly correct to use the two temporaries for this
   // calculation. Reusing the APInts here to prevent unnecessary allocations.
-  Known.Zero.clearAllBits();
-  Known.One.clearAllBits();
+  KnownZero.clearAllBits();
+  KnownOne.clearAllBits();
 
   // If we know the shifter operand is nonzero, we can sometimes infer more
   // known bits. However this is expensive to compute, so be lazy about it and
@@ -855,10 +858,10 @@ static void computeKnownBitsFromShiftOperator(
       return;
   }
 
-  computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+  computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
 
-  Known.Zero.setAllBits();
-  Known.One.setAllBits();
+  KnownZero.setAllBits();
+  KnownOne.setAllBits();
   for (unsigned ShiftAmt = 0; ShiftAmt < BitWidth; ++ShiftAmt) {
     // Combine the shifted known input bits only for those shift amounts
     // compatible with its known constraints.
@@ -877,8 +880,8 @@ static void computeKnownBitsFromShiftOperator(
         continue;
     }
 
-    Known.Zero &= KZF(Known2.Zero, ShiftAmt);
-    Known.One  &= KOF(Known2.One, ShiftAmt);
+    KnownZero &= KZF(KnownZero2, ShiftAmt);
+    KnownOne  &= KOF(KnownOne2, ShiftAmt);
   }
 
   // If there are no compatible shift amounts, then we've proven that the shift
@@ -886,32 +889,33 @@ static void computeKnownBitsFromShiftOperator(
   // return anything we'd like, but we need to make sure the sets of known bits
   // stay disjoint (it should be better for some other code to actually
   // propagate the undef than to pick a value here using known bits).
-  if (Known.Zero.intersects(Known.One)) {
-    Known.Zero.clearAllBits();
-    Known.One.clearAllBits();
+  if (KnownZero.intersects(KnownOne)) {
+    KnownZero.clearAllBits();
+    KnownOne.clearAllBits();
   }
 }
 
-static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
-                                         unsigned Depth, const Query &Q) {
-  unsigned BitWidth = Known.getBitWidth();
+static void computeKnownBitsFromOperator(const Operator *I, APInt &KnownZero,
+                                         APInt &KnownOne, unsigned Depth,
+                                         const Query &Q) {
+  unsigned BitWidth = KnownZero.getBitWidth();
 
-  KnownBits Known2(Known);
+  APInt KnownZero2(KnownZero), KnownOne2(KnownOne);
   switch (I->getOpcode()) {
   default: break;
   case Instruction::Load:
     if (MDNode *MD = cast<LoadInst>(I)->getMetadata(LLVMContext::MD_range))
-      computeKnownBitsFromRangeMetadata(*MD, Known);
+      computeKnownBitsFromRangeMetadata(*MD, KnownZero, KnownOne);
     break;
   case Instruction::And: {
     // If either the LHS or the RHS are Zero, the result is zero.
-    computeKnownBits(I->getOperand(1), Known, Depth + 1, Q);
-    computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+    computeKnownBits(I->getOperand(1), KnownZero, KnownOne, Depth + 1, Q);
+    computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
 
     // Output known-1 bits are only known if set in both the LHS & RHS.
-    Known.One &= Known2.One;
+    KnownOne &= KnownOne2;
     // Output known-0 are known to be clear if zero in either the LHS | RHS.
-    Known.Zero |= Known2.Zero;
+    KnownZero |= KnownZero2;
 
     // and(x, add (x, -1)) is a common idiom that always clears the low bit;
     // here we handle the more general case of adding any odd number by
@@ -919,115 +923,115 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
     // TODO: This could be generalized to clearing any bit set in y where the
     // following bit is known to be unset in y.
     Value *Y = nullptr;
-    if (!Known.Zero[0] && !Known.One[0] &&
+    if (!KnownZero[0] && !KnownOne[0] &&
         (match(I->getOperand(0), m_Add(m_Specific(I->getOperand(1)),
                                        m_Value(Y))) ||
          match(I->getOperand(1), m_Add(m_Specific(I->getOperand(0)),
                                        m_Value(Y))))) {
-      Known2.Zero.clearAllBits(); Known2.One.clearAllBits();
-      computeKnownBits(Y, Known2, Depth + 1, Q);
-      if (Known2.One.countTrailingOnes() > 0)
-        Known.Zero.setBit(0);
+      KnownZero2.clearAllBits(); KnownOne2.clearAllBits();
+      computeKnownBits(Y, KnownZero2, KnownOne2, Depth + 1, Q);
+      if (KnownOne2.countTrailingOnes() > 0)
+        KnownZero.setBit(0);
     }
     break;
   }
   case Instruction::Or: {
-    computeKnownBits(I->getOperand(1), Known, Depth + 1, Q);
-    computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+    computeKnownBits(I->getOperand(1), KnownZero, KnownOne, Depth + 1, Q);
+    computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
 
     // Output known-0 bits are only known if clear in both the LHS & RHS.
-    Known.Zero &= Known2.Zero;
+    KnownZero &= KnownZero2;
     // Output known-1 are known to be set if set in either the LHS | RHS.
-    Known.One |= Known2.One;
+    KnownOne |= KnownOne2;
     break;
   }
   case Instruction::Xor: {
-    computeKnownBits(I->getOperand(1), Known, Depth + 1, Q);
-    computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+    computeKnownBits(I->getOperand(1), KnownZero, KnownOne, Depth + 1, Q);
+    computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
 
     // Output known-0 bits are known if clear or set in both the LHS & RHS.
-    APInt KnownZeroOut = (Known.Zero & Known2.Zero) | (Known.One & Known2.One);
+    APInt KnownZeroOut = (KnownZero & KnownZero2) | (KnownOne & KnownOne2);
     // Output known-1 are known to be set if set in only one of the LHS, RHS.
-    Known.One = (Known.Zero & Known2.One) | (Known.One & Known2.Zero);
-    Known.Zero = std::move(KnownZeroOut);
+    KnownOne = (KnownZero & KnownOne2) | (KnownOne & KnownZero2);
+    KnownZero = std::move(KnownZeroOut);
     break;
   }
   case Instruction::Mul: {
     bool NSW = cast<OverflowingBinaryOperator>(I)->hasNoSignedWrap();
-    computeKnownBitsMul(I->getOperand(0), I->getOperand(1), NSW, Known,
-                        Known2, Depth, Q);
+    computeKnownBitsMul(I->getOperand(0), I->getOperand(1), NSW, KnownZero,
+                        KnownOne, KnownZero2, KnownOne2, Depth, Q);
     break;
   }
   case Instruction::UDiv: {
     // For the purposes of computing leading zeros we can conservatively
     // treat a udiv as a logical right shift by the power of 2 known to
     // be less than the denominator.
-    computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
-    unsigned LeadZ = Known2.Zero.countLeadingOnes();
+    computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
+    unsigned LeadZ = KnownZero2.countLeadingOnes();
 
-    Known2.One.clearAllBits();
-    Known2.Zero.clearAllBits();
-    computeKnownBits(I->getOperand(1), Known2, Depth + 1, Q);
-    unsigned RHSUnknownLeadingOnes = Known2.One.countLeadingZeros();
+    KnownOne2.clearAllBits();
+    KnownZero2.clearAllBits();
+    computeKnownBits(I->getOperand(1), KnownZero2, KnownOne2, Depth + 1, Q);
+    unsigned RHSUnknownLeadingOnes = KnownOne2.countLeadingZeros();
     if (RHSUnknownLeadingOnes != BitWidth)
       LeadZ = std::min(BitWidth,
                        LeadZ + BitWidth - RHSUnknownLeadingOnes - 1);
 
-    Known.Zero.setHighBits(LeadZ);
+    KnownZero.setHighBits(LeadZ);
     break;
   }
   case Instruction::Select: {
     const Value *LHS, *RHS;
     SelectPatternFlavor SPF = matchSelectPattern(I, LHS, RHS).Flavor;
     if (SelectPatternResult::isMinOrMax(SPF)) {
-      computeKnownBits(RHS, Known, Depth + 1, Q);
-      computeKnownBits(LHS, Known2, Depth + 1, Q);
+      computeKnownBits(RHS, KnownZero, KnownOne, Depth + 1, Q);
+      computeKnownBits(LHS, KnownZero2, KnownOne2, Depth + 1, Q);
     } else {
-      computeKnownBits(I->getOperand(2), Known, Depth + 1, Q);
-      computeKnownBits(I->getOperand(1), Known2, Depth + 1, Q);
+      computeKnownBits(I->getOperand(2), KnownZero, KnownOne, Depth + 1, Q);
+      computeKnownBits(I->getOperand(1), KnownZero2, KnownOne2, Depth + 1, Q);
     }
 
     unsigned MaxHighOnes = 0;
     unsigned MaxHighZeros = 0;
     if (SPF == SPF_SMAX) {
       // If both sides are negative, the result is negative.
-      if (Known.isNegative() && Known2.isNegative())
+      if (KnownOne.isSignBitSet() && KnownOne2.isSignBitSet())
         // We can derive a lower bound on the result by taking the max of the
         // leading one bits.
-        MaxHighOnes = std::max(Known.One.countLeadingOnes(),
-                               Known2.One.countLeadingOnes());
+        MaxHighOnes =
+            std::max(KnownOne.countLeadingOnes(), KnownOne2.countLeadingOnes());
       // If either side is non-negative, the result is non-negative.
-      else if (Known.isNonNegative() || Known2.isNonNegative())
+      else if (KnownZero.isSignBitSet() || KnownZero2.isSignBitSet())
         MaxHighZeros = 1;
     } else if (SPF == SPF_SMIN) {
       // If both sides are non-negative, the result is non-negative.
-      if (Known.isNonNegative() && Known2.isNonNegative())
+      if (KnownZero.isSignBitSet() && KnownZero2.isSignBitSet())
         // We can derive an upper bound on the result by taking the max of the
         // leading zero bits.
-        MaxHighZeros = std::max(Known.Zero.countLeadingOnes(),
-                                Known2.Zero.countLeadingOnes());
+        MaxHighZeros = std::max(KnownZero.countLeadingOnes(),
+                                KnownZero2.countLeadingOnes());
       // If either side is negative, the result is negative.
-      else if (Known.isNegative() || Known2.isNegative())
+      else if (KnownOne.isSignBitSet() || KnownOne2.isSignBitSet())
         MaxHighOnes = 1;
     } else if (SPF == SPF_UMAX) {
       // We can derive a lower bound on the result by taking the max of the
       // leading one bits.
       MaxHighOnes =
-          std::max(Known.One.countLeadingOnes(), Known2.One.countLeadingOnes());
+          std::max(KnownOne.countLeadingOnes(), KnownOne2.countLeadingOnes());
     } else if (SPF == SPF_UMIN) {
       // We can derive an upper bound on the result by taking the max of the
       // leading zero bits.
       MaxHighZeros =
-          std::max(Known.Zero.countLeadingOnes(), Known2.Zero.countLeadingOnes());
+          std::max(KnownZero.countLeadingOnes(), KnownZero2.countLeadingOnes());
     }
 
     // Only known if known in both the LHS and RHS.
-    Known.One &= Known2.One;
-    Known.Zero &= Known2.Zero;
+    KnownOne &= KnownOne2;
+    KnownZero &= KnownZero2;
     if (MaxHighOnes > 0)
-      Known.One.setHighBits(MaxHighOnes);
+      KnownOne.setHighBits(MaxHighOnes);
     if (MaxHighZeros > 0)
-      Known.Zero.setHighBits(MaxHighZeros);
+      KnownZero.setHighBits(MaxHighZeros);
     break;
   }
   case Instruction::FPTrunc:
@@ -1051,14 +1055,14 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
     SrcBitWidth = Q.DL.getTypeSizeInBits(SrcTy->getScalarType());
 
     assert(SrcBitWidth && "SrcBitWidth can't be zero");
-    Known.Zero = Known.Zero.zextOrTrunc(SrcBitWidth);
-    Known.One = Known.One.zextOrTrunc(SrcBitWidth);
-    computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
-    Known.Zero = Known.Zero.zextOrTrunc(BitWidth);
-    Known.One = Known.One.zextOrTrunc(BitWidth);
+    KnownZero = KnownZero.zextOrTrunc(SrcBitWidth);
+    KnownOne = KnownOne.zextOrTrunc(SrcBitWidth);
+    computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
+    KnownZero = KnownZero.zextOrTrunc(BitWidth);
+    KnownOne = KnownOne.zextOrTrunc(BitWidth);
     // Any top bits are known to be zero.
     if (BitWidth > SrcBitWidth)
-      Known.Zero.setBitsFrom(SrcBitWidth);
+      KnownZero.setBitsFrom(SrcBitWidth);
     break;
   }
   case Instruction::BitCast: {
@@ -1067,7 +1071,7 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
         // TODO: For now, not handling conversions like:
         // (bitcast i64 %x to <2 x i32>)
         !I->getType()->isVectorTy()) {
-      computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
+      computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
       break;
     }
     break;
@@ -1076,13 +1080,13 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
     // Compute the bits in the result that are not present in the input.
     unsigned SrcBitWidth = I->getOperand(0)->getType()->getScalarSizeInBits();
 
-    Known.Zero = Known.Zero.trunc(SrcBitWidth);
-    Known.One = Known.One.trunc(SrcBitWidth);
-    computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
+    KnownZero = KnownZero.trunc(SrcBitWidth);
+    KnownOne = KnownOne.trunc(SrcBitWidth);
+    computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
     // If the sign bit of the input is known set or clear, then we know the
     // top bits of the result.
-    Known.Zero = Known.Zero.sext(BitWidth);
-    Known.One = Known.One.sext(BitWidth);
+    KnownZero = KnownZero.sext(BitWidth);
+    KnownOne = KnownOne.sext(BitWidth);
     break;
   }
   case Instruction::Shl: {
@@ -1105,7 +1109,9 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       return KOResult;
     };
 
-    computeKnownBitsFromShiftOperator(I, Known, Known2, Depth, Q, KZF, KOF);
+    computeKnownBitsFromShiftOperator(I, KnownZero, KnownOne,
+                                      KnownZero2, KnownOne2, Depth, Q, KZF,
+                                      KOF);
     break;
   }
   case Instruction::LShr: {
@@ -1121,7 +1127,9 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       return KnownOne.lshr(ShiftAmt);
     };
 
-    computeKnownBitsFromShiftOperator(I, Known, Known2, Depth, Q, KZF, KOF);
+    computeKnownBitsFromShiftOperator(I, KnownZero, KnownOne,
+                                      KnownZero2, KnownOne2, Depth, Q, KZF,
+                                      KOF);
     break;
   }
   case Instruction::AShr: {
@@ -1134,19 +1142,23 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       return KnownOne.ashr(ShiftAmt);
     };
 
-    computeKnownBitsFromShiftOperator(I, Known, Known2, Depth, Q, KZF, KOF);
+    computeKnownBitsFromShiftOperator(I, KnownZero, KnownOne,
+                                      KnownZero2, KnownOne2, Depth, Q, KZF,
+                                      KOF);
     break;
   }
   case Instruction::Sub: {
     bool NSW = cast<OverflowingBinaryOperator>(I)->hasNoSignedWrap();
     computeKnownBitsAddSub(false, I->getOperand(0), I->getOperand(1), NSW,
-                           Known, Known2, Depth, Q);
+                           KnownZero, KnownOne, KnownZero2, KnownOne2, Depth,
+                           Q);
     break;
   }
   case Instruction::Add: {
     bool NSW = cast<OverflowingBinaryOperator>(I)->hasNoSignedWrap();
     computeKnownBitsAddSub(true, I->getOperand(0), I->getOperand(1), NSW,
-                           Known, Known2, Depth, Q);
+                           KnownZero, KnownOne, KnownZero2, KnownOne2, Depth,
+                           Q);
     break;
   }
   case Instruction::SRem:
@@ -1154,33 +1166,34 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       APInt RA = Rem->getValue().abs();
       if (RA.isPowerOf2()) {
         APInt LowBits = RA - 1;
-        computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+        computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1,
+                         Q);
 
         // The low bits of the first operand are unchanged by the srem.
-        Known.Zero = Known2.Zero & LowBits;
-        Known.One = Known2.One & LowBits;
+        KnownZero = KnownZero2 & LowBits;
+        KnownOne = KnownOne2 & LowBits;
 
         // If the first operand is non-negative or has all low bits zero, then
         // the upper bits are all zero.
-        if (Known2.isNonNegative() || LowBits.isSubsetOf(Known2.Zero))
-          Known.Zero |= ~LowBits;
+        if (KnownZero2.isSignBitSet() || ((KnownZero2 & LowBits) == LowBits))
+          KnownZero |= ~LowBits;
 
         // If the first operand is negative and not all low bits are zero, then
         // the upper bits are all one.
-        if (Known2.isNegative() && LowBits.intersects(Known2.One))
-          Known.One |= ~LowBits;
+        if (KnownOne2.isSignBitSet() && ((KnownOne2 & LowBits) != 0))
+          KnownOne |= ~LowBits;
 
-        assert((Known.Zero & Known.One) == 0 && "Bits known to be one AND zero?");
+        assert((KnownZero & KnownOne) == 0 && "Bits known to be one AND zero?");
         break;
       }
     }
 
     // The sign bit is the LHS's sign bit, except when the result of the
     // remainder is zero.
-    computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+    computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
     // If it's known zero, our sign bit is also zero.
-    if (Known2.isNonNegative())
-      Known.makeNonNegative();
+    if (KnownZero2.isSignBitSet())
+      KnownZero.setSignBit();
 
     break;
   case Instruction::URem: {
@@ -1188,23 +1201,23 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       const APInt &RA = Rem->getValue();
       if (RA.isPowerOf2()) {
         APInt LowBits = (RA - 1);
-        computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
-        Known.Zero |= ~LowBits;
-        Known.One &= LowBits;
+        computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
+        KnownZero |= ~LowBits;
+        KnownOne &= LowBits;
         break;
       }
     }
 
     // Since the result is less than or equal to either operand, any leading
     // zero bits in either operand must also exist in the result.
-    computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
-    computeKnownBits(I->getOperand(1), Known2, Depth + 1, Q);
+    computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
+    computeKnownBits(I->getOperand(1), KnownZero2, KnownOne2, Depth + 1, Q);
 
-    unsigned Leaders = std::max(Known.Zero.countLeadingOnes(),
-                                Known2.Zero.countLeadingOnes());
-    Known.One.clearAllBits();
-    Known.Zero.clearAllBits();
-    Known.Zero.setHighBits(Leaders);
+    unsigned Leaders = std::max(KnownZero.countLeadingOnes(),
+                                KnownZero2.countLeadingOnes());
+    KnownOne.clearAllBits();
+    KnownZero.clearAllBits();
+    KnownZero.setHighBits(Leaders);
     break;
   }
 
@@ -1215,15 +1228,16 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       Align = Q.DL.getABITypeAlignment(AI->getAllocatedType());
 
     if (Align > 0)
-      Known.Zero.setLowBits(countTrailingZeros(Align));
+      KnownZero.setLowBits(countTrailingZeros(Align));
     break;
   }
   case Instruction::GetElementPtr: {
     // Analyze all of the subscripts of this getelementptr instruction
     // to determine if we can prove known low zero bits.
-    KnownBits LocalKnown(BitWidth);
-    computeKnownBits(I->getOperand(0), LocalKnown, Depth + 1, Q);
-    unsigned TrailZ = LocalKnown.Zero.countTrailingOnes();
+    APInt LocalKnownZero(BitWidth, 0), LocalKnownOne(BitWidth, 0);
+    computeKnownBits(I->getOperand(0), LocalKnownZero, LocalKnownOne, Depth + 1,
+                     Q);
+    unsigned TrailZ = LocalKnownZero.countTrailingOnes();
 
     gep_type_iterator GTI = gep_type_begin(I);
     for (unsigned i = 1, e = I->getNumOperands(); i != e; ++i, ++GTI) {
@@ -1253,15 +1267,15 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
         }
         unsigned GEPOpiBits = Index->getType()->getScalarSizeInBits();
         uint64_t TypeSize = Q.DL.getTypeAllocSize(IndexedTy);
-        LocalKnown.Zero = LocalKnown.One = APInt(GEPOpiBits, 0);
-        computeKnownBits(Index, LocalKnown, Depth + 1, Q);
+        LocalKnownZero = LocalKnownOne = APInt(GEPOpiBits, 0);
+        computeKnownBits(Index, LocalKnownZero, LocalKnownOne, Depth + 1, Q);
         TrailZ = std::min(TrailZ,
                           unsigned(countTrailingZeros(TypeSize) +
-                                   LocalKnown.Zero.countTrailingOnes()));
+                                   LocalKnownZero.countTrailingOnes()));
       }
     }
 
-    Known.Zero.setLowBits(TrailZ);
+    KnownZero.setLowBits(TrailZ);
     break;
   }
   case Instruction::PHI: {
@@ -1296,14 +1310,14 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
             break;
           // Ok, we have a PHI of the form L op= R. Check for low
           // zero bits.
-          computeKnownBits(R, Known2, Depth + 1, Q);
+          computeKnownBits(R, KnownZero2, KnownOne2, Depth + 1, Q);
 
           // We need to take the minimum number of known bits
-          KnownBits Known3(Known);
-          computeKnownBits(L, Known3, Depth + 1, Q);
+          APInt KnownZero3(KnownZero), KnownOne3(KnownOne);
+          computeKnownBits(L, KnownZero3, KnownOne3, Depth + 1, Q);
 
-          Known.Zero.setLowBits(std::min(Known2.Zero.countTrailingOnes(),
-                                         Known3.Zero.countTrailingOnes()));
+          KnownZero.setLowBits(std::min(KnownZero2.countTrailingOnes(),
+                                        KnownZero3.countTrailingOnes()));
 
           if (DontImproveNonNegativePhiBits)
             break;
@@ -1320,25 +1334,25 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
             // (add non-negative, non-negative) --> non-negative
             // (add negative, negative) --> negative
             if (Opcode == Instruction::Add) {
-              if (Known2.isNonNegative() && Known3.isNonNegative())
-                Known.makeNonNegative();
-              else if (Known2.isNegative() && Known3.isNegative())
-                Known.makeNegative();
+              if (KnownZero2.isSignBitSet() && KnownZero3.isSignBitSet())
+                KnownZero.setSignBit();
+              else if (KnownOne2.isSignBitSet() && KnownOne3.isSignBitSet())
+                KnownOne.setSignBit();
             }
 
             // (sub nsw non-negative, negative) --> non-negative
             // (sub nsw negative, non-negative) --> negative
             else if (Opcode == Instruction::Sub && LL == I) {
-              if (Known2.isNonNegative() && Known3.isNegative())
-                Known.makeNonNegative();
-              else if (Known2.isNegative() && Known3.isNonNegative())
-                Known.makeNegative();
+              if (KnownZero2.isSignBitSet() && KnownOne3.isSignBitSet())
+                KnownZero.setSignBit();
+              else if (KnownOne2.isSignBitSet() && KnownZero3.isSignBitSet())
+                KnownOne.setSignBit();
             }
 
             // (mul nsw non-negative, non-negative) --> non-negative
-            else if (Opcode == Instruction::Mul && Known2.isNonNegative() &&
-                     Known3.isNonNegative())
-              Known.makeNonNegative();
+            else if (Opcode == Instruction::Mul && KnownZero2.isSignBitSet() &&
+                     KnownZero3.isSignBitSet())
+              KnownZero.setSignBit();
           }
 
           break;
@@ -1352,26 +1366,27 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
 
     // Otherwise take the unions of the known bit sets of the operands,
     // taking conservative care to avoid excessive recursion.
-    if (Depth < MaxDepth - 1 && !Known.Zero && !Known.One) {
+    if (Depth < MaxDepth - 1 && !KnownZero && !KnownOne) {
       // Skip if every incoming value references to ourself.
       if (dyn_cast_or_null<UndefValue>(P->hasConstantValue()))
         break;
 
-      Known.Zero.setAllBits();
-      Known.One.setAllBits();
+      KnownZero.setAllBits();
+      KnownOne.setAllBits();
       for (Value *IncValue : P->incoming_values()) {
         // Skip direct self references.
         if (IncValue == P) continue;
 
-        Known2 = KnownBits(BitWidth);
+        KnownZero2 = APInt(BitWidth, 0);
+        KnownOne2 = APInt(BitWidth, 0);
         // Recurse, but cap the recursion to one level, because we don't
         // want to waste time spinning around in loops.
-        computeKnownBits(IncValue, Known2, MaxDepth - 1, Q);
-        Known.Zero &= Known2.Zero;
-        Known.One &= Known2.One;
+        computeKnownBits(IncValue, KnownZero2, KnownOne2, MaxDepth - 1, Q);
+        KnownZero &= KnownZero2;
+        KnownOne &= KnownOne2;
         // If all bits have been ruled out, there's no need to check
         // more operands.
-        if (!Known.Zero && !Known.One)
+        if (!KnownZero && !KnownOne)
           break;
       }
     }
@@ -1383,24 +1398,24 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
     // and then intersect with known bits based on other properties of the
     // function.
     if (MDNode *MD = cast<Instruction>(I)->getMetadata(LLVMContext::MD_range))
-      computeKnownBitsFromRangeMetadata(*MD, Known);
+      computeKnownBitsFromRangeMetadata(*MD, KnownZero, KnownOne);
     if (const Value *RV = ImmutableCallSite(I).getReturnedArgOperand()) {
-      computeKnownBits(RV, Known2, Depth + 1, Q);
-      Known.Zero |= Known2.Zero;
-      Known.One |= Known2.One;
+      computeKnownBits(RV, KnownZero2, KnownOne2, Depth + 1, Q);
+      KnownZero |= KnownZero2;
+      KnownOne |= KnownOne2;
     }
     if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) {
       switch (II->getIntrinsicID()) {
       default: break;
       case Intrinsic::bitreverse:
-        computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
-        Known.Zero |= Known2.Zero.reverseBits();
-        Known.One |= Known2.One.reverseBits();
+        computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
+        KnownZero |= KnownZero2.reverseBits();
+        KnownOne |= KnownOne2.reverseBits();
         break;
       case Intrinsic::bswap:
-        computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
-        Known.Zero |= Known2.Zero.byteSwap();
-        Known.One |= Known2.One.byteSwap();
+        computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
+        KnownZero |= KnownZero2.byteSwap();
+        KnownOne |= KnownOne2.byteSwap();
         break;
       case Intrinsic::ctlz:
       case Intrinsic::cttz: {
@@ -1408,22 +1423,22 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
         // If this call is undefined for 0, the result will be less than 2^n.
         if (II->getArgOperand(1) == ConstantInt::getTrue(II->getContext()))
           LowBits -= 1;
-        Known.Zero.setBitsFrom(LowBits);
+        KnownZero.setBitsFrom(LowBits);
         break;
       }
       case Intrinsic::ctpop: {
-        computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
+        computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, Depth + 1, Q);
         // We can bound the space the count needs.  Also, bits known to be zero
         // can't contribute to the population.
-        unsigned BitsPossiblySet = BitWidth - Known2.Zero.countPopulation();
+        unsigned BitsPossiblySet = BitWidth - KnownZero2.countPopulation();
         unsigned LowBits = Log2_32(BitsPossiblySet)+1;
-        Known.Zero.setBitsFrom(LowBits);
+        KnownZero.setBitsFrom(LowBits);
         // TODO: we could bound KnownOne using the lower bound on the number
         // of bits which might be set provided by popcnt KnownOne2.
         break;
       }
       case Intrinsic::x86_sse42_crc32_64_64:
-        Known.Zero.setBitsFrom(32);
+        KnownZero.setBitsFrom(32);
         break;
       }
     }
@@ -1433,7 +1448,7 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
     // tracking the specific element. But at least we might find information
     // valid for all elements of the vector (for example if vector is sign
     // extended, shifted, etc).
-    computeKnownBits(I->getOperand(0), Known, Depth + 1, Q);
+    computeKnownBits(I->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
     break;
   case Instruction::ExtractValue:
     if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(I->getOperand(0))) {
@@ -1445,19 +1460,20 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
         case Intrinsic::uadd_with_overflow:
         case Intrinsic::sadd_with_overflow:
           computeKnownBitsAddSub(true, II->getArgOperand(0),
-                                 II->getArgOperand(1), false, Known, Known2,
-                                 Depth, Q);
+                                 II->getArgOperand(1), false, KnownZero,
+                                 KnownOne, KnownZero2, KnownOne2, Depth, Q);
           break;
         case Intrinsic::usub_with_overflow:
         case Intrinsic::ssub_with_overflow:
           computeKnownBitsAddSub(false, II->getArgOperand(0),
-                                 II->getArgOperand(1), false, Known, Known2,
-                                 Depth, Q);
+                                 II->getArgOperand(1), false, KnownZero,
+                                 KnownOne, KnownZero2, KnownOne2, Depth, Q);
           break;
         case Intrinsic::umul_with_overflow:
         case Intrinsic::smul_with_overflow:
           computeKnownBitsMul(II->getArgOperand(0), II->getArgOperand(1), false,
-                              Known, Known2, Depth, Q);
+                              KnownZero, KnownOne, KnownZero2, KnownOne2, Depth,
+                              Q);
           break;
         }
       }
@@ -1466,7 +1482,7 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
 }
 
 /// Determine which bits of V are known to be either zero or one and return
-/// them in the Known bit set.
+/// them in the KnownZero/KnownOne bit sets.
 ///
 /// NOTE: we cannot consider 'undef' to be "IsZero" here.  The problem is that
 /// we cannot optimize based on the assumption that it is zero without changing
@@ -1480,11 +1496,11 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
 /// where V is a vector, known zero, and known one values are the
 /// same width as the vector element, and the bit is set only if it is true
 /// for all of the elements in the vector.
-void computeKnownBits(const Value *V, KnownBits &Known, unsigned Depth,
-                      const Query &Q) {
+void computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
+                      unsigned Depth, const Query &Q) {
   assert(V && "No Value?");
   assert(Depth <= MaxDepth && "Limit Search Depth");
-  unsigned BitWidth = Known.getBitWidth();
+  unsigned BitWidth = KnownZero.getBitWidth();
 
   assert((V->getType()->isIntOrIntVectorTy() ||
           V->getType()->getScalarType()->isPointerTy()) &&
@@ -1492,20 +1508,22 @@ void computeKnownBits(const Value *V, KnownBits &Known, unsigned Depth,
   assert((Q.DL.getTypeSizeInBits(V->getType()->getScalarType()) == BitWidth) &&
          (!V->getType()->isIntOrIntVectorTy() ||
           V->getType()->getScalarSizeInBits() == BitWidth) &&
-         "V and Known should have same BitWidth");
+         KnownZero.getBitWidth() == BitWidth &&
+         KnownOne.getBitWidth() == BitWidth &&
+         "V, KnownOne and KnownZero should have same BitWidth");
   (void)BitWidth;
 
   const APInt *C;
   if (match(V, m_APInt(C))) {
     // We know all of the bits for a scalar constant or a splat vector constant!
-    Known.One = *C;
-    Known.Zero = ~Known.One;
+    KnownOne = *C;
+    KnownZero = ~KnownOne;
     return;
   }
   // Null and aggregate-zero are all-zeros.
   if (isa<ConstantPointerNull>(V) || isa<ConstantAggregateZero>(V)) {
-    Known.One.clearAllBits();
-    Known.Zero.setAllBits();
+    KnownOne.clearAllBits();
+    KnownZero.setAllBits();
     return;
   }
   // Handle a constant vector by taking the intersection of the known bits of
@@ -1513,12 +1531,12 @@ void computeKnownBits(const Value *V, KnownBits &Known, unsigned Depth,
   if (const ConstantDataSequential *CDS = dyn_cast<ConstantDataSequential>(V)) {
     // We know that CDS must be a vector of integers. Take the intersection of
     // each element.
-    Known.Zero.setAllBits(); Known.One.setAllBits();
+    KnownZero.setAllBits(); KnownOne.setAllBits();
     APInt Elt(BitWidth, 0);
     for (unsigned i = 0, e = CDS->getNumElements(); i != e; ++i) {
       Elt = CDS->getElementAsInteger(i);
-      Known.Zero &= ~Elt;
-      Known.One &= Elt;
+      KnownZero &= ~Elt;
+      KnownOne &= Elt;
     }
     return;
   }
@@ -1526,25 +1544,25 @@ void computeKnownBits(const Value *V, KnownBits &Known, unsigned Depth,
   if (const auto *CV = dyn_cast<ConstantVector>(V)) {
     // We know that CV must be a vector of integers. Take the intersection of
     // each element.
-    Known.Zero.setAllBits(); Known.One.setAllBits();
-    APInt Elt(BitWidth, 0);
+    KnownZero.setAllBits(); KnownOne.setAllBits();
+    APInt Elt(KnownZero.getBitWidth(), 0);
     for (unsigned i = 0, e = CV->getNumOperands(); i != e; ++i) {
       Constant *Element = CV->getAggregateElement(i);
       auto *ElementCI = dyn_cast_or_null<ConstantInt>(Element);
       if (!ElementCI) {
-        Known.Zero.clearAllBits();
-        Known.One.clearAllBits();
+        KnownZero.clearAllBits();
+        KnownOne.clearAllBits();
         return;
       }
       Elt = ElementCI->getValue();
-      Known.Zero &= ~Elt;
-      Known.One &= Elt;
+      KnownZero &= ~Elt;
+      KnownOne &= Elt;
     }
     return;
   }
 
   // Start out not knowing anything.
-  Known.Zero.clearAllBits(); Known.One.clearAllBits();
+  KnownZero.clearAllBits(); KnownOne.clearAllBits();
 
   // We can't imply anything about undefs.
   if (isa<UndefValue>(V))
@@ -1563,27 +1581,27 @@ void computeKnownBits(const Value *V, KnownBits &Known, unsigned Depth,
   // the bits of its aliasee.
   if (const GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
     if (!GA->isInterposable())
-      computeKnownBits(GA->getAliasee(), Known, Depth + 1, Q);
+      computeKnownBits(GA->getAliasee(), KnownZero, KnownOne, Depth + 1, Q);
     return;
   }
 
   if (const Operator *I = dyn_cast<Operator>(V))
-    computeKnownBitsFromOperator(I, Known, Depth, Q);
+    computeKnownBitsFromOperator(I, KnownZero, KnownOne, Depth, Q);
 
-  // Aligned pointers have trailing zeros - refine Known.Zero set
+  // Aligned pointers have trailing zeros - refine KnownZero set
   if (V->getType()->isPointerTy()) {
     unsigned Align = V->getPointerAlignment(Q.DL);
     if (Align)
-      Known.Zero.setLowBits(countTrailingZeros(Align));
+      KnownZero.setLowBits(countTrailingZeros(Align));
   }
 
-  // computeKnownBitsFromAssume strictly refines Known.
-  // Therefore, we run them after computeKnownBitsFromOperator.
+  // computeKnownBitsFromAssume strictly refines KnownZero and
+  // KnownOne. Therefore, we run them after computeKnownBitsFromOperator.
 
   // Check whether a nearby assume intrinsic can determine some known bits.
-  computeKnownBitsFromAssume(V, Known, Depth, Q);
+  computeKnownBitsFromAssume(V, KnownZero, KnownOne, Depth, Q);
 
-  assert((Known.Zero & Known.One) == 0 && "Bits known to be one AND zero?");
+  assert((KnownZero & KnownOne) == 0 && "Bits known to be one AND zero?");
 }
 
 /// Determine whether the sign bit is known to be zero or one.
@@ -1596,10 +1614,11 @@ void ComputeSignBit(const Value *V, bool &KnownZero, bool &KnownOne,
     KnownOne = false;
     return;
   }
-  KnownBits Bits(BitWidth);
-  computeKnownBits(V, Bits, Depth, Q);
-  KnownOne = Bits.isNegative();
-  KnownZero = Bits.isNonNegative();
+  APInt ZeroBits(BitWidth, 0);
+  APInt OneBits(BitWidth, 0);
+  computeKnownBits(V, ZeroBits, OneBits, Depth, Q);
+  KnownOne = OneBits.isSignBitSet();
+  KnownZero = ZeroBits.isSignBitSet();
 }
 
 /// Return true if the given value is known to have exactly one
@@ -1671,18 +1690,18 @@ bool isKnownToBeAPowerOfTwo(const Value *V, bool OrZero, unsigned Depth,
           return true;
 
       unsigned BitWidth = V->getType()->getScalarSizeInBits();
-      KnownBits LHSBits(BitWidth);
-      computeKnownBits(X, LHSBits, Depth, Q);
+      APInt LHSZeroBits(BitWidth, 0), LHSOneBits(BitWidth, 0);
+      computeKnownBits(X, LHSZeroBits, LHSOneBits, Depth, Q);
 
-      KnownBits RHSBits(BitWidth);
-      computeKnownBits(Y, RHSBits, Depth, Q);
+      APInt RHSZeroBits(BitWidth, 0), RHSOneBits(BitWidth, 0);
+      computeKnownBits(Y, RHSZeroBits, RHSOneBits, Depth, Q);
       // If i8 V is a power of two or zero:
       //  ZeroBits: 1 1 1 0 1 1 1 1
       // ~ZeroBits: 0 0 0 1 0 0 0 0
-      if ((~(LHSBits.Zero & RHSBits.Zero)).isPowerOf2())
+      if ((~(LHSZeroBits & RHSZeroBits)).isPowerOf2())
         // If OrZero isn't set, we cannot give back a zero result.
         // Make sure either the LHS or RHS has a bit set.
-        if (OrZero || RHSBits.One.getBoolValue() || LHSBits.One.getBoolValue())
+        if (OrZero || RHSOneBits.getBoolValue() || LHSOneBits.getBoolValue())
           return true;
     }
   }
@@ -1853,9 +1872,10 @@ bool isKnownNonZero(const Value *V, unsigned Depth, const Query &Q) {
     if (BO->hasNoUnsignedWrap())
       return isKnownNonZero(X, Depth, Q);
 
-    KnownBits Known(BitWidth);
-    computeKnownBits(X, Known, Depth, Q);
-    if (Known.One[0])
+    APInt KnownZero(BitWidth, 0);
+    APInt KnownOne(BitWidth, 0);
+    computeKnownBits(X, KnownZero, KnownOne, Depth, Q);
+    if (KnownOne[0])
       return true;
   }
   // shr X, Y != 0 if X is negative.  Note that the value of the shift is not
@@ -1875,15 +1895,16 @@ bool isKnownNonZero(const Value *V, unsigned Depth, const Query &Q) {
     // out are known to be zero, and X is known non-zero then at least one
     // non-zero bit must remain.
     if (ConstantInt *Shift = dyn_cast<ConstantInt>(Y)) {
-      KnownBits Known(BitWidth);
-      computeKnownBits(X, Known, Depth, Q);
+      APInt KnownZero(BitWidth, 0);
+      APInt KnownOne(BitWidth, 0);
+      computeKnownBits(X, KnownZero, KnownOne, Depth, Q);
 
       auto ShiftVal = Shift->getLimitedValue(BitWidth - 1);
       // Is there a known one in the portion not shifted out?
-      if (Known.One.countLeadingZeros() < BitWidth - ShiftVal)
+      if (KnownOne.countLeadingZeros() < BitWidth - ShiftVal)
         return true;
       // Are all the bits to be shifted out known zero?
-      if (Known.Zero.countTrailingOnes() >= ShiftVal)
+      if (KnownZero.countTrailingOnes() >= ShiftVal)
         return isKnownNonZero(X, Depth, Q);
     }
   }
@@ -1907,17 +1928,18 @@ bool isKnownNonZero(const Value *V, unsigned Depth, const Query &Q) {
     // If X and Y are both negative (as signed values) then their sum is not
     // zero unless both X and Y equal INT_MIN.
     if (BitWidth && XKnownNegative && YKnownNegative) {
-      KnownBits Known(BitWidth);
+      APInt KnownZero(BitWidth, 0);
+      APInt KnownOne(BitWidth, 0);
       APInt Mask = APInt::getSignedMaxValue(BitWidth);
       // The sign bit of X is set.  If some other bit is set then X is not equal
       // to INT_MIN.
-      computeKnownBits(X, Known, Depth, Q);
-      if (Known.One.intersects(Mask))
+      computeKnownBits(X, KnownZero, KnownOne, Depth, Q);
+      if (KnownOne.intersects(Mask))
         return true;
       // The sign bit of Y is set.  If some other bit is set then Y is not equal
       // to INT_MIN.
-      computeKnownBits(Y, Known, Depth, Q);
-      if (Known.One.intersects(Mask))
+      computeKnownBits(Y, KnownZero, KnownOne, Depth, Q);
+      if (KnownOne.intersects(Mask))
         return true;
     }
 
@@ -1972,9 +1994,10 @@ bool isKnownNonZero(const Value *V, unsigned Depth, const Query &Q) {
   }
 
   if (!BitWidth) return false;
-  KnownBits Known(BitWidth);
-  computeKnownBits(V, Known, Depth, Q);
-  return Known.One != 0;
+  APInt KnownZero(BitWidth, 0);
+  APInt KnownOne(BitWidth, 0);
+  computeKnownBits(V, KnownZero, KnownOne, Depth, Q);
+  return KnownOne != 0;
 }
 
 /// Return true if V2 == V1 + X, where X is known non-zero.
@@ -2006,13 +2029,14 @@ static bool isKnownNonEqual(const Value *V1, const Value *V2, const Query &Q) {
     // Are any known bits in V1 contradictory to known bits in V2? If V1
     // has a known zero where V2 has a known one, they must not be equal.
     auto BitWidth = Ty->getBitWidth();
-    KnownBits Known1(BitWidth);
-    computeKnownBits(V1, Known1, 0, Q);
-    KnownBits Known2(BitWidth);
-    computeKnownBits(V2, Known2, 0, Q);
+    APInt KnownZero1(BitWidth, 0);
+    APInt KnownOne1(BitWidth, 0);
+    computeKnownBits(V1, KnownZero1, KnownOne1, 0, Q);
+    APInt KnownZero2(BitWidth, 0);
+    APInt KnownOne2(BitWidth, 0);
+    computeKnownBits(V2, KnownZero2, KnownOne2, 0, Q);
 
-    APInt OppositeBits = (Known1.Zero & Known2.One) |
-                         (Known2.Zero & Known1.One);
+    APInt OppositeBits = (KnownZero1 & KnownOne2) | (KnownZero2 & KnownOne1);
     if (OppositeBits.getBoolValue())
       return true;
   }
@@ -2030,9 +2054,9 @@ static bool isKnownNonEqual(const Value *V1, const Value *V2, const Query &Q) {
 /// for all of the elements in the vector.
 bool MaskedValueIsZero(const Value *V, const APInt &Mask, unsigned Depth,
                        const Query &Q) {
-  KnownBits Known(Mask.getBitWidth());
-  computeKnownBits(V, Known, Depth, Q);
-  return Mask.isSubsetOf(Known.Zero);
+  APInt KnownZero(Mask.getBitWidth(), 0), KnownOne(Mask.getBitWidth(), 0);
+  computeKnownBits(V, KnownZero, KnownOne, Depth, Q);
+  return Mask.isSubsetOf(KnownZero);
 }
 
 /// For vector constants, loop over the elements and find the constant with the
@@ -2210,17 +2234,17 @@ static unsigned ComputeNumSignBitsImpl(const Value *V, unsigned Depth,
     // Special case decrementing a value (ADD X, -1):
     if (const auto *CRHS = dyn_cast<Constant>(U->getOperand(1)))
       if (CRHS->isAllOnesValue()) {
-        KnownBits Known(TyBits);
-        computeKnownBits(U->getOperand(0), Known, Depth + 1, Q);
+        APInt KnownZero(TyBits, 0), KnownOne(TyBits, 0);
+        computeKnownBits(U->getOperand(0), KnownZero, KnownOne, Depth + 1, Q);
 
         // If the input is known to be 0 or 1, the output is 0/-1, which is all
         // sign bits set.
-        if ((Known.Zero | 1).isAllOnesValue())
+        if ((KnownZero | 1).isAllOnesValue())
           return TyBits;
 
         // If we are subtracting one from a positive number, there is no carry
         // out of the result.
-        if (Known.isNonNegative())
+        if (KnownZero.isSignBitSet())
           return Tmp;
       }
 
@@ -2235,16 +2259,16 @@ static unsigned ComputeNumSignBitsImpl(const Value *V, unsigned Depth,
     // Handle NEG.
     if (const auto *CLHS = dyn_cast<Constant>(U->getOperand(0)))
       if (CLHS->isNullValue()) {
-        KnownBits Known(TyBits);
-        computeKnownBits(U->getOperand(1), Known, Depth + 1, Q);
+        APInt KnownZero(TyBits, 0), KnownOne(TyBits, 0);
+        computeKnownBits(U->getOperand(1), KnownZero, KnownOne, Depth + 1, Q);
         // If the input is known to be 0 or 1, the output is 0/-1, which is all
         // sign bits set.
-        if ((Known.Zero | 1).isAllOnesValue())
+        if ((KnownZero | 1).isAllOnesValue())
           return TyBits;
 
         // If the input is known to be positive (the sign bit is known clear),
         // the output of the NEG has the same number of sign bits as the input.
-        if (Known.isNonNegative())
+        if (KnownZero.isSignBitSet())
           return Tmp2;
 
         // Otherwise, we treat this like a SUB.
@@ -2296,16 +2320,16 @@ static unsigned ComputeNumSignBitsImpl(const Value *V, unsigned Depth,
   if (unsigned VecSignBits = computeNumSignBitsVectorConstant(V, TyBits))
     return VecSignBits;
 
-  KnownBits Known(TyBits);
-  computeKnownBits(V, Known, Depth, Q);
+  APInt KnownZero(TyBits, 0), KnownOne(TyBits, 0);
+  computeKnownBits(V, KnownZero, KnownOne, Depth, Q);
 
   // If we know that the sign bit is either zero or one, determine the number of
   // identical bits in the top of the input value.
-  if (Known.isNonNegative())
-    return std::max(FirstAnswer, Known.Zero.countLeadingOnes());
+  if (KnownZero.isSignBitSet())
+    return std::max(FirstAnswer, KnownZero.countLeadingOnes());
 
-  if (Known.isNegative())
-    return std::max(FirstAnswer, Known.One.countLeadingOnes());
+  if (KnownOne.isSignBitSet())
+    return std::max(FirstAnswer, KnownOne.countLeadingOnes());
 
   // computeKnownBits gave us no extra information about the top bits.
   return FirstAnswer;
@@ -3197,7 +3221,7 @@ Value *llvm::GetUnderlyingObject(Value *V, const DataLayout &DL,
       // See if InstructionSimplify knows any relevant tricks.
       if (Instruction *I = dyn_cast<Instruction>(V))
         // TODO: Acquire a DominatorTree and AssumptionCache and use them.
-        if (Value *Simplified = SimplifyInstruction(I, {DL, I})) {
+        if (Value *Simplified = SimplifyInstruction(I, DL, nullptr)) {
           V = Simplified;
           continue;
         }
@@ -3318,12 +3342,63 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
                                               LI->getAlignment(), DL, CtxI, DT);
   }
   case Instruction::Call: {
-    auto *CI = cast<const CallInst>(Inst);
-    const Function *Callee = CI->getCalledFunction();
+    if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(Inst)) {
+      switch (II->getIntrinsicID()) {
+      // These synthetic intrinsics have no side-effects and just mark
+      // information about their operands.
+      // FIXME: There are other no-op synthetic instructions that potentially
+      // should be considered at least *safe* to speculate...
+      case Intrinsic::dbg_declare:
+      case Intrinsic::dbg_value:
+        return true;
 
-    // The called function could have undefined behavior or side-effects, even
-    // if marked readnone nounwind.
-    return Callee && Callee->isSpeculatable();
+      case Intrinsic::bitreverse:
+      case Intrinsic::bswap:
+      case Intrinsic::ctlz:
+      case Intrinsic::ctpop:
+      case Intrinsic::cttz:
+      case Intrinsic::objectsize:
+      case Intrinsic::sadd_with_overflow:
+      case Intrinsic::smul_with_overflow:
+      case Intrinsic::ssub_with_overflow:
+      case Intrinsic::uadd_with_overflow:
+      case Intrinsic::umul_with_overflow:
+      case Intrinsic::usub_with_overflow:
+        return true;
+      // These intrinsics are defined to have the same behavior as libm
+      // functions except for setting errno.
+      case Intrinsic::sqrt:
+      case Intrinsic::fma:
+      case Intrinsic::fmuladd:
+        return true;
+      // These intrinsics are defined to have the same behavior as libm
+      // functions, and the corresponding libm functions never set errno.
+      case Intrinsic::trunc:
+      case Intrinsic::copysign:
+      case Intrinsic::fabs:
+      case Intrinsic::minnum:
+      case Intrinsic::maxnum:
+        return true;
+      // These intrinsics are defined to have the same behavior as libm
+      // functions, which never overflow when operating on the IEEE754 types
+      // that we support, and never set errno otherwise.
+      case Intrinsic::ceil:
+      case Intrinsic::floor:
+      case Intrinsic::nearbyint:
+      case Intrinsic::rint:
+      case Intrinsic::round:
+        return true;
+      // These intrinsics do not correspond to any libm function, and
+      // do not set errno.
+      case Intrinsic::powi:
+        return true;
+      // TODO: are convert_{from,to}_fp16 safe?
+      // TODO: can we list target-specific intrinsics here?
+      default: break;
+      }
+    }
+    return false; // The called function could have undefined behavior or
+                  // side-effects, even if marked readnone nounwind.
   }
   case Instruction::VAArg:
   case Instruction::Alloca:
@@ -3460,22 +3535,26 @@ OverflowResult llvm::computeOverflowForUnsignedMul(const Value *LHS,
   // we can guarantee that the result does not overflow.
   // Ref: "Hacker's Delight" by Henry Warren
   unsigned BitWidth = LHS->getType()->getScalarSizeInBits();
-  KnownBits LHSKnown(BitWidth);
-  KnownBits RHSKnown(BitWidth);
-  computeKnownBits(LHS, LHSKnown, DL, /*Depth=*/0, AC, CxtI, DT);
-  computeKnownBits(RHS, RHSKnown, DL, /*Depth=*/0, AC, CxtI, DT);
+  APInt LHSKnownZero(BitWidth, 0);
+  APInt LHSKnownOne(BitWidth, 0);
+  APInt RHSKnownZero(BitWidth, 0);
+  APInt RHSKnownOne(BitWidth, 0);
+  computeKnownBits(LHS, LHSKnownZero, LHSKnownOne, DL, /*Depth=*/0, AC, CxtI,
+                   DT);
+  computeKnownBits(RHS, RHSKnownZero, RHSKnownOne, DL, /*Depth=*/0, AC, CxtI,
+                   DT);
   // Note that underestimating the number of zero bits gives a more
   // conservative answer.
-  unsigned ZeroBits = LHSKnown.Zero.countLeadingOnes() +
-                      RHSKnown.Zero.countLeadingOnes();
+  unsigned ZeroBits = LHSKnownZero.countLeadingOnes() +
+                      RHSKnownZero.countLeadingOnes();
   // First handle the easy case: if we have enough zero bits there's
   // definitely no overflow.
   if (ZeroBits >= BitWidth)
     return OverflowResult::NeverOverflows;
 
   // Get the largest possible values for each operand.
-  APInt LHSMax = ~LHSKnown.Zero;
-  APInt RHSMax = ~RHSKnown.Zero;
+  APInt LHSMax = ~LHSKnownZero;
+  APInt RHSMax = ~RHSKnownZero;
 
   // We know the multiply operation doesn't overflow if the maximum values for
   // each operand will not overflow after we multiply them together.
@@ -3487,7 +3566,7 @@ OverflowResult llvm::computeOverflowForUnsignedMul(const Value *LHS,
   // We know it always overflows if multiplying the smallest possible values for
   // the operands also results in overflow.
   bool MinOverflow;
-  (void)LHSKnown.One.umul_ov(RHSKnown.One, MinOverflow);
+  (void)LHSKnownOne.umul_ov(RHSKnownOne, MinOverflow);
   if (MinOverflow)
     return OverflowResult::AlwaysOverflows;
 
@@ -3784,7 +3863,7 @@ const Value *llvm::getGuaranteedNonFullPoisonOp(const Instruction *I) {
   }
 }
 
-bool llvm::programUndefinedIfFullPoison(const Instruction *PoisonI) {
+bool llvm::isKnownNotFullPoison(const Instruction *PoisonI) {
   // We currently only look for uses of poison values within the same basic
   // block, as that makes it easier to guarantee that the uses will be
   // executed given that PoisonI is executed.
@@ -4206,10 +4285,11 @@ static bool isTruePredicate(CmpInst::Predicate Pred,
       // If X & C == 0 then (X | C) == X +_{nuw} C
       if (match(A, m_Or(m_Value(X), m_APInt(CA))) &&
           match(B, m_Or(m_Specific(X), m_APInt(CB)))) {
-        KnownBits Known(CA->getBitWidth());
-        computeKnownBits(X, Known, DL, Depth + 1, AC, CxtI, DT);
+        unsigned BitWidth = CA->getBitWidth();
+        APInt KnownZero(BitWidth, 0), KnownOne(BitWidth, 0);
+        computeKnownBits(X, KnownZero, KnownOne, DL, Depth + 1, AC, CxtI, DT);
 
-        if (CA->isSubsetOf(Known.Zero) && CB->isSubsetOf(Known.Zero))
+        if (CA->isSubsetOf(KnownZero) && CB->isSubsetOf(KnownZero))
           return true;
       }
 

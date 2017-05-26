@@ -45,7 +45,6 @@ void HexagonMCShuffler::init(MCInst &MCB) {
     }
   }
 
-  Loc = MCB.getLoc();
   BundleFlags = MCB.getOperand(0).getImm();
 }
 
@@ -69,14 +68,12 @@ void HexagonMCShuffler::init(MCInst &MCB, MCInst const &AddMI,
       append(AddMI, nullptr, HexagonMCInstrInfo::getUnits(MCII, STI, AddMI));
   }
 
-  Loc = MCB.getLoc();
   BundleFlags = MCB.getOperand(0).getImm();
 }
 
 void HexagonMCShuffler::copyTo(MCInst &MCB) {
   MCB.clear();
   MCB.addOperand(MCOperand::createImm(BundleFlags));
-  MCB.setLoc(Loc);
   // Copy the results into the bundle.
   for (HexagonShuffler::iterator I = begin(); I != end(); ++I) {
 
@@ -92,16 +89,15 @@ bool HexagonMCShuffler::reshuffleTo(MCInst &MCB) {
   if (shuffle()) {
     // Copy the results into the bundle.
     copyTo(MCB);
-    return true;
-  }
-  DEBUG(MCB.dump());
-  return false;
+  } else
+    DEBUG(MCB.dump());
+
+  return (!getError());
 }
 
-bool llvm::HexagonMCShuffle(MCContext &Context, bool Fatal,
-                            MCInstrInfo const &MCII, MCSubtargetInfo const &STI,
-                            MCInst &MCB) {
-  HexagonMCShuffler MCS(Context, Fatal, MCII, STI, MCB);
+bool llvm::HexagonMCShuffle(bool Fatal, MCInstrInfo const &MCII,
+                            MCSubtargetInfo const &STI, MCInst &MCB) {
+  HexagonMCShuffler MCS(true, MCII, STI, MCB);
 
   if (DisableShuffle)
     // Ignore if user chose so.
@@ -121,16 +117,52 @@ bool llvm::HexagonMCShuffle(MCContext &Context, bool Fatal,
     return false;
   }
 
-  return MCS.reshuffleTo(MCB);
+  // Reorder the bundle and copy the result.
+  if (!MCS.reshuffleTo(MCB)) {
+    // Unless there is any error, which should not happen at this point.
+    unsigned shuffleError = MCS.getError();
+
+    if (!Fatal && (shuffleError !=  HexagonShuffler::SHUFFLE_SUCCESS))
+      return false;
+    if (shuffleError !=  HexagonShuffler::SHUFFLE_SUCCESS) {
+      errs() << "\nFailing packet:\n";
+      for (const auto& I : HexagonMCInstrInfo::bundleInstructions(MCB)) {
+        MCInst *MI = const_cast<MCInst *>(I.getInst());
+        errs() << HexagonMCInstrInfo::getName(MCII, *MI) << ' ' << HexagonMCInstrInfo::getDesc(MCII, *MI).getOpcode() << '\n';
+      }
+      errs() << '\n';
+    }
+
+    switch (shuffleError) {
+    default:
+      llvm_unreachable("unknown error");
+    case HexagonShuffler::SHUFFLE_ERROR_INVALID:
+      llvm_unreachable("invalid packet");
+    case HexagonShuffler::SHUFFLE_ERROR_STORES:
+      llvm_unreachable("too many stores");
+    case HexagonShuffler::SHUFFLE_ERROR_LOADS:
+      llvm_unreachable("too many loads");
+    case HexagonShuffler::SHUFFLE_ERROR_BRANCHES:
+      llvm_unreachable("too many branches");
+    case HexagonShuffler::SHUFFLE_ERROR_NOSLOTS:
+      llvm_unreachable("no suitable slot");
+    case HexagonShuffler::SHUFFLE_ERROR_SLOTS:
+      llvm_unreachable("over-subscribed slots");
+    case HexagonShuffler::SHUFFLE_SUCCESS: // Single instruction case.
+      return true;
+    }
+  }
+
+  return true;
 }
 
-bool
-llvm::HexagonMCShuffle(MCContext &Context, MCInstrInfo const &MCII,
-                       MCSubtargetInfo const &STI, MCInst &MCB,
+unsigned
+llvm::HexagonMCShuffle(MCInstrInfo const &MCII, MCSubtargetInfo const &STI,
+                       MCContext &Context, MCInst &MCB,
                        SmallVector<DuplexCandidate, 8> possibleDuplexes) {
 
   if (DisableShuffle)
-    return false;
+    return HexagonShuffler::SHUFFLE_SUCCESS;
 
   if (!HexagonMCInstrInfo::bundleSize(MCB)) {
     // There once was a bundle:
@@ -140,44 +172,46 @@ llvm::HexagonMCShuffle(MCContext &Context, MCInstrInfo const &MCII,
     // After the IMPLICIT_DEFs were removed by the asm printer, the bundle
     // became empty.
     DEBUG(dbgs() << "Skipping empty bundle");
-    return false;
+    return HexagonShuffler::SHUFFLE_SUCCESS;
   } else if (!HexagonMCInstrInfo::isBundle(MCB)) {
     DEBUG(dbgs() << "Skipping stand-alone insn");
-    return false;
+    return HexagonShuffler::SHUFFLE_SUCCESS;
   }
 
   bool doneShuffling = false;
+  unsigned shuffleError;
   while (possibleDuplexes.size() > 0 && (!doneShuffling)) {
     // case of Duplex Found
     DuplexCandidate duplexToTry = possibleDuplexes.pop_back_val();
     MCInst Attempt(MCB);
     HexagonMCInstrInfo::replaceDuplex(Context, Attempt, duplexToTry);
-    HexagonMCShuffler MCS(Context, false, MCII, STI, Attempt); // copy packet to the shuffler
+    HexagonMCShuffler MCS(true, MCII, STI, Attempt); // copy packet to the shuffler
     if (MCS.size() == 1) {                     // case of one duplex
       // copy the created duplex in the shuffler to the bundle
       MCS.copyTo(MCB);
-      return false;
+      return HexagonShuffler::SHUFFLE_SUCCESS;
     }
     // try shuffle with this duplex
     doneShuffling = MCS.reshuffleTo(MCB);
+    shuffleError = MCS.getError();
 
     if (doneShuffling)
       break;
   }
 
   if (doneShuffling == false) {
-    HexagonMCShuffler MCS(Context, false, MCII, STI, MCB);
+    HexagonMCShuffler MCS(true, MCII, STI, MCB);
     doneShuffling = MCS.reshuffleTo(MCB); // shuffle
+    shuffleError = MCS.getError();
   }
   if (!doneShuffling)
-    return true;
+    return shuffleError;
 
-  return false;
+  return HexagonShuffler::SHUFFLE_SUCCESS;
 }
 
-bool llvm::HexagonMCShuffle(MCContext &Context, MCInstrInfo const &MCII,
-                            MCSubtargetInfo const &STI, MCInst &MCB,
-                            MCInst const &AddMI, int fixupCount) {
+bool llvm::HexagonMCShuffle(MCInstrInfo const &MCII, MCSubtargetInfo const &STI,
+                            MCInst &MCB, MCInst const &AddMI, int fixupCount) {
   if (!HexagonMCInstrInfo::isBundle(MCB))
     return false;
 
@@ -212,6 +246,16 @@ bool llvm::HexagonMCShuffle(MCContext &Context, MCInstrInfo const &MCII,
   if (bhasDuplex && bundleSize >= maxBundleSize)
     return false;
 
-  HexagonMCShuffler MCS(Context, false, MCII, STI, MCB, AddMI, false);
-  return MCS.reshuffleTo(MCB);
+  HexagonMCShuffler MCS(MCII, STI, MCB, AddMI, false);
+  if (!MCS.reshuffleTo(MCB)) {
+    unsigned shuffleError = MCS.getError();
+    switch (shuffleError) {
+    default:
+      return false;
+    case HexagonShuffler::SHUFFLE_SUCCESS: // single instruction case
+      return true;
+    }
+  }
+
+  return true;
 }

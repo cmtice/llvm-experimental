@@ -69,8 +69,7 @@ private:
                             const MCSubtargetInfo &STI) const;
 
   /// Encodes an immediate value with a given fixup.
-  /// \tparam Offset The offset into the instruction for the fixup.
-  template <AVR::Fixups Fixup, unsigned Offset>
+  template <AVR::Fixups Fixup>
   unsigned encodeImm(const MCInst &MI, unsigned OpNo,
                      SmallVectorImpl<MCFixup> &Fixups,
                      const MCSubtargetInfo &STI) const;

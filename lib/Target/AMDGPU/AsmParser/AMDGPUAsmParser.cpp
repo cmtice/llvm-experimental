@@ -479,8 +479,6 @@ public:
   bool isSMRDLiteralOffset() const;
   bool isDPPCtrl() const;
   bool isGPRIdxMode() const;
-  bool isS16Imm() const;
-  bool isU16Imm() const;
 
   StringRef getExpressionAsToken() const {
     assert(isExpr());
@@ -2838,28 +2836,6 @@ void AMDGPUAsmParser::cvtExp(MCInst &Inst, const OperandVector &Operands) {
 // s_waitcnt
 //===----------------------------------------------------------------------===//
 
-static bool
-encodeCnt(
-  const AMDGPU::IsaInfo::IsaVersion ISA,
-  int64_t &IntVal,
-  int64_t CntVal,
-  bool Saturate,
-  unsigned (*encode)(const IsaInfo::IsaVersion &Version, unsigned, unsigned),
-  unsigned (*decode)(const IsaInfo::IsaVersion &Version, unsigned))
-{
-  bool Failed = false;
-
-  IntVal = encode(ISA, IntVal, CntVal);
-  if (CntVal != decode(ISA, IntVal)) {
-    if (Saturate) {
-      IntVal = encode(ISA, IntVal, -1);
-    } else {
-      Failed = true;
-    }
-  }
-  return Failed;
-}
-
 bool AMDGPUAsmParser::parseCnt(int64_t &IntVal) {
   StringRef CntName = Parser.getTok().getString();
   int64_t CntVal;
@@ -2875,35 +2851,25 @@ bool AMDGPUAsmParser::parseCnt(int64_t &IntVal) {
   if (getParser().parseAbsoluteExpression(CntVal))
     return true;
 
+  if (getLexer().isNot(AsmToken::RParen))
+    return true;
+
+  Parser.Lex();
+  if (getLexer().is(AsmToken::Amp) || getLexer().is(AsmToken::Comma))
+    Parser.Lex();
+
   AMDGPU::IsaInfo::IsaVersion ISA =
       AMDGPU::IsaInfo::getIsaVersion(getFeatureBits());
+  if (CntName == "vmcnt")
+    IntVal = encodeVmcnt(ISA, IntVal, CntVal);
+  else if (CntName == "expcnt")
+    IntVal = encodeExpcnt(ISA, IntVal, CntVal);
+  else if (CntName == "lgkmcnt")
+    IntVal = encodeLgkmcnt(ISA, IntVal, CntVal);
+  else
+    return true;
 
-  bool Failed = true;
-  bool Sat = CntName.endswith("_sat");
-
-  if (CntName == "vmcnt" || CntName == "vmcnt_sat") {
-    Failed = encodeCnt(ISA, IntVal, CntVal, Sat, encodeVmcnt, decodeVmcnt);
-  } else if (CntName == "expcnt" || CntName == "expcnt_sat") {
-    Failed = encodeCnt(ISA, IntVal, CntVal, Sat, encodeExpcnt, decodeExpcnt);
-  } else if (CntName == "lgkmcnt" || CntName == "lgkmcnt_sat") {
-    Failed = encodeCnt(ISA, IntVal, CntVal, Sat, encodeLgkmcnt, decodeLgkmcnt);
-  }
-
-  // To improve diagnostics, do not skip delimiters on errors
-  if (!Failed) {
-    if (getLexer().isNot(AsmToken::RParen)) {
-      return true;
-    }
-    Parser.Lex();
-    if (getLexer().is(AsmToken::Amp) || getLexer().is(AsmToken::Comma)) {
-      const AsmToken NextToken = getLexer().peekTok();
-      if (NextToken.is(AsmToken::Identifier)) {
-        Parser.Lex();
-      }
-    }
-  }
-
-  return Failed;
+  return false;
 }
 
 OperandMatchResultTy
@@ -3890,14 +3856,6 @@ bool AMDGPUOperand::isDPPCtrl() const {
 
 bool AMDGPUOperand::isGPRIdxMode() const {
   return isImm() && isUInt<4>(getImm());
-}
-
-bool AMDGPUOperand::isS16Imm() const {
-  return isImm() && (isInt<16>(getImm()) || isUInt<16>(getImm()));
-}
-
-bool AMDGPUOperand::isU16Imm() const {
-  return isImm() && isUInt<16>(getImm());
 }
 
 OperandMatchResultTy

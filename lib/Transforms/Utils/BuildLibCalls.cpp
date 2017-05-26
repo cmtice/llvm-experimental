@@ -889,13 +889,7 @@ Value *llvm::emitUnaryFloatFnCall(Value *Op, StringRef Name, IRBuilder<> &B,
   Value *Callee = M->getOrInsertFunction(Name, Op->getType(),
                                          Op->getType());
   CallInst *CI = B.CreateCall(Callee, Op, Name);
-
-  // The incoming attribute set may have come from a speculatable intrinsic, but
-  // is being replaced with a library call which is not allowed to be
-  // speculatable.
-  CI->setAttributes(Attrs.removeAttribute(B.getContext(),
-                                          AttributeList::FunctionIndex,
-                                          Attribute::Speculatable));
+  CI->setAttributes(Attrs);
   if (const Function *F = dyn_cast<Function>(Callee->stripPointerCasts()))
     CI->setCallingConv(F->getCallingConv());
 

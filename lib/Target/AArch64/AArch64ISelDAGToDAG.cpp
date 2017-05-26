@@ -20,7 +20,6 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -1853,17 +1852,17 @@ static void getUsefulBitsFromBitfieldMoveOpd(SDValue Op, APInt &UsefulBits,
   OpUsefulBits = 1;
 
   if (MSB >= Imm) {
-    OpUsefulBits <<= MSB - Imm + 1;
+    OpUsefulBits = OpUsefulBits.shl(MSB - Imm + 1);
     --OpUsefulBits;
     // The interesting part will be in the lower part of the result
     getUsefulBits(Op, OpUsefulBits, Depth + 1);
     // The interesting part was starting at Imm in the argument
-    OpUsefulBits <<= Imm;
+    OpUsefulBits = OpUsefulBits.shl(Imm);
   } else {
-    OpUsefulBits <<= MSB + 1;
+    OpUsefulBits = OpUsefulBits.shl(MSB + 1);
     --OpUsefulBits;
     // The interesting part will be shifted in the result
-    OpUsefulBits <<= OpUsefulBits.getBitWidth() - Imm;
+    OpUsefulBits = OpUsefulBits.shl(OpUsefulBits.getBitWidth() - Imm);
     getUsefulBits(Op, OpUsefulBits, Depth + 1);
     // The interesting part was at zero in the argument
     OpUsefulBits.lshrInPlace(OpUsefulBits.getBitWidth() - Imm);
@@ -1893,7 +1892,7 @@ static void getUsefulBitsFromOrWithShiftedReg(SDValue Op, APInt &UsefulBits,
   if (AArch64_AM::getShiftType(ShiftTypeAndValue) == AArch64_AM::LSL) {
     // Shift Left
     uint64_t ShiftAmt = AArch64_AM::getShiftValue(ShiftTypeAndValue);
-    Mask <<= ShiftAmt;
+    Mask = Mask.shl(ShiftAmt);
     getUsefulBits(Op, Mask, Depth + 1);
     Mask.lshrInPlace(ShiftAmt);
   } else if (AArch64_AM::getShiftType(ShiftTypeAndValue) == AArch64_AM::LSR) {
@@ -1903,7 +1902,7 @@ static void getUsefulBitsFromOrWithShiftedReg(SDValue Op, APInt &UsefulBits,
     uint64_t ShiftAmt = AArch64_AM::getShiftValue(ShiftTypeAndValue);
     Mask.lshrInPlace(ShiftAmt);
     getUsefulBits(Op, Mask, Depth + 1);
-    Mask <<= ShiftAmt;
+    Mask = Mask.shl(ShiftAmt);
   } else
     return;
 
@@ -1931,13 +1930,13 @@ static void getUsefulBitsFromBFM(SDValue Op, SDValue Orig, APInt &UsefulBits,
     uint64_t Width = MSB - Imm + 1;
     uint64_t LSB = Imm;
 
-    OpUsefulBits <<= Width;
+    OpUsefulBits = OpUsefulBits.shl(Width);
     --OpUsefulBits;
 
     if (Op.getOperand(1) == Orig) {
       // Copy the low bits from the result to bits starting from LSB.
       Mask = ResultUsefulBits & OpUsefulBits;
-      Mask <<= LSB;
+      Mask = Mask.shl(LSB);
     }
 
     if (Op.getOperand(0) == Orig)
@@ -1948,9 +1947,9 @@ static void getUsefulBitsFromBFM(SDValue Op, SDValue Orig, APInt &UsefulBits,
     uint64_t Width = MSB + 1;
     uint64_t LSB = UsefulBits.getBitWidth() - Imm;
 
-    OpUsefulBits <<= Width;
+    OpUsefulBits = OpUsefulBits.shl(Width);
     --OpUsefulBits;
-    OpUsefulBits <<= LSB;
+    OpUsefulBits = OpUsefulBits.shl(LSB);
 
     if (Op.getOperand(1) == Orig) {
       // Copy the bits from the result to the zero bits.
@@ -2079,18 +2078,18 @@ static bool isBitfieldPositioningOp(SelectionDAG *CurDAG, SDValue Op,
   (void)BitWidth;
   assert(BitWidth == 32 || BitWidth == 64);
 
-  KnownBits Known;
-  CurDAG->computeKnownBits(Op, Known);
+  APInt KnownZero, KnownOne;
+  CurDAG->computeKnownBits(Op, KnownZero, KnownOne);
 
   // Non-zero in the sense that they're not provably zero, which is the key
   // point if we want to use this value
-  uint64_t NonZeroBits = (~Known.Zero).getZExtValue();
+  uint64_t NonZeroBits = (~KnownZero).getZExtValue();
 
   // Discard a constant AND mask if present. It's safe because the node will
   // already have been factored into the computeKnownBits calculation above.
   uint64_t AndImm;
   if (isOpcWithIntImmediate(Op.getNode(), ISD::AND, AndImm)) {
-    assert((~APInt(BitWidth, AndImm) & ~Known.Zero) == 0);
+    assert((~APInt(BitWidth, AndImm) & ~KnownZero) == 0);
     Op = Op.getOperand(0);
   }
 
@@ -2159,15 +2158,15 @@ static bool tryBitfieldInsertOpFromOrAndImm(SDNode *N, SelectionDAG *CurDAG) {
 
   // Compute the Known Zero for the AND as this allows us to catch more general
   // cases than just looking for AND with imm.
-  KnownBits Known;
-  CurDAG->computeKnownBits(And, Known);
+  APInt KnownZero, KnownOne;
+  CurDAG->computeKnownBits(And, KnownZero, KnownOne);
 
   // Non-zero in the sense that they're not provably zero, which is the key
   // point if we want to use this value.
-  uint64_t NotKnownZero = (~Known.Zero).getZExtValue();
+  uint64_t NotKnownZero = (~KnownZero).getZExtValue();
 
   // The KnownZero mask must be a shifted mask (e.g., 1110..011, 11100..00).
-  if (!isShiftedMask(Known.Zero.getZExtValue(), VT))
+  if (!isShiftedMask(KnownZero.getZExtValue(), VT))
     return false;
 
   // The bits being inserted must only set those bits that are known to be zero.
@@ -2301,15 +2300,15 @@ static bool tryBitfieldInsertOpFromOr(SDNode *N, const APInt &UsefulBits,
     // This allows to catch more general case than just looking for
     // AND with imm. Indeed, simplify-demanded-bits may have removed
     // the AND instruction because it proves it was useless.
-    KnownBits Known;
-    CurDAG->computeKnownBits(OrOpd1Val, Known);
+    APInt KnownZero, KnownOne;
+    CurDAG->computeKnownBits(OrOpd1Val, KnownZero, KnownOne);
 
     // Check if there is enough room for the second operand to appear
     // in the first one
     APInt BitsToBeInserted =
-        APInt::getBitsSet(Known.getBitWidth(), DstLSB, DstLSB + Width);
+        APInt::getBitsSet(KnownZero.getBitWidth(), DstLSB, DstLSB + Width);
 
-    if ((BitsToBeInserted & ~Known.Zero) != 0)
+    if ((BitsToBeInserted & ~KnownZero) != 0)
       continue;
 
     // Set the first operand

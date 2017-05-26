@@ -25,6 +25,7 @@
 #include "llvm/LTO/LTOBackend.h"
 #include "llvm/Linker/IRMover.h"
 #include "llvm/Object/IRObjectFile.h"
+#include "llvm/Object/ModuleSummaryIndexObjectFile.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -414,8 +415,7 @@ void LTO::addSymbolToGlobalRes(const InputFile::Symbol &Sym,
   // Flag as visible outside of ThinLTO if visible from a regular object or
   // if this is a reference in the regular LTO partition.
   GlobalRes.VisibleOutsideThinLTO |=
-      (Res.VisibleToRegularObj || Sym.isUsed() ||
-       Partition == GlobalResolution::RegularLTO);
+      (Res.VisibleToRegularObj || (Partition == GlobalResolution::RegularLTO));
 }
 
 static void writeToResolutionFile(raw_ostream &OS, InputFile *Input,
@@ -591,9 +591,11 @@ Error LTO::addThinLTO(BitcodeModule BM,
                       ArrayRef<InputFile::Symbol> Syms,
                       const SymbolResolution *&ResI,
                       const SymbolResolution *ResE) {
-  if (Error Err =
-          BM.readSummary(ThinLTO.CombinedIndex, ThinLTO.ModuleMap.size()))
-    return Err;
+  Expected<std::unique_ptr<ModuleSummaryIndex>> SummaryOrErr = BM.getSummary();
+  if (!SummaryOrErr)
+    return SummaryOrErr.takeError();
+  ThinLTO.CombinedIndex.mergeFrom(std::move(*SummaryOrErr),
+                                  ThinLTO.ModuleMap.size());
 
   for (const InputFile::Symbol &Sym : Syms) {
     assert(ResI != ResE);

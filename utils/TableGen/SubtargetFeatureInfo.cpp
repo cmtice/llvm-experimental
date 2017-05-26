@@ -45,7 +45,8 @@ SubtargetFeatureInfo::getAll(const RecordKeeper &Records) {
 }
 
 void SubtargetFeatureInfo::emitSubtargetFeatureFlagEnumeration(
-    SubtargetFeatureInfoMap &SubtargetFeatures, raw_ostream &OS) {
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures,
+    raw_ostream &OS) {
   OS << "// Flags for subtarget features that participate in "
      << "instruction matching.\n";
   OS << "enum SubtargetFeatureFlag : "
@@ -59,7 +60,8 @@ void SubtargetFeatureInfo::emitSubtargetFeatureFlagEnumeration(
 }
 
 void SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(
-    SubtargetFeatureInfoMap &SubtargetFeatures, raw_ostream &OS) {
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures,
+    raw_ostream &OS) {
   OS << "// Bits for subtarget features that participate in "
      << "instruction matching.\n";
   OS << "enum SubtargetFeatureBits : "
@@ -72,7 +74,8 @@ void SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(
 }
 
 void SubtargetFeatureInfo::emitNameTable(
-    SubtargetFeatureInfoMap &SubtargetFeatures, raw_ostream &OS) {
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures,
+    raw_ostream &OS) {
   // Need to sort the name table so that lookup by the log of the enum value
   // gives the proper name. More specifically, for a feature of value 1<<n,
   // SubtargetFeatureNames[n] should be the name of the feature.
@@ -99,13 +102,11 @@ void SubtargetFeatureInfo::emitNameTable(
 
 void SubtargetFeatureInfo::emitComputeAvailableFeatures(
     StringRef TargetName, StringRef ClassName, StringRef FuncName,
-    SubtargetFeatureInfoMap &SubtargetFeatures, raw_ostream &OS,
-    StringRef ExtraParams) {
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures,
+    raw_ostream &OS) {
   OS << "PredicateBitset " << TargetName << ClassName << "::\n"
-     << FuncName << "(const " << TargetName << "Subtarget *Subtarget";
-  if (!ExtraParams.empty())
-    OS << ", " << ExtraParams;
-  OS << ") const {\n";
+     << FuncName << "(const MachineFunction *MF, const " << TargetName
+     << "Subtarget *Subtarget) const {\n";
   OS << "  PredicateBitset Features;\n";
   for (const auto &SF : SubtargetFeatures) {
     const SubtargetFeatureInfo &SFI = SF.second;
@@ -119,7 +120,8 @@ void SubtargetFeatureInfo::emitComputeAvailableFeatures(
 
 void SubtargetFeatureInfo::emitComputeAssemblerAvailableFeatures(
     StringRef TargetName, StringRef ClassName, StringRef FuncName,
-    SubtargetFeatureInfoMap &SubtargetFeatures, raw_ostream &OS) {
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures,
+    raw_ostream &OS) {
   OS << "uint64_t " << TargetName << ClassName << "::\n"
      << FuncName << "(const FeatureBitset& FB) const {\n";
   OS << "  uint64_t Features = 0;\n";

@@ -80,7 +80,7 @@ public:
       return;
     }
     if (Ty.isVector()) {
-      OS << "LLT::vector(" << Ty.getNumElements() << ", " << Ty.getScalarSizeInBits()
+      OS << "LLT::vector(" << Ty.getNumElements() << ", " << Ty.getSizeInBits()
          << ")";
       return;
     }
@@ -199,19 +199,21 @@ public:
   void emitCxxCapturedInsnList(raw_ostream &OS);
   void emitCxxCaptureStmts(raw_ostream &OS, StringRef Expr);
 
-void emit(raw_ostream &OS, SubtargetFeatureInfoMap SubtargetFeatures);
+  void emit(raw_ostream &OS,
+            std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
+                SubtargetFeatures);
 
-/// Compare the priority of this object and B.
-///
-/// Returns true if this object is more important than B.
-bool isHigherPriorityThan(const RuleMatcher &B) const;
+  /// Compare the priority of this object and B.
+  ///
+  /// Returns true if this object is more important than B.
+  bool isHigherPriorityThan(const RuleMatcher &B) const;
 
-/// Report the maximum number of temporary operands needed by the rule
-/// matcher.
-unsigned countRendererFns() const;
+  /// Report the maximum number of temporary operands needed by the rule
+  /// matcher.
+  unsigned countRendererFns() const;
 
-// FIXME: Remove this as soon as possible
-InstructionMatcher &insnmatcher_front() const { return *Matchers.front(); }
+  // FIXME: Remove this as soon as possible
+  InstructionMatcher &insnmatcher_front() const { return *Matchers.front(); }
 };
 
 template <class PredicateTy> class PredicateListMatcher {
@@ -854,9 +856,7 @@ public:
   }
 
   void emitCxxRenderStmts(raw_ostream &OS, RuleMatcher &Rule) const override {
-    OS << "    MIB.addReg(" << (RegisterDef->getValue("Namespace")
-                                    ? RegisterDef->getValueAsString("Namespace")
-                                    : "")
+    OS << "    MIB.addReg(" << RegisterDef->getValueAsString("Namespace")
        << "::" << RegisterDef->getName() << ");\n";
   }
 };
@@ -951,9 +951,6 @@ private:
 
   /// True if the instruction can be built solely by mutating the opcode.
   bool canMutate() const {
-    if (OperandRenderers.size() != Matched.getNumOperands())
-      return false;
-
     for (const auto &Renderer : enumerate(OperandRenderers)) {
       if (const auto *Copy = dyn_cast<CopyRenderer>(&*Renderer.value())) {
         const OperandMatcher &OM = Matched.getOperand(Copy->getSymbolicName());
@@ -989,16 +986,12 @@ public:
            << ");\n";
 
         for (auto Def : I->ImplicitDefs) {
-          auto Namespace = Def->getValue("Namespace")
-                               ? Def->getValueAsString("Namespace")
-                               : "";
+          auto Namespace = Def->getValueAsString("Namespace");
           OS << "    MIB.addDef(" << Namespace << "::" << Def->getName()
              << ", RegState::Implicit);\n";
         }
         for (auto Use : I->ImplicitUses) {
-          auto Namespace = Use->getValue("Namespace")
-                               ? Use->getValueAsString("Namespace")
-                               : "";
+          auto Namespace = Use->getValueAsString("Namespace");
           OS << "    MIB.addUse(" << Namespace << "::" << Use->getName()
              << ", RegState::Implicit);\n";
         }
@@ -1079,7 +1072,8 @@ void RuleMatcher::emitCxxCaptureStmts(raw_ostream &OS, StringRef Expr) {
 }
 
 void RuleMatcher::emit(raw_ostream &OS,
-                       SubtargetFeatureInfoMap SubtargetFeatures) {
+                       std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
+                           SubtargetFeatures) {
   if (Matchers.empty())
     llvm_unreachable("Unexpected empty matcher!");
 
@@ -1224,7 +1218,7 @@ private:
   DenseMap<const Record *, const Record *> ComplexPatternEquivs;
 
   // Map of predicates to their subtarget features.
-  SubtargetFeatureInfoMap SubtargetFeatures;
+  std::map<Record *, SubtargetFeatureInfo, LessRecordByID> SubtargetFeatures;
 
   void gatherNodeEquivs();
   const CodeGenInstruction *findNodeEquiv(Record *N) const;
@@ -1718,36 +1712,15 @@ void GlobalISelEmitter::run(raw_ostream &OS) {
   OS << "#ifdef GET_GLOBALISEL_IMPL\n";
   SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(SubtargetFeatures,
                                                            OS);
-
-  // Separate subtarget features by how often they must be recomputed.
-  SubtargetFeatureInfoMap ModuleFeatures;
-  std::copy_if(SubtargetFeatures.begin(), SubtargetFeatures.end(),
-               std::inserter(ModuleFeatures, ModuleFeatures.end()),
-               [](const SubtargetFeatureInfoMap::value_type &X) {
-                 return !X.second.mustRecomputePerFunction();
-               });
-  SubtargetFeatureInfoMap FunctionFeatures;
-  std::copy_if(SubtargetFeatures.begin(), SubtargetFeatures.end(),
-               std::inserter(FunctionFeatures, FunctionFeatures.end()),
-               [](const SubtargetFeatureInfoMap::value_type &X) {
-                 return X.second.mustRecomputePerFunction();
-               });
-
+  SubtargetFeatureInfo::emitNameTable(SubtargetFeatures, OS);
   SubtargetFeatureInfo::emitComputeAvailableFeatures(
-      Target.getName(), "InstructionSelector", "computeAvailableModuleFeatures",
-      ModuleFeatures, OS);
-  SubtargetFeatureInfo::emitComputeAvailableFeatures(
-      Target.getName(), "InstructionSelector",
-      "computeAvailableFunctionFeatures", FunctionFeatures, OS,
-      "const MachineFunction *MF");
+      Target.getName(), "InstructionSelector", "computeAvailableFeatures",
+      SubtargetFeatures, OS);
 
   OS << "bool " << Target.getName()
      << "InstructionSelector::selectImpl(MachineInstr &I) const {\n"
      << "  MachineFunction &MF = *I.getParent()->getParent();\n"
-     << "  const MachineRegisterInfo &MRI = MF.getRegInfo();\n"
-     << "  // FIXME: This should be computed on a per-function basis rather than per-insn.\n"
-     << "  AvailableFunctionFeatures = computeAvailableFunctionFeatures(&STI, &MF);\n"
-     << "  const PredicateBitset AvailableFeatures = getAvailableFeatures();\n";
+     << "  const MachineRegisterInfo &MRI = MF.getRegInfo();\n";
 
   for (auto &Rule : Rules) {
     Rule.emit(OS, SubtargetFeatures);
@@ -1757,26 +1730,6 @@ void GlobalISelEmitter::run(raw_ostream &OS) {
   OS << "  return false;\n"
      << "}\n"
      << "#endif // ifdef GET_GLOBALISEL_IMPL\n";
-
-  OS << "#ifdef GET_GLOBALISEL_PREDICATES_DECL\n"
-     << "PredicateBitset AvailableModuleFeatures;\n"
-     << "mutable PredicateBitset AvailableFunctionFeatures;\n"
-     << "PredicateBitset getAvailableFeatures() const {\n"
-     << "  return AvailableModuleFeatures | AvailableFunctionFeatures;\n"
-     << "}\n"
-     << "PredicateBitset\n"
-     << "computeAvailableModuleFeatures(const " << Target.getName()
-     << "Subtarget *Subtarget) const;\n"
-     << "PredicateBitset\n"
-     << "computeAvailableFunctionFeatures(const " << Target.getName()
-     << "Subtarget *Subtarget,\n"
-     << "                                 const MachineFunction *MF) const;\n"
-     << "#endif // ifdef GET_GLOBALISEL_PREDICATES_DECL\n";
-
-  OS << "#ifdef GET_GLOBALISEL_PREDICATES_INIT\n"
-     << "AvailableModuleFeatures(computeAvailableModuleFeatures(&STI)),\n"
-     << "AvailableFunctionFeatures()\n"
-     << "#endif // ifdef GET_GLOBALISEL_PREDICATES_INIT\n";
 }
 
 void GlobalISelEmitter::declareSubtargetFeature(Record *Predicate) {

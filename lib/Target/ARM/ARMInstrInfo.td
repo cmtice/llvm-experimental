@@ -317,10 +317,8 @@ def UseNegativeImmediates :
                                "NegativeImmediates">;
 
 // FIXME: Eventually this will be just "hasV6T2Ops".
-let RecomputePerFunction = 1 in {
-  def UseMovt          : Predicate<"Subtarget->useMovt(*MF)">;
-  def DontUseMovt      : Predicate<"!Subtarget->useMovt(*MF)">;
-}
+def UseMovt          : Predicate<"Subtarget->useMovt(*MF)">;
+def DontUseMovt      : Predicate<"!Subtarget->useMovt(*MF)">;
 def UseFPVMLx        : Predicate<"Subtarget->useFPVMLx()">;
 def UseMulOps        : Predicate<"Subtarget->useMulOps()">;
 
@@ -347,10 +345,8 @@ def UseVMOVSR : Predicate<"Subtarget->preferVMOVSR() ||"
 def DontUseVMOVSR : Predicate<"!Subtarget->preferVMOVSR() &&"
                               "Subtarget->useNEONForSinglePrecisionFP()">;
 
-let RecomputePerFunction = 1 in {
-  def IsLE             : Predicate<"MF->getDataLayout().isLittleEndian()">;
-  def IsBE             : Predicate<"MF->getDataLayout().isBigEndian()">;
-}
+def IsLE             : Predicate<"MF->getDataLayout().isLittleEndian()">;
+def IsBE             : Predicate<"MF->getDataLayout().isBigEndian()">;
 
 def GenExecuteOnly : Predicate<"Subtarget->genExecuteOnly()">;
 

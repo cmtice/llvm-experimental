@@ -67,9 +67,9 @@ public:
 /// assembly parsers.
 class MCAsmParser {
 public:
-  using DirectiveHandler = bool (*)(MCAsmParserExtension*, StringRef, SMLoc);
-  using ExtensionDirectiveHandler =
-      std::pair<MCAsmParserExtension*, DirectiveHandler>;
+  typedef bool (*DirectiveHandler)(MCAsmParserExtension*, StringRef, SMLoc);
+  typedef std::pair<MCAsmParserExtension*, DirectiveHandler>
+    ExtensionDirectiveHandler;
 
   struct MCPendingError {
     SMLoc Loc;

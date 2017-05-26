@@ -22,7 +22,6 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
@@ -257,14 +256,14 @@ ValueRange FastDivInsertionTask::getValueRange(Value *V,
   unsigned HiBits = LongLen - ShortLen;
 
   const DataLayout &DL = SlowDivOrRem->getModule()->getDataLayout();
-  KnownBits Known(LongLen);
+  APInt Zeros(LongLen, 0), Ones(LongLen, 0);
 
-  computeKnownBits(V, Known, DL);
+  computeKnownBits(V, Zeros, Ones, DL);
 
-  if (Known.Zero.countLeadingOnes() >= HiBits)
+  if (Zeros.countLeadingOnes() >= HiBits)
     return VALRNG_KNOWN_SHORT;
 
-  if (Known.One.countLeadingZeros() < HiBits)
+  if (Ones.countLeadingZeros() < HiBits)
     return VALRNG_LIKELY_LONG;
 
   // Long integer divisions are often used in hashtable implementations. It's

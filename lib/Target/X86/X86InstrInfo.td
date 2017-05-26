@@ -877,9 +877,7 @@ def In32BitMode  : Predicate<"Subtarget->is32Bit()">,
 def IsWin64      : Predicate<"Subtarget->isTargetWin64()">;
 def NotWin64     : Predicate<"!Subtarget->isTargetWin64()">;
 def NotWin64WithoutFP : Predicate<"!Subtarget->isTargetWin64() ||"
-                                  "Subtarget->getFrameLowering()->hasFP(*MF)"> {
-  let RecomputePerFunction = 1;
-}
+                                  "Subtarget->getFrameLowering()->hasFP(*MF)">;
 def IsPS4        : Predicate<"Subtarget->isTargetPS4()">;
 def NotPS4       : Predicate<"!Subtarget->isTargetPS4()">;
 def IsNaCl       : Predicate<"Subtarget->isTargetNaCl()">;
@@ -889,9 +887,9 @@ def KernelCode   : Predicate<"TM.getCodeModel() == CodeModel::Kernel">;
 def NearData     : Predicate<"TM.getCodeModel() == CodeModel::Small ||"
                              "TM.getCodeModel() == CodeModel::Kernel">;
 def IsNotPIC     : Predicate<"!TM.isPositionIndependent()">;
-def OptForSize   : Predicate<"Subtarget->getOptForSize()">;
-def OptForMinSize : Predicate<"Subtarget->getOptForMinSize()">;
-def OptForSpeed  : Predicate<"!Subtarget->getOptForSize()">;
+def OptForSize   : Predicate<"OptForSize">;
+def OptForMinSize : Predicate<"OptForMinSize">;
+def OptForSpeed  : Predicate<"!OptForSize">;
 def FastBTMem    : Predicate<"!Subtarget->isBTMemSlow()">;
 def CallImmAddr  : Predicate<"Subtarget->isLegalToCallImmediateAddr()">;
 def FavorMemIndirectCall  : Predicate<"!Subtarget->callRegIndirect()">;

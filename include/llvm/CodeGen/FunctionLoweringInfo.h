@@ -25,7 +25,6 @@
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include <vector>
 
@@ -172,8 +171,9 @@ public:
   struct LiveOutInfo {
     unsigned NumSignBits : 31;
     unsigned IsValid : 1;
-    KnownBits Known;
-    LiveOutInfo() : NumSignBits(0), IsValid(true), Known(1) {}
+    APInt KnownOne, KnownZero;
+    LiveOutInfo() : NumSignBits(0), IsValid(true), KnownOne(1, 0),
+                    KnownZero(1, 0) {}
   };
 
   /// Record the preferred extend type (ISD::SIGN_EXTEND or ISD::ZERO_EXTEND)
@@ -247,16 +247,16 @@ public:
 
   /// AddLiveOutRegInfo - Adds LiveOutInfo for a register.
   void AddLiveOutRegInfo(unsigned Reg, unsigned NumSignBits,
-                         const KnownBits &Known) {
+                         const APInt &KnownZero, const APInt &KnownOne) {
     // Only install this information if it tells us something.
-    if (NumSignBits == 1 && Known.Zero == 0 && Known.One == 0)
+    if (NumSignBits == 1 && KnownZero == 0 && KnownOne == 0)
       return;
 
     LiveOutRegInfo.grow(Reg);
     LiveOutInfo &LOI = LiveOutRegInfo[Reg];
     LOI.NumSignBits = NumSignBits;
-    LOI.Known.One = Known.One;
-    LOI.Known.Zero = Known.Zero;
+    LOI.KnownOne = KnownOne;
+    LOI.KnownZero = KnownZero;
   }
 
   /// ComputePHILiveOutRegInfo - Compute LiveOutInfo for a PHI's destination

@@ -358,9 +358,7 @@ TEST_F(BinaryStreamTest, VarStreamArray) {
 
   struct StringExtractor {
   public:
-    typedef uint32_t &ContextType;
-    static Error extract(BinaryStreamRef Stream, uint32_t &Len, StringRef &Item,
-                         uint32_t &Index) {
+    Error operator()(BinaryStreamRef Stream, uint32_t &Len, StringRef &Item) {
       if (Index == 0)
         Len = strlen("1. Test");
       else if (Index == 1)
@@ -377,11 +375,13 @@ TEST_F(BinaryStreamTest, VarStreamArray) {
       ++Index;
       return Error::success();
     }
+
+  private:
+    uint32_t Index = 0;
   };
 
   for (auto &Stream : Streams) {
-    uint32_t Context = 0;
-    VarStreamArray<StringRef, StringExtractor> Array(*Stream.Input, Context);
+    VarStreamArray<StringRef, StringExtractor> Array(*Stream.Input);
     auto Iter = Array.begin();
     ASSERT_EQ("1. Test", *Iter++);
     ASSERT_EQ("2. Longer Test", *Iter++);

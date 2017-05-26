@@ -58,7 +58,6 @@ class HexagonAsmBackend : public MCAsmBackend {
     RF.getContents() = Code;
     RF.getFixups() = Fixups;
   }
-
 public:
   HexagonAsmBackend(const Target &T, const Triple &TT, uint8_t OSABI,
       StringRef CPU) :
@@ -184,11 +183,7 @@ public:
       { "fixup_Hexagon_IE_GOT_11_X",    0,      32,     0 },
       { "fixup_Hexagon_TPREL_32_6_X",   0,      32,     0 },
       { "fixup_Hexagon_TPREL_16_X",     0,      32,     0 },
-      { "fixup_Hexagon_TPREL_11_X",     0,      32,     0 },
-      { "fixup_Hexagon_GD_PLT_B22_PCREL_X",0,     32,     MCFixupKindInfo::FKF_IsPCRel },
-      { "fixup_Hexagon_GD_PLT_B32_PCREL_X",0,     32,     MCFixupKindInfo::FKF_IsPCRel },
-      { "fixup_Hexagon_LD_PLT_B22_PCREL_X",0,     32,     MCFixupKindInfo::FKF_IsPCRel },
-      { "fixup_Hexagon_LD_PLT_B32_PCREL_X",0,     32,     MCFixupKindInfo::FKF_IsPCRel }
+      { "fixup_Hexagon_TPREL_11_X",     0,      32,     0 }
     };
 
     if (Kind < FirstTargetFixupKind)
@@ -295,11 +290,6 @@ public:
       case fixup_Hexagon_32_PCREL:
       case fixup_Hexagon_6_PCREL_X:
       case fixup_Hexagon_23_REG:
-      case fixup_Hexagon_27_REG:
-      case fixup_Hexagon_GD_PLT_B22_PCREL_X:
-      case fixup_Hexagon_GD_PLT_B32_PCREL_X:
-      case fixup_Hexagon_LD_PLT_B22_PCREL_X:
-      case fixup_Hexagon_LD_PLT_B32_PCREL_X:
         // These relocations should always have a relocation recorded
         IsResolved = false;
         return;
@@ -356,8 +346,6 @@ public:
       case fixup_Hexagon_B9_PCREL_X:
       case fixup_Hexagon_B7_PCREL:
       case fixup_Hexagon_B7_PCREL_X:
-      case fixup_Hexagon_GD_PLT_B32_PCREL_X:
-      case fixup_Hexagon_LD_PLT_B32_PCREL_X:
         return 4;
     }
   }
@@ -385,8 +373,6 @@ public:
         break;
 
       case fixup_Hexagon_B32_PCREL_X:
-      case fixup_Hexagon_GD_PLT_B32_PCREL_X:
-      case fixup_Hexagon_LD_PLT_B32_PCREL_X:
         Value >>= 6;
         break;
     }
@@ -725,24 +711,22 @@ public:
               break;
             }
             case MCFragment::FT_Relaxable: {
-              MCContext &Context = Asm.getContext();
               auto &RF = cast<MCRelaxableFragment>(*K);
               auto &Inst = const_cast<MCInst &>(RF.getInst());
               while (Size > 0 && HexagonMCInstrInfo::bundleSize(Inst) < 4) {
-                MCInst *Nop = new (Context) MCInst;
+                MCInst *Nop = new (Asm.getContext()) MCInst;
                 Nop->setOpcode(Hexagon::A2_nop);
                 Inst.addOperand(MCOperand::createInst(Nop));
                 Size -= 4;
                 if (!HexagonMCChecker(
-                         Context, *MCII, RF.getSubtargetInfo(), Inst,
-                         *Context.getRegisterInfo(), false)
-                         .check()) {
+                           *MCII, RF.getSubtargetInfo(), Inst, Inst,
+                           *Asm.getContext().getRegisterInfo()).check()) {
                   Inst.erase(Inst.end() - 1);
                   Size = 0;
                 }
               }
-              bool Error = HexagonMCShuffle(Context, true, *MCII,
-                                            RF.getSubtargetInfo(), Inst);
+              bool Error = HexagonMCShuffle(true, *MCII, RF.getSubtargetInfo(),
+                                            Inst);
               //assert(!Error);
               (void)Error;
               ReplaceInstruction(Asm.getEmitter(), RF, Inst);

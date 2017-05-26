@@ -501,8 +501,7 @@ static Instruction *createMalloc(Instruction *InsertBefore,
   MCall->setTailCall();
   if (Function *F = dyn_cast<Function>(MallocFunc)) {
     MCall->setCallingConv(F->getCallingConv());
-    if (!F->doesNotAlias(AttributeList::ReturnIndex))
-      F->setDoesNotAlias(AttributeList::ReturnIndex);
+    if (!F->doesNotAlias(0)) F->setDoesNotAlias(0);
   }
   assert(!MCall->getType()->isVoidTy() && "Malloc has void return type");
 

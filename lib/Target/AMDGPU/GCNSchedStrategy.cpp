@@ -422,9 +422,8 @@ void GCNScheduleDAGMILive::discoverLiveIns() {
   unsigned SGPRs = 0;
   unsigned VGPRs = 0;
 
-  auto &MI = *begin()->getParent()->getFirstNonDebugInstr();
   const SIRegisterInfo *SRI = static_cast<const SIRegisterInfo*>(TRI);
-  SlotIndex SI = LIS->getInstructionIndex(MI).getBaseIndex();
+  SlotIndex SI = LIS->getInstructionIndex(*begin()).getBaseIndex();
   assert (SI.isValid());
 
   DEBUG(dbgs() << "Region live-ins:");

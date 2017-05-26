@@ -26,7 +26,6 @@ class MCSymbol;
 
 /// This represents a section on wasm.
 class MCSectionWasm final : public MCSection {
-private:
   /// This is the name of the section.  The referenced memory is owned by
   /// TargetLoweringObjectFileWasm's WasmUniqueMap.
   StringRef SectionName;
@@ -41,11 +40,10 @@ private:
 
   const MCSymbolWasm *Group;
 
-  // The offset of the MC function/data section in the wasm code/data section.
-  // For data relocations the offset is relative to start of the data payload
-  // itself and does not include the size of the section header.
+  // The offset of the MC function section in the wasm code section.
   uint64_t SectionOffset;
 
+private:
   friend class MCContext;
   MCSectionWasm(StringRef Section, unsigned type, unsigned flags, SectionKind K,
                 const MCSymbolWasm *group, unsigned UniqueID, MCSymbol *Begin)

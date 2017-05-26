@@ -51,7 +51,6 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Transforms/Scalar.h"
 
 using namespace llvm;
@@ -538,9 +537,9 @@ bool GuardWideningImpl::parseRangeChecks(
     } else if (match(Check.getBase(),
                      m_Or(m_Value(OpLHS), m_ConstantInt(OpRHS)))) {
       unsigned BitWidth = OpLHS->getType()->getScalarSizeInBits();
-      KnownBits Known(BitWidth);
-      computeKnownBits(OpLHS, Known, DL);
-      if ((OpRHS->getValue() & Known.Zero) == OpRHS->getValue()) {
+      APInt KnownZero(BitWidth, 0), KnownOne(BitWidth, 0);
+      computeKnownBits(OpLHS, KnownZero, KnownOne, DL);
+      if ((OpRHS->getValue() & KnownZero) == OpRHS->getValue()) {
         Check.setBase(OpLHS);
         APInt NewOffset = Check.getOffsetValue() + OpRHS->getValue();
         Check.setOffset(ConstantInt::get(Ctx, NewOffset));

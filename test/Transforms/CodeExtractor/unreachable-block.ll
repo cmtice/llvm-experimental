@@ -9,11 +9,13 @@
 ; CHECK-LABEL: define internal void @tinkywinky.1_ontrue() {
 ; CHECK-NEXT: newFuncRoot:
 ; CHECK-NEXT:   br label %ontrue
-; CHECK: onfalse{{.*}}:
+; CHECK: .exitStub:
 ; CHECK-NEXT:   ret void
 ; CHECK: ontrue:
 ; CHECK-NEXT:   call void @patatino()
-; CHECK-NEXT:   br label %onfalse{{.*}}
+; CHECK-NEXT:   br label %onfalse
+; CHECK: onfalse:
+; CHECK-NEXT:   br label %.exitStub
 ; CHECK-NEXT: }
 
 declare void @patatino()

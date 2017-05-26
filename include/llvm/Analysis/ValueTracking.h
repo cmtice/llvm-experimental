@@ -29,7 +29,6 @@ template <typename T> class ArrayRef;
   class DominatorTree;
   class GEPOperator;
   class Instruction;
-  struct KnownBits;
   class Loop;
   class LoopInfo;
   class OptimizationRemarkEmitter;
@@ -50,7 +49,7 @@ template <typename T> class ArrayRef;
   /// where V is a vector, the known zero and known one values are the
   /// same width as the vector element, and the bit is set only if it is true
   /// for all of the elements in the vector.
-  void computeKnownBits(const Value *V, KnownBits &Known,
+  void computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
                         const DataLayout &DL, unsigned Depth = 0,
                         AssumptionCache *AC = nullptr,
                         const Instruction *CxtI = nullptr,
@@ -60,7 +59,7 @@ template <typename T> class ArrayRef;
   /// \p KnownZero the set of bits that are known to be zero
   /// \p KnownOne the set of bits that are known to be one
   void computeKnownBitsFromRangeMetadata(const MDNode &Ranges,
-                                         KnownBits &Known);
+                                         APInt &KnownZero, APInt &KnownOne);
   /// Return true if LHS and RHS have no common bits set.
   bool haveNoCommonBitsSet(const Value *LHS, const Value *RHS,
                            const DataLayout &DL,
@@ -417,7 +416,7 @@ template <typename T> class ArrayRef;
   ///
   /// Note that this currently only considers the basic block that is
   /// the parent of I.
-  bool programUndefinedIfFullPoison(const Instruction *PoisonI);
+  bool isKnownNotFullPoison(const Instruction *PoisonI);
 
   /// \brief Specific patterns of select instructions we can match.
   enum SelectPatternFlavor {

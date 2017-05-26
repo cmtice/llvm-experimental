@@ -58,7 +58,7 @@ void StringTableBuilder::write(raw_ostream &OS) const {
   OS << Data;
 }
 
-using StringPair = std::pair<CachedHashStringRef, size_t>;
+typedef std::pair<CachedHashStringRef, size_t> StringPair;
 
 void StringTableBuilder::write(uint8_t *Buf) const {
   assert(isFinalized());

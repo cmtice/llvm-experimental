@@ -32,10 +32,14 @@
 using namespace llvm;
 
 namespace llvm {
+//===----------------------------------------------------------------------===//
+// ConvergingVLIWScheduler - Implementation of the standard
+// MachineSchedStrategy.
+//===----------------------------------------------------------------------===//
 
 class VLIWResourceModel {
   /// ResourcesModel - Represents VLIW state.
-  /// Not limited to VLIW targets per se, but assumes
+  /// Not limited to VLIW targets per say, but assumes
   /// definition of DFA by a target.
   DFAPacketizer *ResourcesModel;
 
@@ -105,11 +109,6 @@ public:
   /// time to do some work.
   void schedule() override;
 };
-
-//===----------------------------------------------------------------------===//
-// ConvergingVLIWScheduler - Implementation of the standard
-// MachineSchedStrategy.
-//===----------------------------------------------------------------------===//
 
 /// ConvergingVLIWScheduler shrinks the unscheduled zone using heuristics
 /// to balance the schedule.

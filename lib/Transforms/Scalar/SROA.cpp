@@ -25,7 +25,6 @@
 
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AssumptionCache.h"
@@ -2187,8 +2186,8 @@ class llvm::sroa::AllocaSliceRewriter
   Instruction *OldPtr;
 
   // Track post-rewrite users which are PHI nodes and Selects.
-  SmallSetVector<PHINode *, 8> &PHIUsers;
-  SmallSetVector<SelectInst *, 8> &SelectUsers;
+  SmallPtrSetImpl<PHINode *> &PHIUsers;
+  SmallPtrSetImpl<SelectInst *> &SelectUsers;
 
   // Utility IR builder, whose name prefix is setup for each visited use, and
   // the insertion point is set to point to the user.
@@ -2200,8 +2199,8 @@ public:
                       uint64_t NewAllocaBeginOffset,
                       uint64_t NewAllocaEndOffset, bool IsIntegerPromotable,
                       VectorType *PromotableVecTy,
-                      SmallSetVector<PHINode *, 8> &PHIUsers,
-                      SmallSetVector<SelectInst *, 8> &SelectUsers)
+                      SmallPtrSetImpl<PHINode *> &PHIUsers,
+                      SmallPtrSetImpl<SelectInst *> &SelectUsers)
       : DL(DL), AS(AS), Pass(Pass), OldAI(OldAI), NewAI(NewAI),
         NewAllocaBeginOffset(NewAllocaBeginOffset),
         NewAllocaEndOffset(NewAllocaEndOffset),
@@ -3881,8 +3880,8 @@ AllocaInst *SROA::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
   // fact scheduled for promotion.
   unsigned PPWOldSize = PostPromotionWorklist.size();
   unsigned NumUses = 0;
-  SmallSetVector<PHINode *, 8> PHIUsers;
-  SmallSetVector<SelectInst *, 8> SelectUsers;
+  SmallPtrSet<PHINode *, 8> PHIUsers;
+  SmallPtrSet<SelectInst *, 8> SelectUsers;
 
   AllocaSliceRewriter Rewriter(DL, AS, *this, AI, *NewAI, P.beginOffset(),
                                P.endOffset(), IsIntegerPromotable, VecTy,
@@ -3903,16 +3902,19 @@ AllocaInst *SROA::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
 
   // Now that we've processed all the slices in the new partition, check if any
   // PHIs or Selects would block promotion.
-  for (PHINode *PHI : PHIUsers)
-    if (!isSafePHIToSpeculate(*PHI)) {
+  for (SmallPtrSetImpl<PHINode *>::iterator I = PHIUsers.begin(),
+                                            E = PHIUsers.end();
+       I != E; ++I)
+    if (!isSafePHIToSpeculate(**I)) {
       Promotable = false;
       PHIUsers.clear();
       SelectUsers.clear();
       break;
     }
-
-  for (SelectInst *Sel : SelectUsers)
-    if (!isSafeSelectToSpeculate(*Sel)) {
+  for (SmallPtrSetImpl<SelectInst *>::iterator I = SelectUsers.begin(),
+                                               E = SelectUsers.end();
+       I != E; ++I)
+    if (!isSafeSelectToSpeculate(**I)) {
       Promotable = false;
       PHIUsers.clear();
       SelectUsers.clear();

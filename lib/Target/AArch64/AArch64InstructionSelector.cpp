@@ -51,6 +51,7 @@ public:
                              const AArch64Subtarget &STI,
                              const AArch64RegisterBankInfo &RBI);
 
+  void beginFunction(const MachineFunction &MF) override;
   bool select(MachineInstr &I) const override;
 
 private:
@@ -73,10 +74,12 @@ private:
   const AArch64InstrInfo &TII;
   const AArch64RegisterInfo &TRI;
   const AArch64RegisterBankInfo &RBI;
+  bool ForCodeSize;
 
-#define GET_GLOBALISEL_PREDICATES_DECL
-#include "AArch64GenGlobalISel.inc"
-#undef GET_GLOBALISEL_PREDICATES_DECL
+  PredicateBitset AvailableFeatures;
+  PredicateBitset
+  computeAvailableFeatures(const MachineFunction *MF,
+                           const AArch64Subtarget *Subtarget) const;
 
 // We declare the temporaries used by selectImpl() in the class to minimize the
 // cost of constructing placeholder values.
@@ -95,10 +98,7 @@ AArch64InstructionSelector::AArch64InstructionSelector(
     const AArch64TargetMachine &TM, const AArch64Subtarget &STI,
     const AArch64RegisterBankInfo &RBI)
     : InstructionSelector(), TM(TM), STI(STI), TII(*STI.getInstrInfo()),
-      TRI(*STI.getRegisterInfo()), RBI(RBI),
-#define GET_GLOBALISEL_PREDICATES_INIT
-#include "AArch64GenGlobalISel.inc"
-#undef GET_GLOBALISEL_PREDICATES_INIT
+      TRI(*STI.getRegisterInfo()), RBI(RBI), ForCodeSize(), AvailableFeatures()
 #define GET_GLOBALISEL_TEMPORARIES_INIT
 #include "AArch64GenGlobalISel.inc"
 #undef GET_GLOBALISEL_TEMPORARIES_INIT
@@ -575,6 +575,12 @@ bool AArch64InstructionSelector::selectVaStartDarwin(
   constrainSelectedInstRegOperands(*MIB, TII, TRI, RBI);
   I.eraseFromParent();
   return true;
+}
+
+void AArch64InstructionSelector::beginFunction(
+    const MachineFunction &MF) {
+  ForCodeSize = MF.getFunction()->optForSize();
+  AvailableFeatures = computeAvailableFeatures(&MF, &STI);
 }
 
 bool AArch64InstructionSelector::select(MachineInstr &I) const {

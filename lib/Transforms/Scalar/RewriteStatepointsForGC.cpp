@@ -1128,23 +1128,39 @@ normalizeForInvokeSafepoint(BasicBlock *BB, BasicBlock *InvokeParent,
 
 // Create new attribute set containing only attributes which can be transferred
 // from original call to the safepoint.
-static AttributeList legalizeCallAttributes(AttributeList AL) {
-  if (AL.isEmpty())
-    return AL;
+static AttributeList legalizeCallAttributes(AttributeList AS) {
+  AttributeList Ret;
 
-  // Remove the readonly, readnone, and statepoint function attributes.
-  AttrBuilder FnAttrs = AL.getFnAttributes();
-  FnAttrs.removeAttribute(Attribute::ReadNone);
-  FnAttrs.removeAttribute(Attribute::ReadOnly);
-  for (Attribute A : AL.getFnAttributes()) {
-    if (isStatepointDirectiveAttr(A))
-      FnAttrs.remove(A);
+  for (unsigned Slot = 0; Slot < AS.getNumSlots(); Slot++) {
+    unsigned Index = AS.getSlotIndex(Slot);
+
+    if (Index == AttributeList::ReturnIndex ||
+        Index == AttributeList::FunctionIndex) {
+
+      for (Attribute Attr : make_range(AS.begin(Slot), AS.end(Slot))) {
+
+        // Do not allow certain attributes - just skip them
+        // Safepoint can not be read only or read none.
+        if (Attr.hasAttribute(Attribute::ReadNone) ||
+            Attr.hasAttribute(Attribute::ReadOnly))
+          continue;
+
+        // These attributes control the generation of the gc.statepoint call /
+        // invoke itself; and once the gc.statepoint is in place, they're of no
+        // use.
+        if (isStatepointDirectiveAttr(Attr))
+          continue;
+
+        Ret = Ret.addAttributes(
+            AS.getContext(), Index,
+            AttributeList::get(AS.getContext(), Index, AttrBuilder(Attr)));
+      }
+    }
+
+    // Just skip parameter attributes for now
   }
 
-  // Just skip parameter and return attributes for now
-  LLVMContext &Ctx = AL.getContext();
-  return AttributeList::get(Ctx, AttributeList::FunctionIndex,
-                            AttributeSet::get(Ctx, FnAttrs));
+  return Ret;
 }
 
 /// Helper function to place all gc relocates necessary for the given
@@ -1386,10 +1402,13 @@ makeStatepointExplicitImpl(const CallSite CS, /* to replace */
     Call->setCallingConv(ToReplace->getCallingConv());
 
     // Currently we will fail on parameter attributes and on certain
-    // function attributes.  In case if we can handle this set of attributes -
-    // set up function attrs directly on statepoint and return attrs later for
-    // gc_result intrinsic.
-    Call->setAttributes(legalizeCallAttributes(ToReplace->getAttributes()));
+    // function attributes.
+    AttributeList NewAttrs = legalizeCallAttributes(ToReplace->getAttributes());
+    // In case if we can handle this set of attributes - set up function attrs
+    // directly on statepoint and return attrs later for gc_result intrinsic.
+    Call->setAttributes(AttributeList::get(Call->getContext(),
+                                           AttributeList::FunctionIndex,
+                                           NewAttrs.getFnAttributes()));
 
     Token = Call;
 
@@ -1412,10 +1431,13 @@ makeStatepointExplicitImpl(const CallSite CS, /* to replace */
     Invoke->setCallingConv(ToReplace->getCallingConv());
 
     // Currently we will fail on parameter attributes and on certain
-    // function attributes.  In case if we can handle this set of attributes -
-    // set up function attrs directly on statepoint and return attrs later for
-    // gc_result intrinsic.
-    Invoke->setAttributes(legalizeCallAttributes(ToReplace->getAttributes()));
+    // function attributes.
+    AttributeList NewAttrs = legalizeCallAttributes(ToReplace->getAttributes());
+    // In case if we can handle this set of attributes - set up function attrs
+    // directly on statepoint and return attrs later for gc_result intrinsic.
+    Invoke->setAttributes(AttributeList::get(Invoke->getContext(),
+                                             AttributeList::FunctionIndex,
+                                             NewAttrs.getFnAttributes()));
 
     Token = Invoke;
 
@@ -2290,7 +2312,8 @@ static void RemoveNonValidAttrAtIndex(LLVMContext &Ctx, AttrHolder &AH,
     R.addAttribute(Attribute::NoAlias);
 
   if (!R.empty())
-    AH.setAttributes(AH.getAttributes().removeAttributes(Ctx, Index, R));
+    AH.setAttributes(AH.getAttributes().removeAttributes(
+        Ctx, Index, AttributeList::get(Ctx, Index, R)));
 }
 
 void

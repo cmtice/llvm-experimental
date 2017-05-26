@@ -58,14 +58,13 @@ class LoopRotate {
   AssumptionCache *AC;
   DominatorTree *DT;
   ScalarEvolution *SE;
-  const SimplifyQuery &SQ;
 
 public:
   LoopRotate(unsigned MaxHeaderSize, LoopInfo *LI,
              const TargetTransformInfo *TTI, AssumptionCache *AC,
-             DominatorTree *DT, ScalarEvolution *SE, const SimplifyQuery &SQ)
-      : MaxHeaderSize(MaxHeaderSize), LI(LI), TTI(TTI), AC(AC), DT(DT), SE(SE),
-        SQ(SQ) {}
+             DominatorTree *DT, ScalarEvolution *SE)
+      : MaxHeaderSize(MaxHeaderSize), LI(LI), TTI(TTI), AC(AC), DT(DT), SE(SE) {
+  }
   bool processLoop(Loop *L);
 
 private:
@@ -312,6 +311,8 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
   for (; PHINode *PN = dyn_cast<PHINode>(I); ++I)
     ValueMap[PN] = PN->getIncomingValueForBlock(OrigPreheader);
 
+  const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
+
   // For the rest of the instructions, either hoist to the OrigPreheader if
   // possible or create a clone in the OldPreHeader if not.
   TerminatorInst *LoopEntryBranch = OrigPreheader->getTerminator();
@@ -341,7 +342,8 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
     // With the operands remapped, see if the instruction constant folds or is
     // otherwise simplifyable.  This commonly occurs because the entry from PHI
     // nodes allows icmps and other instructions to fold.
-    Value *V = SimplifyInstruction(C, SQ);
+    // FIXME: Provide TLI, DT, AC to SimplifyInstruction.
+    Value *V = SimplifyInstruction(C, DL);
     if (V && LI->replacementPreservesLCSSAForm(C, V)) {
       // If so, then delete the temporary instruction and stick the folded value
       // in the map.
@@ -669,10 +671,7 @@ PreservedAnalyses LoopRotatePass::run(Loop &L, LoopAnalysisManager &AM,
                                       LoopStandardAnalysisResults &AR,
                                       LPMUpdater &) {
   int Threshold = EnableHeaderDuplication ? DefaultRotationThreshold : 0;
-  const DataLayout &DL = L.getHeader()->getModule()->getDataLayout();
-  const SimplifyQuery SQ = getBestSimplifyQuery(AR, DL);
-  LoopRotate LR(Threshold, &AR.LI, &AR.TTI, &AR.AC, &AR.DT, &AR.SE,
-                SQ);
+  LoopRotate LR(Threshold, &AR.LI, &AR.TTI, &AR.AC, &AR.DT, &AR.SE);
 
   bool Changed = LR.processLoop(&L);
   if (!Changed)
@@ -715,8 +714,7 @@ public:
     auto *DT = DTWP ? &DTWP->getDomTree() : nullptr;
     auto *SEWP = getAnalysisIfAvailable<ScalarEvolutionWrapperPass>();
     auto *SE = SEWP ? &SEWP->getSE() : nullptr;
-    const SimplifyQuery SQ = getBestSimplifyQuery(*this, F);
-    LoopRotate LR(MaxHeaderSize, LI, TTI, AC, DT, SE, SQ);
+    LoopRotate LR(MaxHeaderSize, LI, TTI, AC, DT, SE);
     return LR.processLoop(L);
   }
 };

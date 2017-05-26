@@ -125,9 +125,8 @@ public:
     if (getTargetMachine().Options.NoSignedZerosFPMath)
       return true;
 
-    const auto Flags = Op.getNode()->getFlags();
-    if (Flags.isDefined())
-      return Flags.hasNoSignedZeros();
+    if (const auto *BO = dyn_cast<BinaryWithFlagsSDNode>(Op))
+      return BO->Flags.hasNoSignedZeros();
 
     return false;
   }
@@ -200,7 +199,8 @@ public:
   /// either zero or one and return them in the \p KnownZero and \p KnownOne
   /// bitsets.
   void computeKnownBitsForTargetNode(const SDValue Op,
-                                     KnownBits &Known,
+                                     APInt &KnownZero,
+                                     APInt &KnownOne,
                                      const APInt &DemandedElts,
                                      const SelectionDAG &DAG,
                                      unsigned Depth = 0) const override;
@@ -370,8 +370,6 @@ enum NodeType : unsigned {
   BUILD_VERTICAL_VECTOR,
   /// Pointer to the start of the shader's constant data.
   CONST_DATA_PTR,
-  INIT_EXEC,
-  INIT_EXEC_FROM_INPUT,
   SENDMSG,
   SENDMSGHALT,
   INTERP_MOV,

@@ -58,10 +58,6 @@ types are:
     The 'string' type represents an ordered sequence of characters of arbitrary
     length.
 
-``code``
-    The `code` type represents a code fragment, which can be single/multi-line
-    string literal.
-
 ``bits<n>``
     A 'bits' type is an arbitrary, but fixed, size integer that is broken up
     into individual bits.  This type is useful because it can handle some bits
@@ -109,7 +105,7 @@ supported include:
     hexadecimal integer value
 
 ``"foo"``
-    a single-line string value, can be assigned to ``string`` or ``code`` variable.
+    string value
 
 ``[{ ... }]``
     usually called a "code fragment", but is just a multiline string literal
@@ -130,8 +126,7 @@ supported include:
     access to one bit of a value
 
 ``value{15-17}``
-    access to an ordered sequence of bits of a value, in particular ``value{15-17}``
-    produces an order that is the reverse of ``value{17-15}``.
+    access to multiple bits of a value
 
 ``DEF``
     reference to a record definition

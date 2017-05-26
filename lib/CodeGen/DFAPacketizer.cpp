@@ -213,8 +213,10 @@ VLIWPacketizerList::VLIWPacketizerList(MachineFunction &mf,
 
 
 VLIWPacketizerList::~VLIWPacketizerList() {
-  delete VLIWScheduler;
-  delete ResourceTracker;
+  if (VLIWScheduler)
+    delete VLIWScheduler;
+  if (ResourceTracker)
+    delete ResourceTracker;
 }
 
 

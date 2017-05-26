@@ -17,8 +17,8 @@
 #include "llvm/DebugInfo/PDB/Native/DbiStreamBuilder.h"
 #include "llvm/DebugInfo/PDB/Native/InfoStream.h"
 #include "llvm/DebugInfo/PDB/Native/InfoStreamBuilder.h"
-#include "llvm/DebugInfo/PDB/Native/PDBStringTableBuilder.h"
 #include "llvm/DebugInfo/PDB/Native/RawError.h"
+#include "llvm/DebugInfo/PDB/Native/StringTableBuilder.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStreamBuilder.h"
 #include "llvm/Support/BinaryStream.h"
@@ -67,9 +67,7 @@ TpiStreamBuilder &PDBFileBuilder::getIpiBuilder() {
   return *Ipi;
 }
 
-PDBStringTableBuilder &PDBFileBuilder::getStringTableBuilder() {
-  return Strings;
-}
+StringTableBuilder &PDBFileBuilder::getStringTableBuilder() { return Strings; }
 
 Error PDBFileBuilder::addNamedStream(StringRef Name, uint32_t Size) {
   auto ExpectedStream = Msf->addStream(Size);
@@ -80,9 +78,9 @@ Error PDBFileBuilder::addNamedStream(StringRef Name, uint32_t Size) {
 }
 
 Expected<msf::MSFLayout> PDBFileBuilder::finalizeMsfLayout() {
-  uint32_t PDBStringTableSize = Strings.finalize();
+  uint32_t StringTableSize = Strings.finalize();
 
-  if (auto EC = addNamedStream("/names", PDBStringTableSize))
+  if (auto EC = addNamedStream("/names", StringTableSize))
     return std::move(EC);
   if (auto EC = addNamedStream("/LinkInfo", 0))
     return std::move(EC);
@@ -146,12 +144,12 @@ Error PDBFileBuilder::commit(StringRef Filename) {
       return EC;
   }
 
-  uint32_t PDBStringTableStreamNo = 0;
-  if (!NamedStreams.get("/names", PDBStringTableStreamNo))
+  uint32_t StringTableStreamNo = 0;
+  if (!NamedStreams.get("/names", StringTableStreamNo))
     return llvm::make_error<pdb::RawError>(raw_error_code::no_stream);
 
-  auto NS = WritableMappedBlockStream::createIndexedStream(
-      Layout, Buffer, PDBStringTableStreamNo);
+  auto NS = WritableMappedBlockStream::createIndexedStream(Layout, Buffer,
+                                                           StringTableStreamNo);
   BinaryStreamWriter NSWriter(*NS);
   if (auto EC = Strings.commit(NSWriter))
     return EC;

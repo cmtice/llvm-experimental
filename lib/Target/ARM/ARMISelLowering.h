@@ -350,7 +350,8 @@ class InstrItineraryData;
                                     SDValue &Offset, ISD::MemIndexedMode &AM,
                                     SelectionDAG &DAG) const override;
 
-    void computeKnownBitsForTargetNode(const SDValue Op, KnownBits &Known,
+    void computeKnownBitsForTargetNode(const SDValue Op, APInt &KnownZero,
+                                       APInt &KnownOne,
                                        const APInt &DemandedElts,
                                        const SelectionDAG &DAG,
                                        unsigned Depth) const override;

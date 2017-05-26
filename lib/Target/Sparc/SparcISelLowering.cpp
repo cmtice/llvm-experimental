@@ -30,7 +30,6 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/KnownBits.h"
 using namespace llvm;
 
 
@@ -1876,24 +1875,25 @@ EVT SparcTargetLowering::getSetCCResultType(const DataLayout &, LLVMContext &,
 /// combiner.
 void SparcTargetLowering::computeKnownBitsForTargetNode
                                 (const SDValue Op,
-                                 KnownBits &Known,
+                                 APInt &KnownZero,
+                                 APInt &KnownOne,
                                  const APInt &DemandedElts,
                                  const SelectionDAG &DAG,
                                  unsigned Depth) const {
-  KnownBits Known2;
-  Known.Zero.clearAllBits(); Known.One.clearAllBits();
+  APInt KnownZero2, KnownOne2;
+  KnownZero = KnownOne = APInt(KnownZero.getBitWidth(), 0);
 
   switch (Op.getOpcode()) {
   default: break;
   case SPISD::SELECT_ICC:
   case SPISD::SELECT_XCC:
   case SPISD::SELECT_FCC:
-    DAG.computeKnownBits(Op.getOperand(1), Known, Depth+1);
-    DAG.computeKnownBits(Op.getOperand(0), Known2, Depth+1);
+    DAG.computeKnownBits(Op.getOperand(1), KnownZero, KnownOne, Depth+1);
+    DAG.computeKnownBits(Op.getOperand(0), KnownZero2, KnownOne2, Depth+1);
 
     // Only known if known in both the LHS and RHS.
-    Known.One &= Known2.One;
-    Known.Zero &= Known2.Zero;
+    KnownOne &= KnownOne2;
+    KnownZero &= KnownZero2;
     break;
   }
 }

@@ -295,11 +295,6 @@ public:
     printBinaryImpl(Label, StringRef(), V, false);
   }
 
-  void printBinaryBlock(StringRef Label, ArrayRef<uint8_t> Value,
-                        uint32_t StartOffset) {
-    printBinaryImpl(Label, StringRef(), Value, true, StartOffset);
-  }
-
   void printBinaryBlock(StringRef Label, ArrayRef<uint8_t> Value) {
     printBinaryImpl(Label, StringRef(), Value, true);
   }
@@ -338,7 +333,7 @@ private:
   }
 
   void printBinaryImpl(StringRef Label, StringRef Str, ArrayRef<uint8_t> Value,
-                       bool Block, uint32_t StartOffset = 0);
+                       bool Block);
 
   raw_ostream &OS;
   int IndentLevel;

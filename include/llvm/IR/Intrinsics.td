@@ -98,18 +98,6 @@ def IntrNoDuplicate : IntrinsicProperty;
 // Parallels the convergent attribute on LLVM IR functions.
 def IntrConvergent : IntrinsicProperty;
 
-// This property indicates that the intrinsic is safe to speculate.
-def IntrSpeculatable : IntrinsicProperty;
-
-// This property can be used to override the 'has no other side effects'
-// language of the IntrNoMem, IntrReadMem, IntrWriteMem, and IntrArgMemOnly
-// intrinsic properties.  By default, intrinsics are assumed to have side
-// effects, so this property is only necessary if you have defined one of
-// the memory properties listed above.
-// For this property, 'side effects' has the same meaning as 'side effects'
-// defined by the hasSideEffects property of the TableGen Instruction class.
-def IntrHasSideEffects : IntrinsicProperty;
-
 //===----------------------------------------------------------------------===//
 // Types used by intrinsics.
 //===----------------------------------------------------------------------===//
@@ -404,7 +392,7 @@ def int_memset  : Intrinsic<[],
 // FIXME: Add version of these floating point intrinsics which allow non-default
 // rounding modes and FP exception handling.
 
-let IntrProperties = [IntrNoMem, IntrSpeculatable] in {
+let IntrProperties = [IntrNoMem] in {
   def int_fma  : Intrinsic<[llvm_anyfloat_ty],
                            [LLVMMatchType<0>, LLVMMatchType<0>,
                             LLVMMatchType<0>]>;
@@ -440,12 +428,10 @@ let IntrProperties = [IntrNoMem, IntrSpeculatable] in {
 }
 
 def int_minnum : Intrinsic<[llvm_anyfloat_ty],
-  [LLVMMatchType<0>, LLVMMatchType<0>],
-  [IntrNoMem, IntrSpeculatable, Commutative]
+  [LLVMMatchType<0>, LLVMMatchType<0>], [IntrNoMem, Commutative]
 >;
 def int_maxnum : Intrinsic<[llvm_anyfloat_ty],
-  [LLVMMatchType<0>, LLVMMatchType<0>],
-  [IntrNoMem, IntrSpeculatable, Commutative]
+  [LLVMMatchType<0>, LLVMMatchType<0>], [IntrNoMem, Commutative]
 >;
 
 // NOTE: these are internal interfaces.
@@ -457,7 +443,7 @@ def int_siglongjmp : Intrinsic<[], [llvm_ptr_ty, llvm_i32_ty], [IntrNoReturn]>;
 // Internal interface for object size checking
 def int_objectsize : Intrinsic<[llvm_anyint_ty],
                                [llvm_anyptr_ty, llvm_i1_ty, llvm_i1_ty],
-                               [IntrNoMem, IntrSpeculatable]>,
+                               [IntrNoMem]>,
                                GCCBuiltin<"__builtin_object_size">;
 
 //===--------------- Constrained Floating Point Intrinsics ----------------===//
@@ -502,7 +488,7 @@ def int_expect : Intrinsic<[llvm_anyint_ty], [LLVMMatchType<0>,
 //
 
 // None of these intrinsics accesses memory at all.
-let IntrProperties = [IntrNoMem, IntrSpeculatable] in {
+let IntrProperties = [IntrNoMem] in {
   def int_bswap: Intrinsic<[llvm_anyint_ty], [LLVMMatchType<0>]>;
   def int_ctpop: Intrinsic<[llvm_anyint_ty], [LLVMMatchType<0>]>;
   def int_ctlz : Intrinsic<[llvm_anyint_ty], [LLVMMatchType<0>, llvm_i1_ty]>;
@@ -513,11 +499,10 @@ let IntrProperties = [IntrNoMem, IntrSpeculatable] in {
 //===------------------------ Debugger Intrinsics -------------------------===//
 //
 
-// None of these intrinsics accesses memory at all...but that doesn't
-// mean the optimizers can change them aggressively.  Special handling
-// needed in a few places. These synthetic intrinsics have no
-// side-effects and just mark information about their operands.
-let IntrProperties = [IntrNoMem, IntrSpeculatable] in {
+// None of these intrinsics accesses memory at all...but that doesn't mean the
+// optimizers can change them aggressively.  Special handling needed in a few
+// places.
+let IntrProperties = [IntrNoMem] in {
   def int_dbg_declare      : Intrinsic<[],
                                        [llvm_metadata_ty,
                                        llvm_metadata_ty,
@@ -595,24 +580,24 @@ def int_adjust_trampoline : Intrinsic<[llvm_ptr_ty], [llvm_ptr_ty],
 // Expose the carry flag from add operations on two integrals.
 def int_sadd_with_overflow : Intrinsic<[llvm_anyint_ty, llvm_i1_ty],
                                        [LLVMMatchType<0>, LLVMMatchType<0>],
-                                       [IntrNoMem, IntrSpeculatable]>;
+                                       [IntrNoMem]>;
 def int_uadd_with_overflow : Intrinsic<[llvm_anyint_ty, llvm_i1_ty],
                                        [LLVMMatchType<0>, LLVMMatchType<0>],
-                                       [IntrNoMem, IntrSpeculatable]>;
+                                       [IntrNoMem]>;
 
 def int_ssub_with_overflow : Intrinsic<[llvm_anyint_ty, llvm_i1_ty],
                                        [LLVMMatchType<0>, LLVMMatchType<0>],
-                                       [IntrNoMem, IntrSpeculatable]>;
+                                       [IntrNoMem]>;
 def int_usub_with_overflow : Intrinsic<[llvm_anyint_ty, llvm_i1_ty],
                                        [LLVMMatchType<0>, LLVMMatchType<0>],
-                                       [IntrNoMem, IntrSpeculatable]>;
+                                       [IntrNoMem]>;
 
 def int_smul_with_overflow : Intrinsic<[llvm_anyint_ty, llvm_i1_ty],
                                        [LLVMMatchType<0>, LLVMMatchType<0>],
-                                       [IntrNoMem, IntrSpeculatable]>;
+                                       [IntrNoMem]>;
 def int_umul_with_overflow : Intrinsic<[llvm_anyint_ty, llvm_i1_ty],
                                        [LLVMMatchType<0>, LLVMMatchType<0>],
-                                       [IntrNoMem, IntrSpeculatable]>;
+                                       [IntrNoMem]>;
 
 //===------------------------- Memory Use Markers -------------------------===//
 //
@@ -636,7 +621,7 @@ def int_invariant_end   : Intrinsic<[],
 // it can be CSE only if memory didn't change between 2 barriers call,
 // which is valid.
 // The argument also can't be marked with 'returned' attribute, because
-// it would remove barrier.
+// it would remove barrier. 
 def int_invariant_group_barrier : Intrinsic<[llvm_ptr_ty],
                                             [llvm_ptr_ty],
                                             [IntrReadMem, IntrArgMemOnly]>;

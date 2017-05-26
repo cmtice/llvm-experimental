@@ -47,13 +47,13 @@ public:
     BundleLockedAlignToEnd
   };
 
-  using FragmentListType = iplist<MCFragment>;
+  typedef iplist<MCFragment> FragmentListType;
 
-  using const_iterator = FragmentListType::const_iterator;
-  using iterator = FragmentListType::iterator;
+  typedef FragmentListType::const_iterator const_iterator;
+  typedef FragmentListType::iterator iterator;
 
-  using const_reverse_iterator = FragmentListType::const_reverse_iterator;
-  using reverse_iterator = FragmentListType::reverse_iterator;
+  typedef FragmentListType::const_reverse_iterator const_reverse_iterator;
+  typedef FragmentListType::reverse_iterator reverse_iterator;
 
 private:
   MCSymbol *Begin;

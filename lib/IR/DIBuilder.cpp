@@ -676,14 +676,13 @@ DISubprogram *DIBuilder::createFunction(
     DIScope *Context, StringRef Name, StringRef LinkageName, DIFile *File,
     unsigned LineNo, DISubroutineType *Ty, bool isLocalToUnit,
     bool isDefinition, unsigned ScopeLine, DINode::DIFlags Flags,
-    bool isOptimized, DITemplateParameterArray TParams, DISubprogram *Decl,
-    DITypeArray ThrownTypes) {
+    bool isOptimized, DITemplateParameterArray TParams, DISubprogram *Decl) {
   auto *Node = getSubprogram(
       /* IsDistinct = */ isDefinition, VMContext,
       getNonCompileUnitScope(Context), Name, LinkageName, File, LineNo, Ty,
       isLocalToUnit, isDefinition, ScopeLine, nullptr, 0, 0, 0, Flags,
       isOptimized, isDefinition ? CUNode : nullptr, TParams, Decl,
-      MDTuple::getTemporary(VMContext, None).release(), ThrownTypes);
+      MDTuple::getTemporary(VMContext, None).release());
 
   if (isDefinition)
     AllSubprograms.push_back(Node);
@@ -695,22 +694,23 @@ DISubprogram *DIBuilder::createTempFunctionFwdDecl(
     DIScope *Context, StringRef Name, StringRef LinkageName, DIFile *File,
     unsigned LineNo, DISubroutineType *Ty, bool isLocalToUnit,
     bool isDefinition, unsigned ScopeLine, DINode::DIFlags Flags,
-    bool isOptimized, DITemplateParameterArray TParams, DISubprogram *Decl,
-    DITypeArray ThrownTypes) {
+    bool isOptimized, DITemplateParameterArray TParams, DISubprogram *Decl) {
   return DISubprogram::getTemporary(
              VMContext, getNonCompileUnitScope(Context), Name, LinkageName,
              File, LineNo, Ty, isLocalToUnit, isDefinition, ScopeLine, nullptr,
              0, 0, 0, Flags, isOptimized, isDefinition ? CUNode : nullptr,
-             TParams, Decl, nullptr, ThrownTypes)
+             TParams, Decl, nullptr)
       .release();
 }
 
-DISubprogram *DIBuilder::createMethod(
-    DIScope *Context, StringRef Name, StringRef LinkageName, DIFile *F,
-    unsigned LineNo, DISubroutineType *Ty, bool isLocalToUnit,
-    bool isDefinition, unsigned VK, unsigned VIndex, int ThisAdjustment,
-    DIType *VTableHolder, DINode::DIFlags Flags, bool isOptimized,
-    DITemplateParameterArray TParams, DITypeArray ThrownTypes) {
+DISubprogram *DIBuilder::createMethod(DIScope *Context, StringRef Name,
+                                      StringRef LinkageName, DIFile *F,
+                                      unsigned LineNo, DISubroutineType *Ty,
+                                      bool isLocalToUnit, bool isDefinition,
+                                      unsigned VK, unsigned VIndex,
+                                      int ThisAdjustment, DIType *VTableHolder,
+                                      DINode::DIFlags Flags, bool isOptimized,
+                                      DITemplateParameterArray TParams) {
   assert(getNonCompileUnitScope(Context) &&
          "Methods should have both a Context and a context that isn't "
          "the compile unit.");
@@ -719,7 +719,7 @@ DISubprogram *DIBuilder::createMethod(
       /* IsDistinct = */ isDefinition, VMContext, cast<DIScope>(Context), Name,
       LinkageName, F, LineNo, Ty, isLocalToUnit, isDefinition, LineNo,
       VTableHolder, VK, VIndex, ThisAdjustment, Flags, isOptimized,
-      isDefinition ? CUNode : nullptr, TParams, nullptr, nullptr, ThrownTypes);
+      isDefinition ? CUNode : nullptr, TParams, nullptr, nullptr);
 
   if (isDefinition)
     AllSubprograms.push_back(SP);
@@ -728,15 +728,10 @@ DISubprogram *DIBuilder::createMethod(
 }
 
 DINamespace *DIBuilder::createNameSpace(DIScope *Scope, StringRef Name,
+                                        DIFile *File, unsigned LineNo,
                                         bool ExportSymbols) {
-
-  // It is okay to *not* make anonymous top-level namespaces distinct, because
-  // all nodes that have an anonymous namespace as their parent scope are
-  // guaranteed to be unique and/or are linked to their containing
-  // DICompileUnit. This decision is an explicit tradeoff of link time versus
-  // memory usage versus code simplicity and may get revisited in the future.
-  return DINamespace::get(VMContext, getNonCompileUnitScope(Scope), Name,
-                          ExportSymbols);
+  return DINamespace::get(VMContext, getNonCompileUnitScope(Scope), File, Name,
+                          LineNo, ExportSymbols);
 }
 
 DIModule *DIBuilder::createModule(DIScope *Scope, StringRef Name,

@@ -35,7 +35,6 @@ public:
   StringRef getTypeName(TypeIndex Index) const;
 
   const CVType &getTypeRecord(TypeIndex Index) const;
-  CVType &getTypeRecord(TypeIndex Index);
 
   bool containsTypeIndex(TypeIndex Index) const;
 

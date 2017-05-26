@@ -70,7 +70,6 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
@@ -535,9 +534,10 @@ static bool isZero(Value *V, const DataLayout &DL, DominatorTree *DT,
   VectorType *VecTy = dyn_cast<VectorType>(V->getType());
   if (!VecTy) {
     unsigned BitWidth = V->getType()->getIntegerBitWidth();
-    KnownBits Known(BitWidth);
-    computeKnownBits(V, Known, DL, 0, AC, dyn_cast<Instruction>(V), DT);
-    return Known.Zero.isAllOnesValue();
+    APInt KnownZero(BitWidth, 0), KnownOne(BitWidth, 0);
+    computeKnownBits(V, KnownZero, KnownOne, DL, 0, AC,
+                     dyn_cast<Instruction>(V), DT);
+    return KnownZero.isAllOnesValue();
   }
 
   // Per-component check doesn't work with zeroinitializer
@@ -556,9 +556,9 @@ static bool isZero(Value *V, const DataLayout &DL, DominatorTree *DT,
     if (isa<UndefValue>(Elem))
       return true;
 
-    KnownBits Known(BitWidth);
-    computeKnownBits(Elem, Known, DL);
-    if (Known.Zero.isAllOnesValue())
+    APInt KnownZero(BitWidth, 0), KnownOne(BitWidth, 0);
+    computeKnownBits(Elem, KnownZero, KnownOne, DL);
+    if (KnownZero.isAllOnesValue())
       return true;
   }
 
@@ -699,7 +699,7 @@ Value *Lint::findValueImpl(Value *V, bool OffsetOk,
 
   // As a last resort, try SimplifyInstruction or constant folding.
   if (Instruction *Inst = dyn_cast<Instruction>(V)) {
-    if (Value *W = SimplifyInstruction(Inst, {*DL, TLI, DT, AC}))
+    if (Value *W = SimplifyInstruction(Inst, *DL, TLI, DT, AC))
       return findValueImpl(W, OffsetOk, Visited);
   } else if (auto *C = dyn_cast<Constant>(V)) {
     if (Value *W = ConstantFoldConstant(C, *DL, TLI))

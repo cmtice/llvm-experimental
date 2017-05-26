@@ -81,30 +81,17 @@ void WasmDumper::printRelocation(const SectionRef &Section,
   Reloc.getTypeName(RelocTypeName);
   const wasm::WasmRelocation &WasmReloc = Obj->getWasmRelocation(Reloc);
 
-  bool HasAddend = false;
-  switch (RelocType) {
-  case wasm::R_WEBASSEMBLY_GLOBAL_ADDR_LEB:
-  case wasm::R_WEBASSEMBLY_GLOBAL_ADDR_SLEB:
-  case wasm::R_WEBASSEMBLY_GLOBAL_ADDR_I32:
-    HasAddend = true;
-    break;
-  default:
-    break;
-  }
   if (opts::ExpandRelocs) {
     DictScope Group(W, "Relocation");
     W.printNumber("Type", RelocTypeName, RelocType);
     W.printHex("Offset", Reloc.getOffset());
     W.printHex("Index", WasmReloc.Index);
-    if (HasAddend)
-      W.printNumber("Addend", WasmReloc.Addend);
+    W.printHex("Addend", WasmReloc.Addend);
   } else {
     raw_ostream& OS = W.startLine();
     OS << W.hex(Reloc.getOffset())
-       << " " << RelocTypeName << "[" << WasmReloc.Index << "]";
-    if (HasAddend)
-      OS << " " << WasmReloc.Addend;
-    OS << "\n";
+       << " " << RelocTypeName << "[" << WasmReloc.Index << "]"
+       << " " << W.hex(WasmReloc.Addend) << "\n";
   }
 }
 
@@ -150,20 +137,8 @@ void WasmDumper::printSections() {
     W.printEnum("Type", WasmSec.Type, makeArrayRef(WasmSectionTypes));
     W.printNumber("Size", (uint64_t)WasmSec.Content.size());
     W.printNumber("Offset", WasmSec.Offset);
-    switch (WasmSec.Type) {
-    case wasm::WASM_SEC_CUSTOM:
+    if (WasmSec.Type == wasm::WASM_SEC_CUSTOM) {
       W.printString("Name", WasmSec.Name);
-      break;
-    case wasm::WASM_SEC_MEMORY:
-      ListScope Group(W, "Memories");
-      for (const wasm::WasmLimits &Memory : Obj->memories()) {
-        DictScope Group(W, "Memory");
-        W.printNumber("InitialPages", Memory.Initial);
-        if (Memory.Flags & wasm::WASM_LIMITS_FLAG_HAS_MAX) {
-          W.printNumber("MaxPages", WasmSec.Offset);
-        }
-      }
-      break;
     }
 
     if (opts::SectionRelocations) {

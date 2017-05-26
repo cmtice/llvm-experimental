@@ -1967,12 +1967,12 @@ bool HexagonInstrInfo::isDependent(const MachineInstr &ProdMI,
       if (RegA == RegB)
         return true;
 
-      if (TargetRegisterInfo::isPhysicalRegister(RegA))
+      if (Hexagon::DoubleRegsRegClass.contains(RegA))
         for (MCSubRegIterator SubRegs(RegA, &HRI); SubRegs.isValid(); ++SubRegs)
           if (RegB == *SubRegs)
             return true;
 
-      if (TargetRegisterInfo::isPhysicalRegister(RegB))
+      if (Hexagon::DoubleRegsRegClass.contains(RegB))
         for (MCSubRegIterator SubRegs(RegB, &HRI); SubRegs.isValid(); ++SubRegs)
           if (RegA == *SubRegs)
             return true;
@@ -3000,9 +3000,13 @@ bool HexagonInstrInfo::producesStall(const MachineInstr &MI,
   MachineBasicBlock::const_instr_iterator MII = BII;
   MachineBasicBlock::const_instr_iterator MIE = MII->getParent()->instr_end();
 
-  if (!(*MII).isBundle()) {
+  if (!MII->isBundle()) {
     const MachineInstr &J = *MII;
-    return producesStall(J, MI);
+    if (!isV60VectorInstruction(J))
+      return false;
+    else if (isVecUsableNextPacket(J, MI))
+      return false;
+    return true;
   }
 
   for (++MII; MII != MIE && MII->isInsideBundle(); ++MII) {
@@ -4133,6 +4137,11 @@ unsigned HexagonInstrInfo::getUnits(const MachineInstr &MI) const {
   const InstrStage &IS = *II.beginStage(MI.getDesc().getSchedClass());
 
   return IS.getUnits();
+}
+
+unsigned HexagonInstrInfo::getValidSubTargets(const unsigned Opcode) const {
+  const uint64_t F = get(Opcode).TSFlags;
+  return (F >> HexagonII::validSubTargetPos) & HexagonII::validSubTargetMask;
 }
 
 // Calculate size of the basic block without debug instructions.

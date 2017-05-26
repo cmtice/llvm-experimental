@@ -33,7 +33,6 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstVisitor.h"
@@ -48,6 +47,16 @@ using namespace llvm;
 
 STATISTIC(NumWrappedOneCond, "Number of One-Condition Wrappers Inserted");
 STATISTIC(NumWrappedTwoCond, "Number of Two-Condition Wrappers Inserted");
+
+static cl::opt<bool> LibCallsShrinkWrapDoDomainError(
+    "libcalls-shrinkwrap-domain-error", cl::init(true), cl::Hidden,
+    cl::desc("Perform shrink-wrap on lib calls with domain errors"));
+static cl::opt<bool> LibCallsShrinkWrapDoRangeError(
+    "libcalls-shrinkwrap-range-error", cl::init(true), cl::Hidden,
+    cl::desc("Perform shrink-wrap on lib calls with range errors"));
+static cl::opt<bool> LibCallsShrinkWrapDoPoleError(
+    "libcalls-shrinkwrap-pole-error", cl::init(true), cl::Hidden,
+    cl::desc("Perform shrink-wrap on lib calls with pole errors"));
 
 namespace {
 class LibCallsShrinkWrapLegacyPass : public FunctionPass {
@@ -73,11 +82,10 @@ INITIALIZE_PASS_END(LibCallsShrinkWrapLegacyPass, "libcalls-shrinkwrap",
 namespace {
 class LibCallsShrinkWrap : public InstVisitor<LibCallsShrinkWrap> {
 public:
-  LibCallsShrinkWrap(const TargetLibraryInfo &TLI, DominatorTree *DT)
-      : TLI(TLI), DT(DT){};
+  LibCallsShrinkWrap(const TargetLibraryInfo &TLI) : TLI(TLI), Changed(false){};
+  bool isChanged() const { return Changed; }
   void visitCallInst(CallInst &CI) { checkCandidate(CI); }
-  bool perform() {
-    bool Changed = false;
+  void perform() {
     for (auto &CI : WorkList) {
       DEBUG(dbgs() << "CDCE calls: " << CI->getCalledFunction()->getName()
                    << "\n");
@@ -86,7 +94,6 @@ public:
         DEBUG(dbgs() << "Transformed\n");
       }
     }
-    return Changed;
   }
 
 private:
@@ -127,8 +134,8 @@ private:
   }
 
   const TargetLibraryInfo &TLI;
-  DominatorTree *DT;
   SmallVector<CallInst *, 16> WorkList;
+  bool Changed;
 };
 } // end anonymous namespace
 
@@ -234,6 +241,8 @@ bool LibCallsShrinkWrap::performCallErrors(CallInst *CI,
   case LibFunc_atanhf: // Same as atanh
   case LibFunc_atanhl: // Same as atanh
   {
+    if (!LibCallsShrinkWrapDoDomainError || !LibCallsShrinkWrapDoPoleError)
+      return false;
     ++NumWrappedTwoCond;
     Cond = createOrCond(CI, CmpInst::FCMP_OLE, -1.0f, CmpInst::FCMP_OGE, 1.0f);
     break;
@@ -253,6 +262,8 @@ bool LibCallsShrinkWrap::performCallErrors(CallInst *CI,
   case LibFunc_logbf:  // Same as log
   case LibFunc_logbl:  // Same as log
   {
+    if (!LibCallsShrinkWrapDoDomainError || !LibCallsShrinkWrapDoPoleError)
+      return false;
     ++NumWrappedOneCond;
     Cond = createCond(CI, CmpInst::FCMP_OLE, 0.0f);
     break;
@@ -263,6 +274,8 @@ bool LibCallsShrinkWrap::performCallErrors(CallInst *CI,
   case LibFunc_log1pf: // Same as log1p
   case LibFunc_log1pl: // Same as log1p
   {
+    if (!LibCallsShrinkWrapDoDomainError || !LibCallsShrinkWrapDoPoleError)
+      return false;
     ++NumWrappedOneCond;
     Cond = createCond(CI, CmpInst::FCMP_OLE, -1.0f);
     break;
@@ -272,6 +285,9 @@ bool LibCallsShrinkWrap::performCallErrors(CallInst *CI,
                      // RangeError:  overflow or underflow
   case LibFunc_powf:
   case LibFunc_powl: {
+    if (!LibCallsShrinkWrapDoDomainError || !LibCallsShrinkWrapDoPoleError ||
+        !LibCallsShrinkWrapDoRangeError)
+      return false;
     Cond = generateCondForPow(CI, Func);
     if (Cond == nullptr)
       return false;
@@ -330,7 +346,7 @@ Value *LibCallsShrinkWrap::generateOneRangeCond(CallInst *CI,
     UpperBound = 11356.0f;
     break;
   default:
-    llvm_unreachable("Unhandled library call!");
+    llvm_unreachable("Should be reach here");
   }
 
   ++NumWrappedOneCond;
@@ -394,7 +410,7 @@ Value *LibCallsShrinkWrap::generateTwoRangeCond(CallInst *CI,
     UpperBound = 11383.0f;
     break;
   default:
-    llvm_unreachable("Unhandled library call!");
+    llvm_unreachable("Should be reach here");
   }
 
   ++NumWrappedTwoCond;
@@ -483,17 +499,14 @@ Value *LibCallsShrinkWrap::generateCondForPow(CallInst *CI,
 
 // Wrap conditions that can potentially generate errno to the library call.
 void LibCallsShrinkWrap::shrinkWrapCI(CallInst *CI, Value *Cond) {
-  assert(Cond != nullptr && "ShrinkWrapCI is not expecting an empty call inst");
+  assert(Cond != nullptr && "hrinkWrapCI is not expecting an empty call inst");
   MDNode *BranchWeights =
       MDBuilder(CI->getContext()).createBranchWeights(1, 2000);
-
   TerminatorInst *NewInst =
-      SplitBlockAndInsertIfThen(Cond, CI, false, BranchWeights, DT);
+      SplitBlockAndInsertIfThen(Cond, CI, false, BranchWeights);
   BasicBlock *CallBB = NewInst->getParent();
   CallBB->setName("cdce.call");
-  BasicBlock *SuccBB = CallBB->getSingleSuccessor();
-  assert(SuccBB && "The split block should have a single successor");
-  SuccBB->setName("cdce.end");
+  CallBB->getSingleSuccessor()->setName("cdce.end");
   CI->removeFromParent();
   CallBB->getInstList().insert(CallBB->getFirstInsertionPt(), CI);
   DEBUG(dbgs() << "== Basic Block After ==");
@@ -509,38 +522,32 @@ bool LibCallsShrinkWrap::perform(CallInst *CI) {
   TLI.getLibFunc(*Callee, Func);
   assert(Func && "perform() is not expecting an empty function");
 
-  if (performCallDomainErrorOnly(CI, Func) || performCallRangeErrorOnly(CI, Func))
+  if (LibCallsShrinkWrapDoDomainError && performCallDomainErrorOnly(CI, Func))
     return true;
+
+  if (LibCallsShrinkWrapDoRangeError && performCallRangeErrorOnly(CI, Func))
+    return true;
+
   return performCallErrors(CI, Func);
 }
 
 void LibCallsShrinkWrapLegacyPass::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.addPreserved<DominatorTreeWrapperPass>();
   AU.addPreserved<GlobalsAAWrapperPass>();
   AU.addRequired<TargetLibraryInfoWrapperPass>();
 }
 
-static bool runImpl(Function &F, const TargetLibraryInfo &TLI,
-                    DominatorTree *DT) {
+static bool runImpl(Function &F, const TargetLibraryInfo &TLI) {
   if (F.hasFnAttribute(Attribute::OptimizeForSize))
     return false;
-  LibCallsShrinkWrap CCDCE(TLI, DT);
+  LibCallsShrinkWrap CCDCE(TLI);
   CCDCE.visit(F);
-  bool Changed = CCDCE.perform();
-
-// Verify the dominator after we've updated it locally.
-#ifndef NDEBUG
-  if (DT)
-    DT->verifyDomTree();
-#endif
-  return Changed;
+  CCDCE.perform();
+  return CCDCE.isChanged();
 }
 
 bool LibCallsShrinkWrapLegacyPass::runOnFunction(Function &F) {
   auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
-  auto *DTWP = getAnalysisIfAvailable<DominatorTreeWrapperPass>();
-  auto *DT = DTWP ? &DTWP->getDomTree() : nullptr;
-  return runImpl(F, TLI, DT);
+  return runImpl(F, TLI);
 }
 
 namespace llvm {
@@ -554,12 +561,11 @@ FunctionPass *createLibCallsShrinkWrapPass() {
 PreservedAnalyses LibCallsShrinkWrapPass::run(Function &F,
                                               FunctionAnalysisManager &FAM) {
   auto &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
-  auto *DT = FAM.getCachedResult<DominatorTreeAnalysis>(F);
-  if (!runImpl(F, TLI, DT))
+  bool Changed = runImpl(F, TLI);
+  if (!Changed)
     return PreservedAnalyses::all();
   auto PA = PreservedAnalyses();
   PA.preserve<GlobalsAA>();
-  PA.preserve<DominatorTreeAnalysis>();
   return PA;
 }
 }

@@ -557,7 +557,7 @@ bool JumpThreadingPass::ComputeValueKnownInPredecessors(
         Value *LHS = PN->getIncomingValue(i);
         Value *RHS = Cmp->getOperand(1)->DoPHITranslation(BB, PredBB);
 
-        Value *Res = SimplifyCmpInst(Cmp->getPredicate(), LHS, RHS, {DL});
+        Value *Res = SimplifyCmpInst(Cmp->getPredicate(), LHS, RHS, DL);
         if (!Res) {
           if (!isa<Constant>(RHS))
             continue;
@@ -1250,53 +1250,37 @@ bool JumpThreadingPass::ProcessThreadableEdges(Value *Cond, BasicBlock *BB,
 
   BasicBlock *OnlyDest = nullptr;
   BasicBlock *MultipleDestSentinel = (BasicBlock*)(intptr_t)~0ULL;
-  Constant *OnlyVal = nullptr;
-  Constant *MultipleVal = (Constant *)(intptr_t)~0ULL;
 
-  unsigned PredWithKnownDest = 0;
   for (const auto &PredValue : PredValues) {
     BasicBlock *Pred = PredValue.second;
     if (!SeenPreds.insert(Pred).second)
       continue;  // Duplicate predecessor entry.
+
+    // If the predecessor ends with an indirect goto, we can't change its
+    // destination.
+    if (isa<IndirectBrInst>(Pred->getTerminator()))
+      continue;
 
     Constant *Val = PredValue.first;
 
     BasicBlock *DestBB;
     if (isa<UndefValue>(Val))
       DestBB = nullptr;
-    else if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator())) {
-      assert(isa<ConstantInt>(Val) && "Expecting a constant integer");
+    else if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator()))
       DestBB = BI->getSuccessor(cast<ConstantInt>(Val)->isZero());
-    } else if (SwitchInst *SI = dyn_cast<SwitchInst>(BB->getTerminator())) {
-      assert(isa<ConstantInt>(Val) && "Expecting a constant integer");
+    else if (SwitchInst *SI = dyn_cast<SwitchInst>(BB->getTerminator())) {
       DestBB = SI->findCaseValue(cast<ConstantInt>(Val))->getCaseSuccessor();
     } else {
       assert(isa<IndirectBrInst>(BB->getTerminator())
               && "Unexpected terminator");
-      assert(isa<BlockAddress>(Val) && "Expecting a constant blockaddress");
       DestBB = cast<BlockAddress>(Val)->getBasicBlock();
     }
 
     // If we have exactly one destination, remember it for efficiency below.
-    if (PredToDestList.empty()) {
+    if (PredToDestList.empty())
       OnlyDest = DestBB;
-      OnlyVal = Val;
-    } else {
-      if (OnlyDest != DestBB)
-        OnlyDest = MultipleDestSentinel;
-      // It possible we have same destination, but different value, e.g. default
-      // case in switchinst.
-      if (Val != OnlyVal)
-        OnlyVal = MultipleVal;
-    }
-
-    // We know where this predecessor is going.
-    ++PredWithKnownDest;
-
-    // If the predecessor ends with an indirect goto, we can't change its
-    // destination.
-    if (isa<IndirectBrInst>(Pred->getTerminator()))
-      continue;
+    else if (OnlyDest != DestBB)
+      OnlyDest = MultipleDestSentinel;
 
     PredToDestList.push_back(std::make_pair(Pred, DestBB));
   }
@@ -1309,7 +1293,7 @@ bool JumpThreadingPass::ProcessThreadableEdges(Value *Cond, BasicBlock *BB,
   // not thread. By doing so, we do not need to duplicate the current block and
   // also miss potential opportunities in case we dont/cant duplicate.
   if (OnlyDest && OnlyDest != MultipleDestSentinel) {
-    if (PredWithKnownDest ==
+    if (PredToDestList.size() ==
         (size_t)std::distance(pred_begin(BB), pred_end(BB))) {
       bool SeenFirstBranchToOnlyDest = false;
       for (BasicBlock *SuccBB : successors(BB)) {
@@ -1326,18 +1310,11 @@ bool JumpThreadingPass::ProcessThreadableEdges(Value *Cond, BasicBlock *BB,
 
       // If the condition is now dead due to the removal of the old terminator,
       // erase it.
-      if (auto *CondInst = dyn_cast<Instruction>(Cond)) {
-        if (CondInst->use_empty() && !CondInst->mayHaveSideEffects())
-          CondInst->eraseFromParent();
-        else if (OnlyVal && OnlyVal != MultipleVal &&
-                 CondInst->getParent() == BB) {
-          // If we just learned Cond is the same value for all uses of the
-          // condition, replace it with a constant value
-          CondInst->replaceAllUsesWith(OnlyVal);
-          if (!CondInst->mayHaveSideEffects())
-            CondInst->eraseFromParent();
-        }
-      }
+      auto *CondInst = dyn_cast<Instruction>(Cond);
+      if (CondInst && CondInst->use_empty())
+        CondInst->eraseFromParent();
+      // FIXME: in case this instruction is defined in the current BB and it
+      // resolves to a single value from all predecessors, we can do RAUW.
       return true;
     }
   }
@@ -1906,9 +1883,8 @@ bool JumpThreadingPass::DuplicateCondBranchOnPHIIntoPred(
     // If this instruction can be simplified after the operands are updated,
     // just use the simplified value instead.  This frequently happens due to
     // phi translation.
-    if (Value *IV = SimplifyInstruction(
-            New,
-            {BB->getModule()->getDataLayout(), TLI, nullptr, nullptr, New})) {
+    if (Value *IV =
+            SimplifyInstruction(New, BB->getModule()->getDataLayout())) {
       ValueMapping[&*BI] = IV;
       if (!New->mayHaveSideEffects()) {
         delete New;

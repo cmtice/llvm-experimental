@@ -49,6 +49,8 @@ define i64 @test003(i64 %a, i64 %b) {
 define <16 x i8> @test010(<16 x i8> %a, <16 x i8> %b) {
 ; CHECK-LABEL: test010:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltisb 4, 7
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vslb 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <16 x i8> %b, <i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7>
@@ -59,6 +61,8 @@ define <16 x i8> @test010(<16 x i8> %a, <16 x i8> %b) {
 define <8 x i16> @test011(<8 x i16> %a, <8 x i16> %b) {
 ; CHECK-LABEL: test011:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltish 4, 15
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vslh 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <8 x i16> %b, <i16 15, i16 15, i16 15, i16 15, i16 15, i16 15, i16 15, i16 15>
@@ -69,6 +73,10 @@ define <8 x i16> @test011(<8 x i16> %a, <8 x i16> %b) {
 define <4 x i32> @test012(<4 x i32> %a, <4 x i32> %b) {
 ; CHECK-LABEL: test012:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltisw 4, -16
+; CHECK-NEXT:    vspltisw 5, 15
+; CHECK-NEXT:    vsubuwm 4, 5, 4
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vslw 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <4 x i32> %b, <i32 31, i32 31, i32 31, i32 31>
@@ -79,6 +87,11 @@ define <4 x i32> @test012(<4 x i32> %a, <4 x i32> %b) {
 define <2 x i64> @test013(<2 x i64> %a, <2 x i64> %b) {
 ; CHECK-LABEL: test013:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    addis 3, 2, .LCPI7_0@toc@ha
+; CHECK-NEXT:    addi 3, 3, .LCPI7_0@toc@l
+; CHECK-NEXT:    lxvd2x 0, 0, 3
+; CHECK-NEXT:    xxswapd 36, 0
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsld 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <2 x i64> %b, <i64 63, i64 63>
@@ -135,6 +148,8 @@ define i64 @test103(i64 %a, i64 %b) {
 define <16 x i8> @test110(<16 x i8> %a, <16 x i8> %b) {
 ; CHECK-LABEL: test110:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltisb 4, 7
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrb 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <16 x i8> %b, <i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7>
@@ -145,6 +160,8 @@ define <16 x i8> @test110(<16 x i8> %a, <16 x i8> %b) {
 define <8 x i16> @test111(<8 x i16> %a, <8 x i16> %b) {
 ; CHECK-LABEL: test111:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltish 4, 15
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrh 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <8 x i16> %b, <i16 15, i16 15, i16 15, i16 15, i16 15, i16 15, i16 15, i16 15>
@@ -155,6 +172,10 @@ define <8 x i16> @test111(<8 x i16> %a, <8 x i16> %b) {
 define <4 x i32> @test112(<4 x i32> %a, <4 x i32> %b) {
 ; CHECK-LABEL: test112:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltisw 4, -16
+; CHECK-NEXT:    vspltisw 5, 15
+; CHECK-NEXT:    vsubuwm 4, 5, 4
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrw 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <4 x i32> %b, <i32 31, i32 31, i32 31, i32 31>
@@ -165,6 +186,11 @@ define <4 x i32> @test112(<4 x i32> %a, <4 x i32> %b) {
 define <2 x i64> @test113(<2 x i64> %a, <2 x i64> %b) {
 ; CHECK-LABEL: test113:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    addis 3, 2, .LCPI15_0@toc@ha
+; CHECK-NEXT:    addi 3, 3, .LCPI15_0@toc@l
+; CHECK-NEXT:    lxvd2x 0, 0, 3
+; CHECK-NEXT:    xxswapd 36, 0
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrd 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <2 x i64> %b, <i64 63, i64 63>
@@ -221,6 +247,8 @@ define i64 @test203(i64 %a, i64 %b) {
 define <16 x i8> @test210(<16 x i8> %a, <16 x i8> %b) {
 ; CHECK-LABEL: test210:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltisb 4, 7
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrab 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <16 x i8> %b, <i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7, i8 7>
@@ -231,6 +259,8 @@ define <16 x i8> @test210(<16 x i8> %a, <16 x i8> %b) {
 define <8 x i16> @test211(<8 x i16> %a, <8 x i16> %b) {
 ; CHECK-LABEL: test211:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltish 4, 15
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrah 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <8 x i16> %b, <i16 15, i16 15, i16 15, i16 15, i16 15, i16 15, i16 15, i16 15>
@@ -241,6 +271,10 @@ define <8 x i16> @test211(<8 x i16> %a, <8 x i16> %b) {
 define <4 x i32> @test212(<4 x i32> %a, <4 x i32> %b) {
 ; CHECK-LABEL: test212:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    vspltisw 4, -16
+; CHECK-NEXT:    vspltisw 5, 15
+; CHECK-NEXT:    vsubuwm 4, 5, 4
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsraw 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <4 x i32> %b, <i32 31, i32 31, i32 31, i32 31>
@@ -251,6 +285,11 @@ define <4 x i32> @test212(<4 x i32> %a, <4 x i32> %b) {
 define <2 x i64> @test213(<2 x i64> %a, <2 x i64> %b) {
 ; CHECK-LABEL: test213:
 ; CHECK:       # BB#0:
+; CHECK-NEXT:    addis 3, 2, .LCPI23_0@toc@ha
+; CHECK-NEXT:    addi 3, 3, .LCPI23_0@toc@l
+; CHECK-NEXT:    lxvd2x 0, 0, 3
+; CHECK-NEXT:    xxswapd 36, 0
+; CHECK-NEXT:    xxland 35, 35, 36
 ; CHECK-NEXT:    vsrad 2, 2, 3
 ; CHECK-NEXT:    blr
   %rem = and <2 x i64> %b, <i64 63, i64 63>
