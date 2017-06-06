@@ -899,6 +899,10 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
 
   if (VerifyOutput)
     PM.add(createVerifierPass());
+
+  // After all optimizations have been performed, struct field cache analysis will be performed if enabled
+  if (!StructFieldCacheAnalysisUse.empty())
+    PM.add(createStructFieldCacheAnalysisPass(StructFieldCacheAnalysisUse));
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {

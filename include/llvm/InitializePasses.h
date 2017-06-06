@@ -347,6 +347,7 @@ void initializeStripGCRelocatesPass(PassRegistry&);
 void initializeStripNonDebugSymbolsPass(PassRegistry&);
 void initializeStripNonLineTableDebugInfoPass(PassRegistry&);
 void initializeStripSymbolsPass(PassRegistry&);
+void initializeStructFieldCacheAnalysisPassPass(PassRegistry&);
 void initializeStructurizeCFGPass(PassRegistry&);
 void initializeTailCallElimPass(PassRegistry&);
 void initializeTailDuplicatePassPass(PassRegistry&);
