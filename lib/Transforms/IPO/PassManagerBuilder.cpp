@@ -897,12 +897,16 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
   if (OptLevel != 0)
     addLateLTOOptimizationPasses(PM);
 
+  // After all optimizations have been performed, struct field cache analysis will be performed if enabled
+  if (!StructFieldCacheAnalysisUse.empty()){
+    if (PGOInstrUse.empty()){ // If PGOInstrUse not specified by user, enable it here because we need the profile info
+      //PM.add(createPGOInstrumentationUseLegacyPass(StructFieldCacheAnalysisUse));
+    }
+    PM.add(createStructFieldCacheAnalysisPass(StructFieldCacheAnalysisUse));
+  }
+
   if (VerifyOutput)
     PM.add(createVerifierPass());
-
-  // After all optimizations have been performed, struct field cache analysis will be performed if enabled
-  if (!StructFieldCacheAnalysisUse.empty())
-    PM.add(createStructFieldCacheAnalysisPass(StructFieldCacheAnalysisUse));
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {
