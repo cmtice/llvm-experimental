@@ -1,8 +1,23 @@
+// lib/Tranforms/IPO/StructFieldCacheAnalysis.cpp - Performs Cache-Aware Structure Analysis- C++ -*-===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===-----------------------------------------------------------------------------------------------===//
+//
+// This pass performs analysis on cache-aware structure field accesses based on the following paper
+// and reports recommendations on changes to make on the source code to improve performance.
+//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization in GCC”, Proceedings
+//      of the GCC Developers’ Summit,  Ottawa, 2005.
+//
+//===-----------------------------------------------------------------------------------------------===//
+
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
-#include "llvm/Analysis/BlockFrequencyInfoImpl.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include <unordered_map>
 #include <vector>
@@ -34,7 +49,7 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "struct-analysis"
+#define DEBUG_TYPE "struct-field-cache-analysis"
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
