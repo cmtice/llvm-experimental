@@ -1,18 +1,18 @@
-// lib/Tranforms/IPO/StructFieldCacheAnalysis.cpp - Performs Cache-Aware Structure Analysis- C++ -*-===//
+// lib/Tranforms/IPO/StructFieldCacheAnalysis.cpp - Performs Cache-Aware Structure Analysis-*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
 // This file is distributed under the University of Illinois Open Source
 // License. See LICENSE.TXT for details.
 //
-//===-----------------------------------------------------------------------------------------------===//
+//===--------------------------------------------------------------------------------------------------===//
 //
 // This pass performs analysis on cache-aware structure field accesses based on the following paper
 // and reports recommendations on changes to make on the source code to improve performance.
 //  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization in GCC”, Proceedings
 //      of the GCC Developers’ Summit,  Ottawa, 2005.
 //
-//===-----------------------------------------------------------------------------------------------===//
+//===--------------------------------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
 #include "llvm/Pass.h"
@@ -120,26 +120,28 @@ class AllStructInfo
 class GlobalProfileInfo
 {
  public:
-  GlobalProfileInfo(const Module& M): module(M), context(M.getContext()), OS(1, false, true) {}
+  GlobalProfileInfo(const Module& M): CurrentModule(M), OS(1, false, true) {}
+  // Add profile information of a function
   void addFunction(const Function& F, BlockFrequencyInfo* BFI);
+  // Get execution count for a Basicblock after all profile data are collected
   Optional<uint64_t> getBBCount(const BasicBlock* BB) const;
+  // Debug print module
   void printModule() {
-    OS << module << '\n';
+    OS << CurrentModule << '\n';
   }
+  // Debug print annotated module after all profile data are collected
   void printAnnotatedModule();
  private:
-  const Module& module;
-  const LLVMContext& context;
+  const Module& CurrentModule;
   raw_fd_ostream OS;
   std::unordered_map<const Function*, uint64_t> CountsPerFunc;
   std::unordered_map<const BasicBlock*, uint64_t> CountsPerBB;
 };
 class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
-  const GlobalProfileInfo* profile;
-
  public:
-  StructFieldCacheAnalysisAnnotatedWriter(const GlobalProfileInfo* P): profile(P) {}
+  StructFieldCacheAnalysisAnnotatedWriter(const GlobalProfileInfo* P): Profile(P) {}
 
+  // Override the base class function to print an annotate message after each basic block
   virtual void emitBasicBlockEndAnnot(const BasicBlock* BB,
                                       formatted_raw_ostream &OS) {
     auto count = profile->getBBCount(BB);
@@ -160,6 +162,8 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
                                     formatted_raw_ostream &OS) {
   }
   */
+ private:
+  const GlobalProfileInfo* Profile;
 };
 }
 
@@ -201,11 +205,11 @@ Optional<uint64_t> GlobalProfileInfo::getBBCount(const BasicBlock* BB) const
 
 void GlobalProfileInfo::printAnnotatedModule()
 {
-  StructFieldCacheAnalysisAnnotatedWriter writer(this);
+  StructFieldCacheAnalysisAnnotatedWriter Writer(this);
   OS.changeColor(raw_ostream::YELLOW);
   OS << "Annotated module print\n";
   OS.resetColor();
-  module.print(OS, &writer);
+  CurrentModule.print(OS, &Writer);
   OS.resetColor();
 }
 
@@ -236,7 +240,6 @@ static bool performStructFieldCacheAnalysis(Module &M,
 {
   // printf("Dummy output from StructFieldCacheAnalysis\n");
   GlobalProfileInfo allProfiles(M);
-  // retrieve profile data
   for (auto &F : M){
     if (F.isDeclaration())
       continue;
