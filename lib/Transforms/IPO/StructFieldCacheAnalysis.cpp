@@ -80,6 +80,43 @@ INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis",
 ModulePass *llvm::createStructFieldCacheAnalysisPass(const std::string& path) { return new StructFieldCacheAnalysisPass(path); }
 
 namespace llvm{
+class StructInfo
+{
+  /* This class is used to store all access information for each struct declared in
+    the program. It records all loads and stores to all fields of the struct to provide
+    essential information for cache-aware struct field analysis.
+  */
+ public:
+  StructInfo(const Type* T, GlobalProfileInfo* P): StructType(T), NumElements(T->getStructNumElements()), ProfData(P) {}
+  // Record all users of a GEP instruction that calculates the address of a field.
+  // It's the only supported way to add access to a field for now
+  void addAccessFromGEP(const Instruction* I);
+
+  StringRef getStructName() const { return StructType->getStructName(); }
+ private:
+  const Type* StructType;
+  unsigned NumElements;
+  GlobalProfileInfo* ProfData;
+
+  // Private functions
+  // Calculate which field of the struct is the GEP pointing to
+  unsigned calculateFieldNumFromGEP(const Instruction* I) const;
+
+};
+class AllStructInfo
+{
+  /* This class is used to keep track of all StructInfo objects in the program
+     and make sure only one StructInfo object for each type of struct declared
+     in the program.
+  */
+ public:
+  AllStructInfo(GlobalProfileInfo* P): ProfData(P) {};
+  // Check if the struct type is created before; if not, create a new StructInfo object for it
+  StructInfo* createOrGetStructInfo(const Type* T);
+  // Retrieve the pointer to the previous created StructInfo object for the type
+  StructInfo* getStructInfo(const Type* T);
+}
+
 class GlobalProfileInfo
 {
  public:
@@ -172,14 +209,34 @@ void GlobalProfileInfo::printAnnotatedModule()
   OS.resetColor();
 }
 
+static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
+{
+  AllStructInfo allStructs(profData);
+  for (auto &F : M){
+    if (F.isDeclaration())
+      continue;
+    //Find all alloca of structs inside the function body
+    for (auto &BB : F){
+      for (auto &I: BB){
+        if (I.getOpcode() == Instruction::Alloca){
+          assert(I->getType()->isPointerTy());
+          auto* type = I->getType()->getPointerElementType();
+          if (type->isStructType()){
+            auto* structInfoPtr = allStructs.createOrGetStructInfo(type);
+          }
+        }
+      }
+    }
+  }
+}
+
 static bool performStructFieldCacheAnalysis(Module &M,
                                             StringRef ProfileFileName,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI)
 {
-  //printf("Dummy output from StructFieldCacheAnalysis\n");
+  // printf("Dummy output from StructFieldCacheAnalysis\n");
   GlobalProfileInfo allProfiles(M);
   // retrieve profile data
-  //allProfiles.printModule();
   for (auto &F : M){
     if (F.isDeclaration())
       continue;
@@ -187,6 +244,8 @@ static bool performStructFieldCacheAnalysis(Module &M,
     allProfiles.addFunction(F, BFI);
   }
   allProfiles.printAnnotatedModule();
+  // perform IR analysis to collect info of all structs
+
   return true;
 }
 
