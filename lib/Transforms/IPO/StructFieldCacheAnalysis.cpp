@@ -107,7 +107,7 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
   // Override the base class function to print an annotate message after each basic block
   virtual void emitBasicBlockEndAnnot(const BasicBlock* BB,
                                       formatted_raw_ostream &OS) {
-    auto count = profile->getBBCount(BB);
+    auto count = Profile->getBBCount(BB);
     if (count.hasValue()){
       OS.changeColor(raw_ostream::YELLOW, false, false);
       OS << "; [prof count = " << count.getValue() << "]\n";
