@@ -19,6 +19,9 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FormattedStream.h"
 #include <unordered_map>
 #include <vector>
 
@@ -77,35 +80,12 @@ INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis",
 ModulePass *llvm::createStructFieldCacheAnalysisPass(const std::string& path) { return new StructFieldCacheAnalysisPass(path); }
 
 namespace llvm{
-class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
-  const GlobalProfileInfo* profile;
-
- public:
-  StructFieldCacheAnalysisAnnotatedWriter(const GlobalProfileInfo* P): profile(P) {}
-
-  virtual void emitBasicBlockEndAnnot(const BasicBlock* BB,
-                                      formatted_raw_ostream &OS) {
-    auto count = profile->getBBCount(BB);
-    if (count){
-      OS.changeColor(raw_ostream::YELLOW);
-      OS << "; prof count = " << count << "\n";
-      OS.resetColor();
-    }
-  }
-
-  /* TODO: implement this after struct access are found
-  virtual void emitInstructionAnnot(const Instruction *I,
-                                    formatted_raw_ostream &OS) {
-  }
-  */
-};
-
 class GlobalProfileInfo
 {
  public:
   GlobalProfileInfo(const Module& M): module(M), context(M.getContext()), OS(1, false, true) {}
   void addFunction(const Function& F, BlockFrequencyInfo* BFI);
-  uint64_t getBBCount(const BasicBlock* BB);
+  Optional<uint64_t> getBBCount(const BasicBlock* BB) const;
   void printModule() {
     OS << module << '\n';
   }
@@ -117,6 +97,33 @@ class GlobalProfileInfo
   std::unordered_map<const Function*, uint64_t> CountsPerFunc;
   std::unordered_map<const BasicBlock*, uint64_t> CountsPerBB;
 };
+class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
+  const GlobalProfileInfo* profile;
+
+ public:
+  StructFieldCacheAnalysisAnnotatedWriter(const GlobalProfileInfo* P): profile(P) {}
+
+  virtual void emitBasicBlockEndAnnot(const BasicBlock* BB,
+                                      formatted_raw_ostream &OS) {
+    auto count = profile->getBBCount(BB);
+    if (count.hasValue()){
+      OS.changeColor(raw_ostream::YELLOW, false, false);
+      OS << "; [prof count = " << count.getValue() << "]\n";
+      OS.resetColor();
+    }
+    else{
+      OS.changeColor(raw_ostream::YELLOW, false, false);
+      OS << "; [prof count not found " << "]\n";
+      OS.resetColor();
+    }
+  }
+
+  /* TODO: implement this after struct access are found
+  virtual void emitInstructionAnnot(const Instruction *I,
+                                    formatted_raw_ostream &OS) {
+  }
+  */
+};
 }
 
 void GlobalProfileInfo::addFunction(const Function& F, BlockFrequencyInfo* BFI)
@@ -127,8 +134,6 @@ void GlobalProfileInfo::addFunction(const Function& F, BlockFrequencyInfo* BFI)
     OS.resetColor();
     return;
   }
-  OS << "Adding function " << F.getName() << " has entry count: " << F.getEntryCount().getValue() << "\n";
-  BFI->print(OS);
   for (auto &B : F){
     assert(CountsPerBB.find(&B) == CountsPerBB.end());
     auto count = BFI->getBlockProfileCount(&B);
@@ -147,11 +152,14 @@ void GlobalProfileInfo::addFunction(const Function& F, BlockFrequencyInfo* BFI)
   }
 }
 
-Optional<uint64_t> GlobalProfileInfo::getBBCount(const BasicBlock* BB)
+Optional<uint64_t> GlobalProfileInfo::getBBCount(const BasicBlock* BB) const
 {
   Optional<uint64_t> ret;
-  assert(CountsPerBB.find(BB) != CountsPerBB.end());
-  return CountsPerBB[BB];
+  auto it = CountsPerBB.find(BB);
+  if (it != CountsPerBB.end()){
+    ret = it->second;
+  }
+  return ret;
 }
 
 void GlobalProfileInfo::printAnnotatedModule()
@@ -159,7 +167,8 @@ void GlobalProfileInfo::printAnnotatedModule()
   StructFieldCacheAnalysisAnnotatedWriter writer(this);
   OS.changeColor(raw_ostream::YELLOW);
   OS << "Annotated module print\n";
-  module.print(OS, writer);
+  OS.resetColor();
+  module.print(OS, &writer);
   OS.resetColor();
 }
 
@@ -170,7 +179,7 @@ static bool performStructFieldCacheAnalysis(Module &M,
   //printf("Dummy output from StructFieldCacheAnalysis\n");
   GlobalProfileInfo allProfiles(M);
   // retrieve profile data
-  allProfiles.printModule();
+  //allProfiles.printModule();
   for (auto &F : M){
     if (F.isDeclaration())
       continue;
