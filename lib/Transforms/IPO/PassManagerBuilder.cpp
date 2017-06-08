@@ -146,7 +146,7 @@ static cl::opt<bool>
                               cl::desc("Disable shrink-wrap library calls"));
 
 static cl::opt<bool> EnableStructFieldCacheAnalysis(
-    "struct-field-cache-analysis", cl::init(true), cl::Hidden,
+    "struct-field-cache-analysis", cl::init(false), cl::Hidden,
     cl::desc("Enable struct field cache analysis during LTO"));
 
 PassManagerBuilder::PassManagerBuilder() {
