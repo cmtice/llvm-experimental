@@ -242,7 +242,6 @@ static void runOldPMPasses(Config &Conf, Module &Mod, TargetMachine *TM,
   PMB.SLPVectorize = true;
   PMB.OptLevel = Conf.OptLevel;
   PMB.PGOSampleUse = Conf.SampleProfile;
-  PMB.EnableStructFieldCacheAnalysis = Conf.EnableStructFieldCacheAnalysis;
   if (IsThinLTO)
     PMB.populateThinLTOPassManager(passes);
   else
