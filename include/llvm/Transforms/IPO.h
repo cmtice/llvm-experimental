@@ -268,7 +268,7 @@ ModulePass *createWriteThinLTOBitcodePass(raw_ostream &Str,
                                           raw_ostream *ThinLinkOS = nullptr);
 
 // \brief This pass analysis struct field access to improve cache-aware performances
-ModulePass *createStructFieldCacheAnalysisPass(const std::string& path);
+ModulePass *createStructFieldCacheAnalysisPass();
 } // End llvm namespace
 
 #endif

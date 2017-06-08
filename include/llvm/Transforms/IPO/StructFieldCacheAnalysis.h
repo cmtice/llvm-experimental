@@ -24,9 +24,7 @@ namespace llvm {
 class StructFieldCacheAnalysis : public PassInfoMixin<StructFieldCacheAnalysis> {
 public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
-  StructFieldCacheAnalysis(std::string FileName = "");
- private:
-  std::string ProfileFileName;
+  StructFieldCacheAnalysis();
 };
 }
 #endif // LLVM_TRANSFORMS_IPO_STRUCTFIELDCACHEANALYSIS_H

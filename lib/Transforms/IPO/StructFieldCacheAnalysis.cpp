@@ -69,12 +69,8 @@ class StructFieldCacheAnalysisPass : public ModulePass {
   static char ID;
   StructFieldCacheAnalysisPass() : ModulePass(ID) {
     initializeStructFieldCacheAnalysisPassPass(*PassRegistry::getPassRegistry());
-  };
-  StructFieldCacheAnalysisPass(const std::string& path) : ModulePass(ID), ProfileFileName(path) {
-    initializeStructFieldCacheAnalysisPassPass(*PassRegistry::getPassRegistry());
-  };
+  }
  private:
-  StringRef ProfileFileName;
   bool runOnModule(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
@@ -86,7 +82,7 @@ char StructFieldCacheAnalysisPass::ID = 0;
 INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cahce Analysis", false, false)
-ModulePass *llvm::createStructFieldCacheAnalysisPass(const std::string& path) { return new StructFieldCacheAnalysisPass(path); }
+ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
 
 namespace llvm{
 class GlobalProfileInfo;
@@ -463,7 +459,6 @@ static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
 }
 
 static bool performStructFieldCacheAnalysis(Module &M,
-                                            StringRef ProfileFileName,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI)
 {
   // printf("Dummy output from StructFieldCacheAnalysis\n");
@@ -486,14 +481,14 @@ static bool performStructFieldCacheAnalysis(Module &M,
   return true;
 }
 
-StructFieldCacheAnalysis::StructFieldCacheAnalysis(std::string Filename): ProfileFileName(std::move(Filename)) {}
+StructFieldCacheAnalysis::StructFieldCacheAnalysis() {}
 
 PreservedAnalyses StructFieldCacheAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   auto LookupBFI = [&FAM](Function &F) {
     return &FAM.getResult<BlockFrequencyAnalysis>(F);
   };
-  if (!performStructFieldCacheAnalysis(M, ProfileFileName, LookupBFI))
+  if (!performStructFieldCacheAnalysis(M, LookupBFI))
     return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
@@ -503,5 +498,5 @@ bool StructFieldCacheAnalysisPass::runOnModule(Module &M){
   auto LookupBFI = [this](Function &F) {
     return &this->getAnalysis<BlockFrequencyInfoWrapperPass>(F).getBFI();
   };
-  return performStructFieldCacheAnalysis(M, ProfileFileName, LookupBFI);
+  return performStructFieldCacheAnalysis(M, LookupBFI);
 }

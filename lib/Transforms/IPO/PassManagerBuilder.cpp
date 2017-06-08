@@ -145,6 +145,10 @@ static cl::opt<bool>
                               cl::Hidden,
                               cl::desc("Disable shrink-wrap library calls"));
 
+static cl::opt<bool> EnableStructFieldCacheAnalysis(
+    "struct-field-cache-analysis", cl::init(true), cl::Hidden,
+    cl::desc("Enable struct field cache analysis during LTO"));
+
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
     SizeLevel = 0;
@@ -898,15 +902,17 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
     addLateLTOOptimizationPasses(PM);
 
   // After all optimizations have been performed, struct field cache analysis will be performed if enabled
-  if (!StructFieldCacheAnalysisUse.empty()){
-    if (PGOInstrUse.empty()){ // If PGOInstrUse not specified by user, enable it here because we need the profile info
-      //PM.add(createPGOInstrumentationUseLegacyPass(StructFieldCacheAnalysisUse));
-    }
-    PM.add(createStructFieldCacheAnalysisPass(StructFieldCacheAnalysisUse));
-  }
+  if (EnableStructFieldCacheAnalysis){
+    //assert (!PGOInstrUse.empty() && "illegal to use -struct-field-cache-analysis without -fprofile-use");
+    //TODO: Need to make sure the profile-use pass has been executed
+    PM.add(createStructFieldCacheAnalysisPass());
+<<<<<<< HEAD
 
   if (VerifyOutput)
     PM.add(createVerifierPass());
+=======
+  }
+>>>>>>> 8eada34834b0e263beaaf8fdfa39d9f4d4dddc04
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {

@@ -180,8 +180,6 @@ namespace options {
   static std::vector<const char *> extra;
   // Sample profile file path
   static std::string sample_profile;
-  // Struct Field Cache Analysis use file path
-  static std::string struct_field_cache_analysis;
 
   static void process_plugin_option(const char *opt_)
   {
@@ -239,9 +237,6 @@ namespace options {
       DisableVerify = true;
     } else if (opt.startswith("sample-profile=")) {
       sample_profile= opt.substr(strlen("sample-profile="));
-    } else if (opt.startswith("struct-field-cache-analysis-with=")) {
-      // Support for parsing profile file name for struct field cache analysis
-      struct_field_cache_analysis = opt.substr(strlen("struct-field-cache-analysis-with="));
     } else {
       // Save this option to pass to the code generator.
       // ParseCommandLineOptions() expects argv[0] to be program name. Lazily
@@ -777,9 +772,6 @@ static std::unique_ptr<LTO> createLTO() {
 
   if (!options::sample_profile.empty())
     Conf.SampleProfile = options::sample_profile;
-
-  if (!options::struct_field_cache_analysis.empty())
-    Conf.StructFieldCacheAnalysisUse = options::struct_field_cache_analysis;
 
   return llvm::make_unique<LTO>(std::move(Conf), Backend,
                                 options::ParallelCodeGenParallelismLevel);
