@@ -30,12 +30,8 @@ class StructFieldCacheAnalysisPass : public ModulePass {
   static char ID;
   StructFieldCacheAnalysisPass() : ModulePass(ID) {
     initializeStructFieldCacheAnalysisPassPass(*PassRegistry::getPassRegistry());
-  };
-  StructFieldCacheAnalysisPass(const std::string& path) : ModulePass(ID), ProfileFileName(path) {
-    initializeStructFieldCacheAnalysisPassPass(*PassRegistry::getPassRegistry());
-  };
+  }
  private:
-  StringRef ProfileFileName;
   bool runOnModule(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
@@ -47,23 +43,23 @@ class StructFieldCacheAnalysisPass : public ModulePass {
 char StructFieldCacheAnalysisPass::ID = 0;
 INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cahce Analysis", false, false)
-ModulePass *llvm::createStructFieldCacheAnalysisPass(const std::string& path) { return new StructFieldCacheAnalysisPass(path); }
+ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
 
-static bool performStructFieldCacheAnalysis(Module &M, StringRef ProfileFileName)
+static bool performStructFieldCacheAnalysis(Module &M)
 {
-  printf("Dummy output of struct field cache analysis, reading from %s\n", ProfileFileName.str().c_str());
+  printf("Dummy output of struct field cache analysis\n");
   return true;
 }
 
-StructFieldCacheAnalysis::StructFieldCacheAnalysis(std::string Filename): ProfileFileName(std::move(Filename)) {}
+StructFieldCacheAnalysis::StructFieldCacheAnalysis() {}
 
 PreservedAnalyses StructFieldCacheAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
-  if (!performStructFieldCacheAnalysis(M, ProfileFileName))
+  if (!performStructFieldCacheAnalysis(M))
     return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
 
 
 bool StructFieldCacheAnalysisPass::runOnModule(Module &M){
-  return performStructFieldCacheAnalysis(M, ProfileFileName);
+  return performStructFieldCacheAnalysis(M);
 }

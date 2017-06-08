@@ -169,6 +169,7 @@ PassManagerBuilder::PassManagerBuilder() {
     PrepareForThinLTO = EnablePrepareForThinLTO;
     PerformThinLTO = false;
     DivergentTarget = false;
+    EnableStructFieldCacheAnalysis = false;
 }
 
 PassManagerBuilder::~PassManagerBuilder() {
@@ -901,8 +902,8 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
     PM.add(createVerifierPass());
 
   // After all optimizations have been performed, struct field cache analysis will be performed if enabled
-  if (!StructFieldCacheAnalysisUse.empty())
-    PM.add(createStructFieldCacheAnalysisPass(StructFieldCacheAnalysisUse));
+  if (EnableStructFieldCacheAnalysis)
+    PM.add(createStructFieldCacheAnalysisPass());
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {
