@@ -169,8 +169,6 @@ public:
   /// Path of the sample Profile data file.
   std::string PGOSampleUse;
 
-  /// Enable struct field cache analysis
-  bool EnableStructFieldCacheAnalysis;
 private:
   /// ExtensionList - This is list of all of the extensions that are registered.
   std::vector<std::pair<ExtensionPointTy, ExtensionFn>> Extensions;
