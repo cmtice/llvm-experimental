@@ -22,6 +22,7 @@
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/IR/Instructions.h"
 #include <unordered_map>
 #include <vector>
@@ -250,11 +251,13 @@ Optional<uint64_t> GlobalProfileInfo::getBBCount(const BasicBlock* BB) const
 void GlobalProfileInfo::printAnnotatedModule()
 {
   StructFieldCacheAnalysisAnnotatedWriter Writer(this, NULL);
-  OS.changeColor(raw_ostream::YELLOW);
-  OS << "Annotated module print\n";
-  OS.resetColor();
-  CurrentModule.print(OS, &Writer);
-  OS.resetColor();
+  std::error_code EC;
+  raw_fd_ostream FILE_OS("AnnotatedModule.prof.ll", EC, llvm::sys::fs::F_RW);
+  FILE_OS.changeColor(raw_ostream::YELLOW);
+  FILE_OS << "Annotated module print\n";
+  FILE_OS.resetColor();
+  CurrentModule.print(FILE_OS, &Writer);
+  FILE_OS.resetColor();
 }
 
 void StructInfo::addAccessPattern(const Instruction* I, unsigned FieldNum)
@@ -388,11 +391,13 @@ void AllStructInfo::printAllStructAccesses()
 void AllStructInfo::printAnnotatedModule()
 {
   StructFieldCacheAnalysisAnnotatedWriter Writer(ProfData, this);
-  OS.changeColor(raw_ostream::YELLOW);
-  OS << "Annotated module print\n";
-  OS.resetColor();
+  std::error_code EC;
+  raw_fd_ostream FILE_OS("AnnotatedModule.IR.ll", EC, llvm::sys::fs::F_RW);
+  FILE_OS.changeColor(raw_ostream::YELLOW);
+  FILE_OS << "Annotated module print\n";
+  FILE_OS.resetColor();
   CurrentModule.print(OS, &Writer);
-  OS.resetColor();
+  FILE_OS.resetColor();
 }
 
 void AllStructInfo::printStats()
@@ -410,6 +415,7 @@ void AllStructInfo::printStats()
 static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
 {
   AllStructInfo allStructs(M, profData);
+  // Find all structs declared by allocas
   for (auto &F : M){
     if (F.isDeclaration())
       continue;
@@ -426,6 +432,15 @@ static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
           }
         }
       }
+    }
+  }
+  // Find all global structs
+  for (auto &G : M.globals()){
+    printf("Global variable:\n");
+    G.dump();
+    if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isStructTy()){
+      printf("Found a global has struct type\n");
+      G.dump();
     }
   }
   //Find uses of structs through function calls

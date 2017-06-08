@@ -906,13 +906,10 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
     //assert (!PGOInstrUse.empty() && "illegal to use -struct-field-cache-analysis without -fprofile-use");
     //TODO: Need to make sure the profile-use pass has been executed
     PM.add(createStructFieldCacheAnalysisPass());
-<<<<<<< HEAD
+  }
 
   if (VerifyOutput)
     PM.add(createVerifierPass());
-=======
-  }
->>>>>>> 8eada34834b0e263beaaf8fdfa39d9f4d4dddc04
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {
