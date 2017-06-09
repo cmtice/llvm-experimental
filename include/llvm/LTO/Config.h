@@ -70,9 +70,6 @@ struct Config {
   /// Sample PGO profile path.
   std::string SampleProfile;
 
-  /// Enable Struct Field Cache Analysis.
-  bool EnableStructFieldCacheAnalysis = false;
-
   /// Optimization remarks file path.
   std::string RemarksFilename = "";
 

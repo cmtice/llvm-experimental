@@ -15,11 +15,11 @@
 //===--------------------------------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/IPO.h"
-#include "llvm/Analysis/BlockFrequencyInfo.h"
-#include "llvm/IR/DiagnosticInfo.h"
-#include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/FileSystem.h"
@@ -27,34 +27,9 @@
 #include <unordered_map>
 #include <vector>
 
-/*#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/EquivalenceClasses.h"
-#include "llvm/ADT/Statistic.h"
-#include "llvm/IR/Constant.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/GlobalObject.h"
-#include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/MDBuilder.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Operator.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/Analysis/BlockFrequencyInfo.h"
-#include "llvm/Analysis/BlockFrequencyInfoImpl.h"
-#include "llvm/Analysis/BranchProbabilityInfo.h"
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/Passes.h"
-#include "llvm/IR/CFG.h"
-*/
-
 using namespace llvm;
 
-#define DEBUG_TYPE "struct-field-cache-analysis"
+#define DEBUG_TYPE "struct-analysis"
 
 // TODO: Debug flags, need to remove for final version
 #define PERFORM_PROFILE 1
@@ -82,7 +57,7 @@ class StructFieldCacheAnalysisPass : public ModulePass {
 char StructFieldCacheAnalysisPass::ID = 0;
 INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
-INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cahce Analysis", false, false)
+INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
 
 namespace llvm{
@@ -396,7 +371,7 @@ void AllStructInfo::printAnnotatedModule()
   FILE_OS.changeColor(raw_ostream::YELLOW);
   FILE_OS << "Annotated module print\n";
   FILE_OS.resetColor();
-  CurrentModule.print(OS, &Writer);
+  CurrentModule.print(FILE_OS, &Writer);
   FILE_OS.resetColor();
 }
 
@@ -476,7 +451,7 @@ static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
 static bool performStructFieldCacheAnalysis(Module &M,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI)
 {
-  // printf("Dummy output from StructFieldCacheAnalysis\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE, dbgs() << "Dummy output of struct field cache analysis\n");
 #if PERFORM_PROFILE
   GlobalProfileInfo allProfiles(M);
   for (auto &F : M){
@@ -493,7 +468,7 @@ static bool performStructFieldCacheAnalysis(Module &M,
 #if PERFORM_IR_ANALYSIS
   collectAllStructAccess(M, &allProfiles);
 #endif
-  return true;
+  return false;
 }
 
 StructFieldCacheAnalysis::StructFieldCacheAnalysis() {}
