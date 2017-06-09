@@ -15,13 +15,13 @@
 //===-----------------------------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/IPO.h"
-#include "llvm/Analysis/BlockFrequencyInfo.h"
 
 using namespace llvm;
 
-#define DEBUG_TYPE "struct-field-cache-analysis"
+#define DEBUG_TYPE "struct-analysis"
 
 namespace{
 
@@ -47,8 +47,8 @@ ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldC
 
 static bool performStructFieldCacheAnalysis(Module &M)
 {
-  printf("Dummy output of struct field cache analysis\n");
-  return true;
+  DEBUG_WITH_TYPE(DEBUG_TYPE, dbgs() << "Dummy output of struct field cache analysis\n");
+  return false;
 }
 
 StructFieldCacheAnalysis::StructFieldCacheAnalysis() {}
