@@ -389,6 +389,7 @@ void AllStructInfo::printStats()
 
 static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
 {
+  raw_fd_ostream OS(1, false, true);
   AllStructInfo allStructs(M, profData);
   // Find all structs declared by allocas
   for (auto &F : M){
@@ -411,12 +412,32 @@ static void collectAllStructAccess(Module &M, GlobalProfileInfo* profData)
   }
   // Find all global structs
   for (auto &G : M.globals()){
-    printf("Global variable:\n");
-    G.dump();
-    if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isStructTy()){
-      printf("Found a global has struct type\n");
-      G.dump();
+    // Only process globals defined in current module (the scope of whole program)
+    if (G.isDeclaration())
+      continue;
+    OS.changeColor(raw_ostream::YELLOW);
+    // G is always a pointer
+    if (G.getValueType()->isStructTy()){
+      OS << "Found a global defined as struct: " << G << "\n";
     }
+    else if (G.getValueType()->isPointerTy() && G.getValueType()->getPointerElementType()->isStructTy()){
+      OS << "Found a global has struct* type: " << G << "\n";
+      OS << "It has users: ";
+      for (auto *U : G.users()){
+        OS << *U;
+      }
+      OS << '\n';
+    }
+    else if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isPointerTy() && G.getType()->getPointerElementType()->getPointerElementType()->isStructTy()){
+      OS << "Found a global has struct** type: " << G << "\n";
+      OS << "It has users: ";
+      for (auto *U : G.users()){
+        OS << *U;
+      }
+      OS << '\n';
+    }
+    // TODO: might need recursively find out all the struct definitions
+    OS.resetColor();
   }
   //Find uses of structs through function calls
   for (auto &F : M){
