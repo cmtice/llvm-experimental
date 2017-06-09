@@ -47,7 +47,7 @@ ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldC
 
 static bool performStructFieldCacheAnalysis(Module &M)
 {
-  DEBUG_WITH_TYPE(DEBUG_TYPE, dbgs() << "Dummy output of struct field cache analysis\n");
+  DEBUG(dbgs() << "Dummy output of struct field cache analysis\n");
   return false;
 }
 
