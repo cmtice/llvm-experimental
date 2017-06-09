@@ -901,6 +901,10 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
   if (OptLevel != 0)
     addLateLTOOptimizationPasses(PM);
 
+  if (VerifyOutput)
+    PM.add(createVerifierPass());
+
+  // FIXME: Need to figure out a earlier place to put this pass to avoid complexity
   // After all optimizations have been performed, struct field cache analysis will be performed if enabled
   if (EnableStructFieldCacheAnalysis){
     //assert (!PGOInstrUse.empty() && "illegal to use -struct-field-cache-analysis without -fprofile-use");

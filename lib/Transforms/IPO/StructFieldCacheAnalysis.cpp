@@ -15,44 +15,19 @@
 //===--------------------------------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/IPO.h"
-#include "llvm/Analysis/BlockFrequencyInfo.h"
-#include "llvm/IR/DiagnosticInfo.h"
-#include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FormattedStream.h"
 #include <unordered_map>
 #include <vector>
 
-/*#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/EquivalenceClasses.h"
-#include "llvm/ADT/Statistic.h"
-#include "llvm/IR/Constant.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/GlobalObject.h"
-#include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/MDBuilder.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Operator.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/Analysis/BlockFrequencyInfo.h"
-#include "llvm/Analysis/BlockFrequencyInfoImpl.h"
-#include "llvm/Analysis/BranchProbabilityInfo.h"
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/Passes.h"
-#include "llvm/IR/CFG.h"
-*/
-
 using namespace llvm;
 
-#define DEBUG_TYPE "struct-field-cache-analysis"
+#define DEBUG_TYPE "struct-analysis"
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
@@ -175,7 +150,7 @@ void GlobalProfileInfo::printAnnotatedModule()
 static bool performStructFieldCacheAnalysis(Module &M,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI)
 {
-  //printf("Dummy output from StructFieldCacheAnalysis\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE, dbgs() << "Dummy output of struct field cache analysis\n");
   GlobalProfileInfo allProfiles(M);
   for (auto &F : M){
     if (F.isDeclaration())
@@ -184,7 +159,7 @@ static bool performStructFieldCacheAnalysis(Module &M,
     allProfiles.addFunction(F, BFI);
   }
   allProfiles.printAnnotatedModule();
-  return true;
+  return false;
 }
 
 StructFieldCacheAnalysis::StructFieldCacheAnalysis() {}
