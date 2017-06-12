@@ -147,7 +147,7 @@ class StructFieldAccessInfo
 
   // Private functions
   // Calculate which field of the struct is the GEP pointing to, from GetElementPtrInst or GEPOperator
-  unsigned calculateFieldNumFromGEP(const User* U) const;
+  int calculateFieldNumFromGEP(const User* U) const;
   // Record all users of a GEP instruction/operator that calculates the address of a field.
   // It's the only supported way to add access to a field for now
   void addFieldAccessFromGEP(const User* U);
@@ -198,6 +198,7 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned Fie
 {
   assert(I->getOpcode() == Instruction::Load || I->getOpcode() == Instruction::Store); // Only loads and stores
   assert(FieldAccessMap.find(I) == FieldAccessMap.end());
+  /*
   // Make sure the field type matches the instruction type
   Type* Ty;
   if (I->getOpcode() == Instruction::Load){
@@ -210,9 +211,7 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned Fie
     auto* Inst = dyn_cast<StoreInst>(I);
     Ty = Inst->getPointerOperand()->getType()->getPointerElementType();
   }
-  //OS << "Found a Load/Store [" << *I << "] access struct field [" << FieldNum << "]\n";
-  //OS << "Field type: [" << *StructureType->getElementType(FieldNum) << "] vs instruction type: [" << *Ty << "]\n";
-  assert(StructureType->getElementType(FieldNum)->isStructTy() || Ty == StructureType->getElementType(FieldNum)); // TODO: this assertion will fail if a field is a struct
+  assert(StructureType->getElementType(FieldNum)->isStructTy() || Ty == StructureType->getElementType(FieldNum)); // TODO: this assertion will fail if a field is a struct*/
   FieldAccessMap[I] = FieldNum;
 }
 
@@ -226,7 +225,7 @@ Optional<unsigned> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I
   return ret;
 }
 
-unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
+int StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
 {
   DEBUG(dbgs() << "Calculating field number from GEP: " << *U << "\n");
   //Operand 0 should be a pointer to the struct
@@ -234,7 +233,8 @@ unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
   auto* Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of StructFieldAccessInfo
   assert(Op->getType()->isPointerTy() && Op->getType()->getPointerElementType()->isStructTy() && Op->getType()->getPointerElementType() == StructureType);
-  assert(U->getNumOperands() >= 3); // GEP to calculate struct field needs at least 2 indices (operand 1 and 2)
+  if (U->getNumOperands() < 3) // GEP to calculate struct field needs at least 2 indices (operand 1 and 2)
+    return -1;
   //Operand 1 should be first index to the struct, usually 0; if not 0, it's like goto an element of an array of structs
   Op = U->getOperand(1);
   //TODO: ignore this index for now because it's the same for an array of structs
@@ -254,9 +254,11 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
   DEBUG(dbgs() << "Analyze all users of GEP: " << *U << "\n");
   assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
   auto FieldLoc = calculateFieldNumFromGEP(U);
+  if (FieldLoc == -1)
+    return;
   for (auto *User : U->users()){
     DEBUG(dbgs() << "Check user of " << *U << ": " << *User << "\n");
-    assert(isa<Instruction>(User)); // || isa<Operator>(U));
+    assert(isa<Instruction>(User) || isa<Operator>(User)); // || isa<Operator>(U));
     if (isa<Instruction>(User)){
       auto* Inst = dyn_cast<Instruction>(User);
       if (Inst->getOpcode() == Instruction::Load || Inst->getOpcode() == Instruction::Store){
@@ -268,18 +270,11 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
         }
       }
     }
-    /*
     else {
       auto* Inst = dyn_cast<Operator>(U);
-      if (Inst->getOpcode() == Instruction::Load || Inst->getOpcode() == Instruction::Store){
-        addFieldAccessNum(Inst, FieldLoc);
-      }
-      else{
-        if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
-          addStats(StructFieldAccessManager::stats::gep_in_arg);
-        }
-      }
-      }*/
+      assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
+              || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
+    }
   }
 }
 
