@@ -18,12 +18,14 @@
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/DiagnosticInfo.h"
-#include "llvm/Pass.h"
-#include "llvm/Transforms/IPO.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Operator.h"
+#include "llvm/Pass.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/IPO.h"
+
 #include <unordered_map>
 #include <vector>
 
@@ -78,19 +80,19 @@ class StructFieldAccessManager
   void debugPrintAllStructAccesses();
   // Print the IR of the module with annotated information about struct access
   void debugPrintAnnotatedModule();
+
+  // For stats
+  enum stats{
+    struct_pointer_pointer,
+    func_arg_value,
+    func_arg_not_defined,
+    gep_in_arg,
+    max_stats
+  };
   // Increment stats for one category
   void addStats(unsigned Category) { StatCounts[Category]++; }
   // Print a brief stats of struct access
   void printStats();
-  // For stats
-  enum stats{
-    struct_pointer,
-    struct_pointer_pointer,
-    func_arg_value,
-    func_arg_not_defined,
-    max_stats
-  };
-
 
  private:
   const Module& CurrentModule;
@@ -98,10 +100,11 @@ class StructFieldAccessManager
   function_ref<BlockFrequencyInfo *(Function &)> LookupBFI;
   std::unordered_map<const Type*, StructFieldAccessInfo*> StructFieldAccessInfoMap;
   std::vector<unsigned> StatCounts;
-  const std::vector<std::string> StatNames = {"Variable type is Struct*",
-                                              "Variable type is Struct**",
+  const std::vector<std::string> StatNames = {"Variable type is Struct**",
                                               "Function argument is a value",
-                                              "Function argument is not defined in the program"};
+                                              "Function argument is not defined in the program",
+                                              "GEP value passed into function calls"
+  };
 };
 
 class StructFieldAccessInfo
@@ -111,9 +114,11 @@ class StructFieldAccessInfo
     essential information for cache-aware struct field analysis.
   */
  public:
-  StructFieldAccessInfo(const Type* T, const StructFieldAccessManager* M): StructureType(dyn_cast<StructType>(T)), NumElements(StructureType->getNumElements()), StructManager(M) {}
-  // Analyze a value pointing to a struct and collect struct access from it. It can be allocas or function args
+  StructFieldAccessInfo(const Type* T, const StructFieldAccessManager* M): StructureType(dyn_cast<StructType>(T)), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::stats::max_stats) {}
+  // Analyze a value pointing to a struct and collect struct access from it. It can be allocas/function args/globals
   void analyzeUsersOfStructValue(const Value* V);
+  // Analyze a value pointing to a struct* and collect struct access from it. It can be allocas/function args/globals
+  void analyzeUsersOfStructPointerValue(const Value* V);
   // Obtain which field the instruction is accessing and return no val if not accessing any struct field
   Optional<unsigned> getAccessFieldNum(const Instruction* I) const;
   // Obtain total number of instructions that access the struct fields
@@ -127,19 +132,25 @@ class StructFieldAccessInfo
   }
   // Print all instructions that access any struct field
   void debugPrintAllStructAccesses(raw_ostream& OS);
+
+  // For stats
+  void addStats(unsigned Category) { StatCounts[Category]++; }
+  unsigned getStats(unsigned Category) const { return StatCounts[Category]; }
+
  private:
   const StructType* StructureType;
   unsigned NumElements;
   const StructFieldAccessManager* StructManager;
   //A map records all instructions accessing which field of the structure
   std::unordered_map<const Instruction*, unsigned> FieldAccessMap;
+  std::vector<unsigned> StatCounts;
 
   // Private functions
-  // Calculate which field of the struct is the GEP pointing to
-  unsigned calculateFieldNumFromGEP(const Instruction* I) const;
-  // Record all users of a GEP instruction that calculates the address of a field.
+  // Calculate which field of the struct is the GEP pointing to, from GetElementPtrInst or GEPOperator
+  unsigned calculateFieldNumFromGEP(const User* U) const;
+  // Record all users of a GEP instruction/operator that calculates the address of a field.
   // It's the only supported way to add access to a field for now
-  void addFieldAccessFromGEP(const Instruction* I);
+  void addFieldAccessFromGEP(const User* U);
   // Record an access pattern in the data structure
   void addFieldAccessNum(const Instruction* I, unsigned FieldNum);
 };
@@ -190,24 +201,18 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned Fie
   // Make sure the field type matches the instruction type
   Type* Ty;
   if (I->getOpcode() == Instruction::Load){
-    if (auto* Inst = dyn_cast<LoadInst>(I)){
-      Ty = Inst->getPointerOperand()->getType()->getPointerElementType();
-    }
-    else{
-      DEBUG(dbgs() << "Can't cast Instruction " << *I << " to LoadInst\n");
-    }
+    assert(isa<LoadInst>(I));
+    auto* Inst = dyn_cast<LoadInst>(I);
+    Ty = Inst->getPointerOperand()->getType()->getPointerElementType();
   }
   else{
-    if (auto* Inst = dyn_cast<StoreInst>(I)){
-      Ty = Inst->getPointerOperand()->getType()->getPointerElementType();
-    }
-    else{
-      DEBUG(dbgs() << "Can't cast Instruction " << *I << " to StoreInst\n");
-    }
+    assert(isa<StoreInst>(I));
+    auto* Inst = dyn_cast<StoreInst>(I);
+    Ty = Inst->getPointerOperand()->getType()->getPointerElementType();
   }
   //OS << "Found a Load/Store [" << *I << "] access struct field [" << FieldNum << "]\n";
   //OS << "Field type: [" << *StructureType->getElementType(FieldNum) << "] vs instruction type: [" << *Ty << "]\n";
-  assert(Ty->isStructTy() || Ty == StructureType->getElementType(FieldNum)); // TODO: this assertion will fail if a field is a struct
+  assert(StructureType->getElementType(FieldNum)->isStructTy() || Ty == StructureType->getElementType(FieldNum)); // TODO: this assertion will fail if a field is a struct
   FieldAccessMap[I] = FieldNum;
 }
 
@@ -221,51 +226,60 @@ Optional<unsigned> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I
   return ret;
 }
 
-unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const Instruction* I) const
+unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
 {
-  DEBUG(dbgs() << "Calculating field number from GEP: " << *I << "\n");
+  DEBUG(dbgs() << "Calculating field number from GEP: " << *U << "\n");
   //Operand 0 should be a pointer to the struct
-  auto* Inst = dyn_cast<GetElementPtrInst>(I);
-  assert(Inst);
-  auto* Op = Inst->getOperand(0);
+  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
+  auto* Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of StructFieldAccessInfo
   assert(Op->getType()->isPointerTy() && Op->getType()->getPointerElementType()->isStructTy() && Op->getType()->getPointerElementType() == StructureType);
-  assert(Inst->getNumIndices() >= 2); // GEP to calculate struct field needs at least 2 indices (operand 1 and 2)
+  assert(U->getNumOperands() >= 3); // GEP to calculate struct field needs at least 2 indices (operand 1 and 2)
   //Operand 1 should be first index to the struct, usually 0; if not 0, it's like goto an element of an array of structs
-  Op = I->getOperand(1);
+  Op = U->getOperand(1);
   //TODO: ignore this index for now because it's the same for an array of structs
   assert(Op->getType()->isIntegerTy());
   //Operand 2 should be the index to the field, and be a constant
-  Op = I->getOperand(2);
-  if (auto* Index = dyn_cast<Constant>(Op)){
-    auto Offset = (unsigned)Index->getUniqueInteger().getZExtValue();
-    assert(Offset < NumElements);
-    //TODO: ignore indices after this one. If there's indices, the field has to be an array or struct
-    return Offset;
-  }
-  else{
-    DEBUG(dbgs() << "Can't cast operand 2 " << *Op << " of GEP " << *I << " as constant\n");
-    return 0;
-  }
+  Op = U->getOperand(2);
+  assert(isa<Constant>(Op));
+  auto* Index = dyn_cast<Constant>(Op);
+  auto Offset = (unsigned)Index->getUniqueInteger().getZExtValue();
+  assert(Offset < NumElements);
+  //TODO: ignore indices after this one. If there's indices, the field has to be an array or struct
+  return Offset;
 }
 
-void StructFieldAccessInfo::addFieldAccessFromGEP(const Instruction* I)
+void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
 {
-  DEBUG(dbgs() << "Analyze all users of GEP: " << *I << "\n");
-  auto FieldLoc = calculateFieldNumFromGEP(I);
-  for (auto *U : I->users()){
-    DEBUG(dbgs() << "Check user of " << *I << ": " << *U << "\n");
-    if (auto* Inst = dyn_cast<Instruction>(U)){
+  DEBUG(dbgs() << "Analyze all users of GEP: " << *U << "\n");
+  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
+  auto FieldLoc = calculateFieldNumFromGEP(U);
+  for (auto *User : U->users()){
+    DEBUG(dbgs() << "Check user of " << *U << ": " << *User << "\n");
+    assert(isa<Instruction>(User)); // || isa<Operator>(U));
+    if (isa<Instruction>(User)){
+      auto* Inst = dyn_cast<Instruction>(User);
       if (Inst->getOpcode() == Instruction::Load || Inst->getOpcode() == Instruction::Store){
         addFieldAccessNum(Inst, FieldLoc);
       }
       else{
-        //TODO: ignore for now but if the user is a call or invoke, need to track that function also
+        if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
+          addStats(StructFieldAccessManager::stats::gep_in_arg);
+        }
       }
     }
-    else{
-      DEBUG(dbgs() << "Can\'t cast user " << *U << " of " << *I << " as Instruction\n");
-    }
+    /*
+    else {
+      auto* Inst = dyn_cast<Operator>(U);
+      if (Inst->getOpcode() == Instruction::Load || Inst->getOpcode() == Instruction::Store){
+        addFieldAccessNum(Inst, FieldLoc);
+      }
+      else{
+        if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
+          addStats(StructFieldAccessManager::stats::gep_in_arg);
+        }
+      }
+      }*/
   }
 }
 
@@ -274,7 +288,9 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
   assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isStructTy());
   for (auto *U : V->users()){
     DEBUG(dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
-    if (auto *Inst = dyn_cast<Instruction>(U)){
+    assert(isa<Instruction>(U) || isa<Operator>(U));
+    if (isa<Instruction>(U)){
+      auto *Inst = dyn_cast<Instruction>(U);
       if (Inst->getOpcode() != Instruction::GetElementPtr){
         // Only support access struct through GEP for now
         continue;
@@ -282,10 +298,42 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
       addFieldAccessFromGEP(Inst);
     }
     else{
-      DEBUG(dbgs() << "Can\'t cast user " << *U << " of " << *V << " as Instruction\n");
+      auto *Inst = dyn_cast<Operator>(U);
+      if (Inst->getOpcode() != Instruction::GetElementPtr){
+        // Only support access struct through GEP for now
+        continue;
+      }
+      addFieldAccessFromGEP(Inst);
     }
   }
 }
+
+void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
+{
+  // Analyze users of value defined as struct*
+  assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isPointerTy() && V->getType()->getPointerElementType()->getPointerElementType()->isStructTy());
+  for (auto *U : V->users()){
+    DEBUG(dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
+    assert(isa<Instruction>(U) || isa<Operator>(U));
+    if (isa<Instruction>(U)){
+      auto *Inst = dyn_cast<Instruction>(U);
+      if (Inst->getOpcode() != Instruction::Load){
+        // Only load is allowed to access struct*
+        continue;
+      }
+      analyzeUsersOfStructValue(Inst);
+    }
+    else{
+      auto *Inst = dyn_cast<Operator>(U);
+      if (Inst->getOpcode() != Instruction::Load){
+        // Only support access struct through GEP for now
+        continue;
+      }
+      analyzeUsersOfStructValue(Inst);
+    }
+  }
+}
+
 
 void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS)
 {
@@ -300,7 +348,7 @@ StructFieldAccessInfo* StructFieldAccessManager::createOrGetStructFieldAccessInf
   if (auto* def = getStructFieldAccessInfo(T))
     return def;
   else{
-    assert(T->isStructTy());
+    assert(T->isStructTy() && isa<StructType>(T));
     def = StructFieldAccessInfoMap[T] = new StructFieldAccessInfo(T, this);
     return def;
   }
@@ -358,6 +406,9 @@ void StructFieldAccessManager::printStats()
   outs() << "There are " << StructFieldAccessInfoMap.size() << " struct types are accessed in the program\n";
   for (auto &it : StructFieldAccessInfoMap){
     outs() << "Struct [" << it.first->getStructName() << "] has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
+    for (auto i = 0; i < stats::max_stats; i++){
+      StatCounts[i] += it.second->getStats(i);
+    }
   }
   outs().resetColor();
   outs().changeColor(raw_ostream::GREEN);
@@ -388,8 +439,11 @@ static void performIRAnalysis(Module &M,
     }
     // Case for struct*
     else if (G.getValueType()->isPointerTy() && G.getValueType()->getPointerElementType()->isStructTy()){
-      DEBUG(dbgs() << "Found a global has struct* type: " << G << " but we ignored this\n");
-      StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
+      DEBUG(dbgs() << "Found a global has struct* type: " << G << "\n");
+      auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(G.getValueType()->getPointerElementType());
+      assert(structInfoPtr);
+      structInfoPtr->analyzeUsersOfStructPointerValue(&G);
+      //StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
     }
     // Case for struct**
     else if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isPointerTy() && G.getType()->getPointerElementType()->getPointerElementType()->isStructTy()){
@@ -416,8 +470,11 @@ static void performIRAnalysis(Module &M,
             structInfoPtr->analyzeUsersOfStructValue(&I);
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isStructTy()){
-            DEBUG(dbgs() << "Found an alloca of a struct*: " << I << " but we ignore this\n");
-            StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
+            DEBUG(dbgs() << "Found an alloca of a struct*: " << I << "\n");
+            auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type->getPointerElementType());
+            assert(structInfoPtr);
+            structInfoPtr->analyzeUsersOfStructPointerValue(&I);
+            //StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isPointerTy() && type->getPointerElementType()->getPointerElementType()->isStructTy()){
             DEBUG(dbgs() << "Found an alloca of a struct**: " << I << " but we ignore this\n");
