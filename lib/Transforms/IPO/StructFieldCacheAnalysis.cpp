@@ -197,7 +197,9 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned FieldNum)
 {
   assert(I->getOpcode() == Instruction::Load || I->getOpcode() == Instruction::Store); // Only loads and stores
-  assert(FieldAccessMap.find(I) == FieldAccessMap.end());
+  assert (FieldAccessMap.find(I) == FieldAccessMap.end());
+  FieldAccessMap[I] = FieldNum;
+
   /*
   // Make sure the field type matches the instruction type
   Type* Ty;
@@ -212,7 +214,6 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned Fie
     Ty = Inst->getPointerOperand()->getType()->getPointerElementType();
   }
   assert(StructureType->getElementType(FieldNum)->isStructTy() || Ty == StructureType->getElementType(FieldNum)); // TODO: this assertion will fail if a field is a struct*/
-  FieldAccessMap[I] = FieldNum;
 }
 
 Optional<unsigned> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I) const
@@ -258,11 +259,15 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
     return;
   for (auto *User : U->users()){
     DEBUG(dbgs() << "Check user of " << *U << ": " << *User << "\n");
+    //DEBUG(dbgs() << "Print the use of this user: " << *User->getOperandList()->get() << " and its user: " << *User->getOperandList()->getUser() << "\n");
     assert(isa<Instruction>(User) || isa<Operator>(User)); // || isa<Operator>(U));
     if (isa<Instruction>(User)){
       auto* Inst = dyn_cast<Instruction>(User);
-      if (Inst->getOpcode() == Instruction::Load || Inst->getOpcode() == Instruction::Store){
+      if (Inst->getOpcode() == Instruction::Load)
         addFieldAccessNum(Inst, FieldLoc);
+      else if (Inst->getOpcode() == Instruction::Store){
+        if (U == Inst->getOperand(1))
+          addFieldAccessNum(Inst, FieldLoc);
       }
       else{
         if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
