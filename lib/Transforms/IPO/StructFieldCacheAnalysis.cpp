@@ -182,7 +182,12 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
       return;
     if (auto pair = StructManager->getFieldAccessOnInstruction(I)){
       OS.changeColor(raw_ostream::GREEN, false, false);
-      OS << "; [Instruction is memory access on field " << pair.getValue().second << " of struct " << pair.getValue().first->getStructName() << "] ";
+      auto* type = pair.getValue().first;
+      assert(isa<StructType>(type));
+      if (dyn_cast<StructType>(type)->isLiteral())
+        OS << "; [Instruction is memory access on field " << pair.getValue().second << " of a literal struct.] ";
+      else
+        OS << "; [Instruction is memory access on field " << pair.getValue().second << " of struct " << type->getStructName() << "] ";
     }
     else{
       OS.resetColor();
@@ -379,7 +384,14 @@ void StructFieldAccessManager::debugPrintAllStructAccesses()
   dbgs() << "------------ Printing all struct accesses: ---------------- \n";
   for (auto &it : StructFieldAccessInfoMap){
     dbgs().changeColor(raw_ostream::YELLOW);
-    dbgs() << "Struct [" << it.first->getStructName() << "] has accesses: \n";
+    auto* type = it.first;
+    assert(isa<StructType>(type));
+    if (dyn_cast<StructType>(type)->isLiteral()){
+      dbgs() << "A literal struct has accesses: \n";
+    }
+    else{
+      dbgs() << "Struct [" << type->getStructName() << "] has accesses: \n";
+    }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintAllStructAccesses(dbgs());
     dbgs().resetColor();
@@ -405,7 +417,14 @@ void StructFieldAccessManager::printStats()
   outs().changeColor(raw_ostream::YELLOW);
   outs() << "There are " << StructFieldAccessInfoMap.size() << " struct types are accessed in the program\n";
   for (auto &it : StructFieldAccessInfoMap){
-    outs() << "Struct [" << it.first->getStructName() << "] has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
+    auto* type = it.first;
+    assert(isa<StructType>(type));
+    if (dyn_cast<StructType>(type)->isLiteral()){
+      outs() << "A literal struct has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
+    }
+    else{
+      outs() << "Struct [" << type->getStructName() << "] has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
+    }
     for (auto i = 0; i < stats::max_stats; i++){
       StatCounts[i] += it.second->getStats(i);
     }
