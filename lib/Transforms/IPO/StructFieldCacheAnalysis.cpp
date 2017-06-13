@@ -267,7 +267,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
   for (auto *User : U->users()){
     DEBUG(dbgs() << "Check user of " << *U << ": " << *User << "\n");
     //DEBUG(dbgs() << "Print the use of this user: " << *User->getOperandList()->get() << " and its user: " << *User->getOperandList()->getUser() << "\n");
-    assert(isa<Instruction>(User) || isa<Operator>(User)); // || isa<Operator>(U));
+    //assert(isa<Instruction>(User) || isa<Operator>(User)); // || isa<Operator>(U));
     if (isa<Instruction>(User)){
       auto* Inst = dyn_cast<Instruction>(User);
       if (Inst->getOpcode() == Instruction::Load)
@@ -282,10 +282,13 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
         }
       }
     }
-    else {
+    else if (isa<Operator>(User)){
       auto* Inst = dyn_cast<Operator>(U);
       assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
               || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
+    }
+    else{
+      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
     }
   }
 }
