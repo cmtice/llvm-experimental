@@ -577,7 +577,7 @@ void SelectionDAG::RemoveDeadNodes(SmallVectorImpl<SDNode *> &DeadNodes) {
     // happen if replacing a node causes a node previously added to the node to
     // be deleted.
     if (N->getOpcode() == ISD::DELETED_NODE)
-      continue
+      continue;
 
     for (DAGUpdateListener *DUL = UpdateListeners; DUL; DUL = DUL->Next)
       DUL->NodeDeleted(N, nullptr);
