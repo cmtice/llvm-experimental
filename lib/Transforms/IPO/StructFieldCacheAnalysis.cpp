@@ -35,6 +35,10 @@ using namespace llvm;
 
 #define DEBUG_TYPE "struct-analysis"
 
+// Macros used to turn on detailed debug info for each step
+#define DEBUG_TYPE_IR "struct-analysis-IR"
+#define DEBUG_TYPE_FRG "struct-analysis-FRG"
+
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
  public:
@@ -57,32 +61,36 @@ INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis",
 ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
 
 namespace llvm{
+typedef unsigned ExecutionCountType;
+typedef unsigned DataBytesType;
+typedef unsigned FieldNumType;
+
 class FieldReferenceGraph
 {
  public:
   struct Edge;
   struct Node{
-    Node(unsigned I, unsigned N): Id(I), FieldNum(N) {}
+    Node(unsigned I, FieldNumType N): Id(I), FieldNum(N) {}
     unsigned Id;
-    unsigned FieldNum;
+    FieldNumType FieldNum;
     std::unordered_set<Edge*> InEdges;
     std::unordered_set<Edge*> OutEdges;
   };
 
   struct Edge{
    public:
-    Edge(unsigned I, unsigned C, unsigned D): Id(I), ExecutionCount(C), DataSize(D){}
+    Edge(unsigned I, ExecutionCountType C, DataBytesType D): Id(I), ExecutionCount(C), DataSize(D){}
     void connectNodes(Node* From, Node* To) { FromNode = From; ToNode = To; }
     unsigned Id;
-    unsigned ExecutionCount;
-    unsigned DataSize;
+    ExecutionCountType ExecutionCount;
+    DataBytesType DataSize;
     Node* FromNode;
     Node* ToNode;
   };
 
   struct BasicBlockHelperInfo{
     BasicBlockHelperInfo(): RemainBytes(0), FirstNode(NULL), LastNode(NULL) {}
-    unsigned RemainBytes;
+    DataBytesType RemainBytes;
     Node* FirstNode;
     Node* LastNode;
   };
@@ -106,11 +114,11 @@ class FieldReferenceGraph
   BasicBlockHelperInfo* getBasicBlockHelperInfo(const BasicBlock* BB);
 
   // The two functions are used to create a new node in the graph, unconnected with other nodes, and return the pointer to the Node
-  Node* createNewNode(unsigned FieldNum);
+  Node* createNewNode(FieldNumType FieldNum);
   Node* createNewNode() { return createNewNode(0); }
 
   // The two functions are used to connect two nodes in FRG with or without given weight
-  void connectNodes(Node* From, Node* To, unsigned C, unsigned D);
+  void connectNodes(Node* From, Node* To, ExecutionCountType C, DataBytesType D);
   void connectNodes(Node* From, Node* To) { connectNodes(From, To, 0, 0); }
 
   // The getter and setter of entry node in the FRG
@@ -137,7 +145,7 @@ class StructFieldAccessManager
   */
  public:
   StructFieldAccessManager(const Module& M, function_ref<BlockFrequencyInfo *(Function &)> L):
-      CurrentModule(M), LookupBFI(L), StatCounts(stats::max_stats) {};
+      CurrentModule(M), LookupBFI(L), StatCounts(Stats::max_stats) {};
   ~StructFieldAccessManager();
   // Functions for IR analysis
   // Check if the struct type is created before; if not, create a new StructFieldAccessInfo object for it
@@ -150,7 +158,7 @@ class StructFieldAccessManager
     return LookupBFI(*func)->getBlockProfileCount(BB);
   }
   // Retrive a pair of information if the instruction is accessing any struct type and field number
-  Optional<std::pair<const Type*, unsigned> > getFieldAccessOnInstruction(const Instruction* I) const;
+  Optional<std::pair<const Type*, FieldNumType> > getFieldAccessOnInstruction(const Instruction* I) const;
 
   // Functions for FRG build
   // Call functions to build FRG for all structs with accesses
@@ -165,7 +173,7 @@ class StructFieldAccessManager
   void debugPrintAnnotatedModule() const;
 
   // For stats
-  enum stats{
+  enum Stats{
     struct_pointer_pointer,
     func_arg_value,
     func_arg_not_defined,
@@ -199,7 +207,7 @@ class StructFieldAccessInfo
     essential information for cache-aware struct field analysis.
   */
  public:
-  StructFieldAccessInfo(const Type* T, const StructFieldAccessManager* SM, const Module& M): StructureType(dyn_cast<StructType>(T)), NumElements(StructureType->getNumElements()), StructManager(SM), CurrentModule(M), StatCounts(StructFieldAccessManager::stats::max_stats) {}
+  StructFieldAccessInfo(const Type* T, const StructFieldAccessManager* SM, const Module& M): StructureType(dyn_cast<StructType>(T)), NumElements(StructureType->getNumElements()), StructManager(SM), CurrentModule(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {}
   ~StructFieldAccessInfo() {
     for (auto* it : FRGArray){
       delete it;
@@ -213,7 +221,7 @@ class StructFieldAccessInfo
   // Analyze a value pointing to a struct* and collect struct access from it. It can be allocas/function args/globals
   void analyzeUsersOfStructPointerValue(const Value* V);
   // Obtain which field the instruction is accessing and return no val if not accessing any struct field
-  Optional<unsigned> getAccessFieldNum(const Instruction* I) const;
+  Optional<FieldNumType> getAccessFieldNum(const Instruction* I) const;
   // Obtain total number of instructions that access the struct fields
   unsigned getTotalNumFieldAccess() const { return FieldAccessMap.size(); }
   // Obtain execution count for the BasicBlock/Instruction from profiling info, if any
@@ -239,11 +247,11 @@ class StructFieldAccessInfo
 
  private:
   const StructType* StructureType;
-  unsigned NumElements;
+  FieldNumType NumElements;
   const StructFieldAccessManager* StructManager;
   const Module& CurrentModule;
   // A map records all instructions accessing which field of the structure
-  std::unordered_map<const Instruction*, unsigned> FieldAccessMap;
+  std::unordered_map<const Instruction*, FieldNumType> FieldAccessMap;
   // A vector stores functions that contains struct accesses for further analysis
   std::unordered_set<const Function*> FunctionsForAnalysis;
   // A vector stores all FRGs for all functions
@@ -253,12 +261,12 @@ class StructFieldAccessInfo
 
   // Private functions
   // Calculate which field of the struct is the GEP pointing to, from GetElementPtrInst or GEPOperator
-  unsigned calculateFieldNumFromGEP(const User* U) const;
+  FieldNumType calculateFieldNumFromGEP(const User* U) const;
   // Record all users of a GEP instruction/operator that calculates the address of a field.
   // It's the only supported way to add access to a field for now
   void addFieldAccessFromGEP(const User* U);
   // Record an access pattern in the data structure
-  void addFieldAccessNum(const Instruction* I, unsigned FieldNum);
+  void addFieldAccessNum(const Instruction* I, FieldNumType FieldNum);
 };
 
 class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
@@ -316,13 +324,13 @@ FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::getBasicBlockHel
   assert (BBInfoMap.find(BB) != BBInfoMap.end());
   return BBInfoMap[BB];
 }
-FieldReferenceGraph::Node* FieldReferenceGraph::createNewNode(unsigned FieldNum)
+FieldReferenceGraph::Node* FieldReferenceGraph::createNewNode(FieldNumType FieldNum)
 {
   auto* Node = new FieldReferenceGraph::Node(NodeList.size(), FieldNum);
   NodeList.push_back(Node);
   return Node;
 }
-void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, unsigned C, unsigned D)
+void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, ExecutionCountType C, DataBytesType D)
 {
   auto* Edge = new FieldReferenceGraph::Edge(EdgeList.size(), C, D);
   EdgeList.push_back(Edge);
@@ -355,7 +363,7 @@ void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
 }
 
 // Functions for StructFieldAccessInfo
-void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned FieldNum)
+void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, FieldNumType FieldNum)
 {
   assert(I->getOpcode() == Instruction::Load || I->getOpcode() == Instruction::Store); // Only loads and stores
   assert (FieldAccessMap.find(I) == FieldAccessMap.end());
@@ -377,9 +385,9 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, unsigned Fie
   assert(StructureType->getElementType(FieldNum)->isStructTy() || Ty == StructureType->getElementType(FieldNum)); // TODO: this assertion will fail if a field is a struct*/
 }
 
-Optional<unsigned> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I) const
+Optional<FieldNumType> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I) const
 {
-  Optional<unsigned> ret;
+  Optional<FieldNumType> ret;
   auto it = FieldAccessMap.find(I);
   if (it != FieldAccessMap.end()){
     ret = it->second;
@@ -387,9 +395,9 @@ Optional<unsigned> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I
   return ret;
 }
 
-unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
+FieldNumType StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
 {
-  DEBUG(dbgs() << "Calculating field number from GEP: " << *U << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: " << *U << "\n");
   //Operand 0 should be a pointer to the struct
   assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
   auto* Op = U->getOperand(0);
@@ -405,7 +413,7 @@ unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
   Op = U->getOperand(2);
   assert(isa<Constant>(Op));
   auto* Index = dyn_cast<Constant>(Op);
-  auto Offset = (unsigned)Index->getUniqueInteger().getZExtValue();
+  auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
   assert(Offset < NumElements);
   //TODO: ignore indices after this one. If there's indices, the field has to be an array or struct
   return Offset+1; // return field number starting from 1
@@ -413,13 +421,13 @@ unsigned StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) const
 
 void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
 {
-  DEBUG(dbgs() << "Analyze all users of GEP: " << *U << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyze all users of GEP: " << *U << "\n");
   assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
   auto FieldLoc = calculateFieldNumFromGEP(U);
   if (FieldLoc == 0)
     return;
   for (auto *User : U->users()){
-    DEBUG(dbgs() << "Check user of " << *U << ": " << *User << "\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Check user of " << *U << ": " << *User << "\n");
     //DEBUG(dbgs() << "Print the use of this user: " << *User->getOperandList()->get() << " and its user: " << *User->getOperandList()->getUser() << "\n");
     //assert(isa<Instruction>(User) || isa<Operator>(User)); // || isa<Operator>(U));
     if (isa<Instruction>(User)){
@@ -432,7 +440,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       }
       else{
         if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
-          addStats(StructFieldAccessManager::stats::gep_in_arg);
+          addStats(StructFieldAccessManager::Stats::gep_in_arg);
         }
       }
     }
@@ -442,7 +450,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
               || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
     }
     else{
-      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
     }
   }
 }
@@ -451,7 +459,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
 {
   assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isStructTy());
   for (auto *U : V->users()){
-    DEBUG(dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     //assert(isa<Instruction>(U) || isa<Operator>(U));
     if (isa<Instruction>(U)){
       auto *Inst = dyn_cast<Instruction>(U);
@@ -470,7 +478,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
       addFieldAccessFromGEP(Inst);
     }
     else{
-      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
     }
   }
 }
@@ -480,7 +488,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
   // Analyze users of value defined as struct*
   assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isPointerTy() && V->getType()->getPointerElementType()->getPointerElementType()->isStructTy());
   for (auto *U : V->users()){
-    DEBUG(dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     //assert(isa<Instruction>(U) || isa<Operator>(U));
     if (isa<Instruction>(U)){
       auto *Inst = dyn_cast<Instruction>(U);
@@ -499,48 +507,48 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
       analyzeUsersOfStructValue(Inst);
     }
     else{
-      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
     }
   }
 }
 
 void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
 {
-  DEBUG(dbgs() << "Create a new empty FRG\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a new empty FRG\n");
   auto* FRG = new FieldReferenceGraph(F);
   FRGArray.push_back(FRG);
   // Create and connect node inside each basic block
   for (auto &BB : *F){
-    DEBUG(dbgs() << "Build partial FRG for BB: " << BB << "\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Build partial FRG for BB: " << BB << "\n");
     auto* BBI = FRG->createBasicBlockHelperInfo(&BB);
     for (auto &I : BB){
       if (auto FieldNum = getAccessFieldNum(&I)){
         // Case that I is a struct access
-        DEBUG(dbgs() << "Found an instruction " << I << " is a struct access on field [" << FieldNum.getValue() << "]\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Found an instruction " << I << " is a struct access on field [" << FieldNum.getValue() << "]\n");
         auto* NewNode = FRG->createNewNode(FieldNum.getValue());
         if (BBI->LastNode){
-          DEBUG(dbgs() << "Previous nodes found in the BB\n");
+          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Previous nodes found in the BB\n");
           auto C = 0;
           if (auto ExCnt = getExecutionCount(&I))
             C = getExecutionCount(&I).getValue();
           auto D = BBI->RemainBytes;
           FRG->connectNodes(BBI->LastNode, NewNode, C, D);
           BBI->RemainBytes = 0;
-          DEBUG(dbgs() << "Connect new node with previous node in the BB: Field [" << BBI->LastNode->FieldNum << "] to [" << FieldNum.getValue() << "] with count: " << C << " and data " << D << " bytes \n");
+          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Connect new node with previous node in the BB: Field [" << BBI->LastNode->FieldNum << "] to [" << FieldNum.getValue() << "] with count: " << C << " and data " << D << " bytes \n");
           BBI->LastNode = NewNode;
         }
         else{
-          DEBUG(dbgs() << "No previous node found. It is the first node\n");
+          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "No previous node found. It is the first node\n");
           BBI->FirstNode = BBI->LastNode = NewNode;
         }
       }
       else{
         // Case that I is not struct access but a memory access
         if (I.getOpcode() == Instruction::Load || I.getOpcode() == Instruction::Store){
-          DEBUG(dbgs() << "Found an instruction " << I << " is not a struct access but a load/store.\n");
+          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Found an instruction " << I << " is not a struct access but a load/store.\n");
           if (BBI->LastNode == NULL){
             // Create a dummy node for the first non-struct memory access
-            DEBUG(dbgs() << "Create a dummy node as the first node in the BB.\n");
+            DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a dummy node as the first node in the BB.\n");
             BBI->FirstNode = BBI->LastNode = FRG->createNewNode();
           }
           else{
@@ -551,14 +559,14 @@ void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
               type = I.getOperand(0)->getType();
             assert (type->isSized());
             BBI->RemainBytes += CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
-            DEBUG(dbgs() << "Increment remaining data size to " << BBI->RemainBytes << "\n");
+            DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Increment remaining data size to " << BBI->RemainBytes << "\n");
           }
         }
       }
     }
     if (BBI->LastNode == NULL){
       assert(BBI->FirstNode == NULL);
-      DEBUG(dbgs() << "Create a dummy node as BB does not have memory accesses\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a dummy node as BB does not have memory accesses\n");
       BBI->FirstNode = BBI->LastNode = FRG->createNewNode();
     }
   }
@@ -568,7 +576,7 @@ void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
     auto* Term = BB.getTerminator();
     for (const auto *SB : Term->successors()){
       auto* SBI = FRG->getBasicBlockHelperInfo(SB);
-      unsigned C = 0;
+      ExecutionCountType C = 0;
       auto BBCount = getExecutionCount(&BB), SBCount = getExecutionCount(SB);
       if (BBCount.hasValue() && SBCount.hasValue())
         C = std::min(BBCount.getValue(), SBCount.getValue());
@@ -583,7 +591,6 @@ void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
 void StructFieldAccessInfo::buildFieldReferenceGraph()
 {
   for (auto *F : FunctionsForAnalysis){
-    outs() << "Gonna build FRG for Function " << F->getName() << "\n";
     buildFieldReferenceGraph(F);
   }
 }
@@ -629,12 +636,12 @@ StructFieldAccessInfo* StructFieldAccessManager::getStructFieldAccessInfo(const 
     return NULL;
 }
 
-Optional<std::pair<const Type*, unsigned> > StructFieldAccessManager::getFieldAccessOnInstruction(const Instruction* I) const
+Optional<std::pair<const Type*, FieldNumType> > StructFieldAccessManager::getFieldAccessOnInstruction(const Instruction* I) const
 {
-  Optional<std::pair<const Type*, unsigned> > ret;
+  Optional<std::pair<const Type*, FieldNumType> > ret;
   for (auto &it : StructFieldAccessInfoMap){
     if (auto FieldNum = it.second->getAccessFieldNum(I)){
-      return std::pair<const Type*, unsigned>(it.first, FieldNum.getValue());
+      return std::pair<const Type*, FieldNumType>(it.first, FieldNum.getValue());
     }
   }
   return ret;
@@ -715,14 +722,14 @@ void StructFieldAccessManager::printStats()
     else{
       outs() << "Struct [" << type->getStructName() << "] has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
     }
-    for (auto i = 0; i < stats::max_stats; i++){
+    for (auto i = 0; i < Stats::max_stats; i++){
       StatCounts[i] += it.second->getStats(i);
     }
   }
   outs().resetColor();
   outs().changeColor(raw_ostream::GREEN);
   outs() << "Stats:\n";
-  for (auto i = 0; i < stats::max_stats; i++){
+  for (auto i = 0; i < Stats::max_stats; i++){
     if (StatCounts[i])
       outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  "times\n";
   };
@@ -738,28 +745,28 @@ static void performIRAnalysis(Module &M,
     // Only process globals defined in current module (the scope of whole program)
     if (G.isDeclaration())
       continue;
-    DEBUG(dbgs().changeColor(raw_ostream::YELLOW));
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().changeColor(raw_ostream::YELLOW));
     // G is always a pointer
     if (G.getValueType()->isStructTy()){
-      DEBUG(dbgs() << "Found a global defined as struct: " << G << "\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a global defined as struct: " << G << "\n");
       auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(G.getValueType());
       assert(structInfoPtr);
       structInfoPtr->analyzeUsersOfStructValue(&G);
     }
     // Case for struct*
     else if (G.getValueType()->isPointerTy() && G.getValueType()->getPointerElementType()->isStructTy()){
-      DEBUG(dbgs() << "Found a global has struct* type: " << G << "\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a global has struct* type: " << G << "\n");
       auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(G.getValueType()->getPointerElementType());
       assert(structInfoPtr);
       structInfoPtr->analyzeUsersOfStructPointerValue(&G);
-      //StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
+      //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
     }
     // Case for struct**
     else if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isPointerTy() && G.getType()->getPointerElementType()->getPointerElementType()->isStructTy()){
-      DEBUG(dbgs() << "Found a global has struct** type: " << G << " but we ignored this\n");
-      StructManager->addStats(StructFieldAccessManager::stats::struct_pointer_pointer);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a global has struct** type: " << G << " but we ignored this\n");
+      StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer_pointer);
     }
-    DEBUG(dbgs().resetColor());
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().resetColor());
   }
 
   // Find all structs declared by allocas
@@ -774,20 +781,20 @@ static void performIRAnalysis(Module &M,
           auto* type = I.getType()->getPointerElementType();
           if (type->isStructTy()){
             // Identified I is an alloca of a struct
-            DEBUG(dbgs() << "Found an alloca of a struct: " << I << "\n");
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an alloca of a struct: " << I << "\n");
             auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type);
             structInfoPtr->analyzeUsersOfStructValue(&I);
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isStructTy()){
-            DEBUG(dbgs() << "Found an alloca of a struct*: " << I << "\n");
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an alloca of a struct*: " << I << "\n");
             auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type->getPointerElementType());
             assert(structInfoPtr);
             structInfoPtr->analyzeUsersOfStructPointerValue(&I);
-            //StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
+            //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isPointerTy() && type->getPointerElementType()->getPointerElementType()->isStructTy()){
-            DEBUG(dbgs() << "Found an alloca of a struct**: " << I << " but we ignore this\n");
-            StructManager->addStats(StructFieldAccessManager::stats::struct_pointer_pointer);
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an alloca of a struct**: " << I << " but we ignore this\n");
+            StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer_pointer);
           }
         }
       }
@@ -799,19 +806,19 @@ static void performIRAnalysis(Module &M,
       continue;
     for (auto &AG : F.args()){
       if (AG.getType()->isStructTy()){
-        DEBUG(dbgs() << "Found an argument of a struct pass by value: " << AG << " and no support for this yet\n");
-        StructManager->addStats(StructFieldAccessManager::stats::func_arg_value);
+        DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an argument of a struct pass by value: " << AG << " and no support for this yet\n");
+        StructManager->addStats(StructFieldAccessManager::Stats::func_arg_value);
       }
       if (AG.getType()->isPointerTy() && AG.getType()->getPointerElementType()->isStructTy()){
         // Identified AG is an argument with a struct type
         auto* StructPtr = StructManager->getStructFieldAccessInfo(AG.getType()->getPointerElementType());
         if (StructPtr){
-          DEBUG(dbgs() << "Found an argument of a struct defined in the module: " << AG << "\n");
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an argument of a struct defined in the module: " << AG << "\n");
           StructPtr->analyzeUsersOfStructValue(&AG);
         }
         else{
-          DEBUG(dbgs() << "Found an argument of a struct not defined in the program: " << AG << "\n");
-          StructManager->addStats(StructFieldAccessManager::stats::func_arg_not_defined);
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an argument of a struct not defined in the program: " << AG << "\n");
+          StructManager->addStats(StructFieldAccessManager::Stats::func_arg_not_defined);
         }
       }
     }
