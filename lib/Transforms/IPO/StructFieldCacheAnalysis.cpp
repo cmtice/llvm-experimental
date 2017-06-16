@@ -17,6 +17,7 @@
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
@@ -147,6 +148,9 @@ class StructFieldAccessManager
   StructFieldAccessManager(const Module& M, function_ref<BlockFrequencyInfo *(Function &)> L):
       CurrentModule(M), LookupBFI(L), StatCounts(Stats::max_stats) {};
   ~StructFieldAccessManager();
+
+  // Retrieve debug info for all structs defined in the program
+  void retrieveDebugInfoForAllStructs();
   // Functions for IR analysis
   // Check if the struct type is created before; if not, create a new StructFieldAccessInfo object for it
   StructFieldAccessInfo* createOrGetStructFieldAccessInfo(const Type* T);
@@ -198,6 +202,11 @@ class StructFieldAccessManager
                                               "GEP value passed into function calls",
                                               "User is not Instruction nor Operator"
   };
+
+  std::unordered_map<const StructType*, DICompositeType*> StructDebugInfo;
+  // Retrieve debug info of the struct definition from the function
+  DICompositeType* retrieveDebugInfoForStruct(const Type* T);
+  void recursiveFindDebugInfoOfStruct(DIType* Ty);
 };
 
 class StructFieldAccessInfo
@@ -207,7 +216,7 @@ class StructFieldAccessInfo
     essential information for cache-aware struct field analysis.
   */
  public:
-  StructFieldAccessInfo(const Type* T, const StructFieldAccessManager* SM, const Module& M): StructureType(dyn_cast<StructType>(T)), NumElements(StructureType->getNumElements()), StructManager(SM), CurrentModule(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {}
+  StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {}
   ~StructFieldAccessInfo() {
     for (auto* it : FRGArray){
       delete it;
@@ -246,10 +255,11 @@ class StructFieldAccessInfo
   unsigned getStats(unsigned Category) const { return StatCounts[Category]; }
 
  private:
+  const Module& CurrentModule;
   const StructType* StructureType;
+  const DICompositeType* DebugInfo;
   FieldNumType NumElements;
   const StructFieldAccessManager* StructManager;
-  const Module& CurrentModule;
   // A map records all instructions accessing which field of the structure
   std::unordered_map<const Instruction*, FieldNumType> FieldAccessMap;
   // A vector stores functions that contains struct accesses for further analysis
@@ -267,6 +277,9 @@ class StructFieldAccessInfo
   void addFieldAccessFromGEP(const User* U);
   // Record an access pattern in the data structure
   void addFieldAccessNum(const Instruction* I, FieldNumType FieldNum);
+
+  // Use debug info to remaping struct fields (not using yet)
+  void remapFieldFromDebugInfo();
 };
 
 class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
@@ -363,6 +376,19 @@ void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
 }
 
 // Functions for StructFieldAccessInfo
+void StructFieldAccessInfo::remapFieldFromDebugInfo()
+{
+  if (DebugInfo){
+    for (unsigned i = 0; i < DebugInfo->getElements().size(); i++){
+      DINode* node = DebugInfo->getElements()[i];
+      assert(node && isa<DIDerivedType>(node) && dyn_cast<DIDerivedType>(node)->getTag() == dwarf::Tag::DW_TAG_member);
+      Metadata* T = dyn_cast<DIDerivedType>(node)->getBaseType();
+      assert(T && isa<DIBasicType>(T));
+      outs() << "Element " << i << ": " << dyn_cast<DIDerivedType>(node)->getName() << " type: " << dyn_cast<DIBasicType>(T)->getName() << "\n";
+    }
+  }
+}
+
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, FieldNumType FieldNum)
 {
   assert(I->getOpcode() == Instruction::Load || I->getOpcode() == Instruction::Store); // Only loads and stores
@@ -616,13 +642,116 @@ StructFieldAccessManager::~StructFieldAccessManager() {
   StructFieldAccessInfoMap.clear();
   DEBUG(dbgs() << "Finish StructFieldAccessManager destructor\n");
 }
+
+void StructFieldAccessManager::recursiveFindDebugInfoOfStruct(DIType* Ty)
+{
+  while (Ty->getTag() == dwarf::Tag::DW_TAG_pointer_type ||
+         Ty->getTag() == dwarf::Tag::DW_TAG_reference_type){
+    assert(isa<DIDerivedType>(Ty));
+    Metadata* MD = dyn_cast<DIDerivedType>(Ty)->getBaseType();
+    if (MD == NULL)
+      return;
+    assert(isa<DIType>(MD));
+    Ty = dyn_cast<DIType>(MD);
+  }
+  if (!isa<DICompositeType>(Ty))
+    return;
+  if (Ty->getTag() == dwarf::Tag::DW_TAG_structure_type ||
+      Ty->getTag() == dwarf::Tag::DW_TAG_class_type){
+    assert(isa<DICompositeType>(Ty));
+    DEBUG(dbgs() << dyn_cast<DICompositeType>(Ty)->getName() << "\n");
+    auto* ST = (Ty->getTag() == dwarf::Tag::DW_TAG_structure_type) ?
+        CurrentModule.getTypeByName(StringRef("struct."+dyn_cast<DICompositeType>(Ty)->getName().str())) :
+        CurrentModule.getTypeByName(StringRef("class."+dyn_cast<DICompositeType>(Ty)->getName().str()));
+    assert(ST); // This assertion will fail on annonymous struct
+    if (StructDebugInfo.find(ST) != StructDebugInfo.end()){
+      DEBUG(dbgs() << "Found existing debugging info " << *dyn_cast<DICompositeType>(Ty));
+      // FIXME: use the one with more struct fields, because they might be shown as two different debug info
+      if (dyn_cast<DICompositeType>(Ty)->getElements().size() > StructDebugInfo[ST]->getElements().size())
+        StructDebugInfo[ST] = dyn_cast<DICompositeType>(Ty);
+    }
+    else
+      StructDebugInfo[ST] = dyn_cast<DICompositeType>(Ty);
+  }
+}
+
+void StructFieldAccessManager::retrieveDebugInfoForAllStructs()
+{
+  for (auto& NMD : CurrentModule.named_metadata()){
+    for (auto* it : NMD.operands()){
+      if (isa<DICompileUnit>(it)){
+        DEBUG(dbgs() << "Compile unit found" << *it << "\n");
+        auto* MD = dyn_cast<DICompileUnit>(it);
+        for (unsigned i = 0; i < MD->getRetainedTypes().size(); i++){
+          if (Metadata* Ty = MD->getRetainedTypes()[i]){
+            assert(isa<DIType>(Ty));
+            recursiveFindDebugInfoOfStruct(dyn_cast<DIType>(Ty));
+          }
+        }
+      }
+    }
+  }
+  for (auto &F : CurrentModule){
+    if (F.isDeclaration())
+      continue;
+    DEBUG(dbgs() << "Retrieving debug info from function: " << F.getName() << "\n");
+    auto* SubProgram = F.getSubprogram();
+    if (!SubProgram)
+      continue;
+    auto* SubroutineType = SubProgram->getType();
+    assert(SubroutineType);
+    DEBUG(dbgs() << *SubroutineType << " with size " << SubroutineType->getTypeArray().size() << "\n");
+    for (unsigned i = 0; i < SubroutineType->getTypeArray().size(); i++){
+      if (Metadata* Ty = SubroutineType->getTypeArray()[i]){
+        assert(isa<DIType>(Ty));
+        recursiveFindDebugInfoOfStruct(dyn_cast<DIType>(Ty));
+      }
+    }
+  }
+  for (auto &it : StructDebugInfo){
+    DEBUG(dbgs() << "Struct " << it.first->getName() << " has got debug info: \n");
+    auto* DebugInfo = it.second;
+    for (unsigned i = 0; i < DebugInfo->getElements().size(); i++){
+      DINode* node = DebugInfo->getElements()[i];
+      if (node && isa<DIDerivedType>(node) && dyn_cast<DIDerivedType>(node)->getTag() == dwarf::Tag::DW_TAG_member){
+        Metadata* T = dyn_cast<DIDerivedType>(node)->getBaseType();
+        assert(T && isa<DIType>(T));
+        if (!dyn_cast<DIType>(T)->getName().empty()){
+          DEBUG(dbgs() << "Field " << i << ": " << dyn_cast<DIDerivedType>(node)->getName() << " type: " << dyn_cast<DIType>(T)->getName() << "\n");
+        }
+        else{
+          if (dyn_cast<DIType>(T)->getTag() == dwarf::Tag::DW_TAG_structure_type){
+            assert(isa<DICompositeType>(T));
+            DEBUG(dbgs() << "Field " << i << ": " << dyn_cast<DIDerivedType>(node)->getName() << " type: " << "anonymous struct with " << dyn_cast<DICompositeType>(T)->getElements().size() << " fields\n");
+          }
+          else if (dyn_cast<DIType>(T)->getTag() == dwarf::Tag::DW_TAG_pointer_type){
+            assert(isa<DIDerivedType>(T));
+            Metadata* BT = dyn_cast<DIDerivedType>(T)->getBaseType();
+            assert(BT && isa<DIType>(BT));
+            if (!dyn_cast<DIType>(BT)->getName().empty()) // FIXME: only support one level pointer now
+              DEBUG(dbgs() << "Field " << i << ": " << dyn_cast<DIDerivedType>(node)->getName() << " type: " << dyn_cast<DIType>(BT)->getName() << "*\n");
+          }
+        }
+      }
+    }
+  }
+}
+
+DICompositeType* StructFieldAccessManager::retrieveDebugInfoForStruct(const Type* T)
+{
+  assert(isa<StructType>(T));
+  auto* Ty = dyn_cast<StructType>(T);
+  return StructDebugInfo[Ty];
+}
+
 StructFieldAccessInfo* StructFieldAccessManager::createOrGetStructFieldAccessInfo(const Type* T)
 {
   if (auto* def = getStructFieldAccessInfo(T))
     return def;
   else{
     assert(T->isStructTy() && isa<StructType>(T));
-    def = StructFieldAccessInfoMap[T] = new StructFieldAccessInfo(T, this, CurrentModule);
+    auto* debugInfo = retrieveDebugInfoForStruct(T);
+    def = StructFieldAccessInfoMap[T] = new StructFieldAccessInfo(T, CurrentModule, this, debugInfo);
     return def;
   }
 }
@@ -731,7 +860,7 @@ void StructFieldAccessManager::printStats()
   outs() << "Stats:\n";
   for (auto i = 0; i < Stats::max_stats; i++){
     if (StatCounts[i])
-      outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  "times\n";
+      outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  " times\n";
   };
   outs().resetColor();
   outs() << "----------------------------------------------------------------- \n";
@@ -787,6 +916,11 @@ static void performIRAnalysis(Module &M,
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isStructTy()){
             DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an alloca of a struct*: " << I << "\n");
+            auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type);
+            structInfoPtr->analyzeUsersOfStructValue(&I);
+          }
+          else if (type->isPointerTy() && type->getPointerElementType()->isStructTy()){
+            DEBUG(dbgs() << "Found an alloca of a struct*: " << I << "\n");
             auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type->getPointerElementType());
             assert(structInfoPtr);
             structInfoPtr->analyzeUsersOfStructPointerValue(&I);
@@ -840,6 +974,8 @@ static bool performStructFieldCacheAnalysis(Module &M,
 {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
   StructFieldAccessManager StructManager(M, LookupBFI);
+  // Step 0 - retrieve debug info for all struct FIXME: disable for now because it's not supporting annonymous structs
+  //StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
   performIRAnalysis(M, &StructManager);
   // Step 2 - create Field Refernce Graph according to the results of IR analysis
