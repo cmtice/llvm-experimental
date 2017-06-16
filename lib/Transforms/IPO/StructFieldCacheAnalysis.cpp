@@ -673,7 +673,8 @@ static bool performStructFieldCacheAnalysis(Module &M,
 {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
   StructFieldAccessManager StructManager(M, LookupBFI);
-  StructManager.retrieveDebugInfoForAllStructs();
+  // Step 0 - retrieve debug info for all struct FIXME: disable for now because it's not supporting annonymous structs
+  //StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
   performIRAnalysis(M, &StructManager);
 
