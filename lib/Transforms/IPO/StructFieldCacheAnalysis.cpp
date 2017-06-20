@@ -550,17 +550,28 @@ void StructFieldAccessManager::debugPrintAnnotatedModule()
 
 void StructFieldAccessManager::printStats()
 {
+  std::error_code EC;
+  raw_fd_ostream FILE_OS("/tmp/SFCA-"+CurrentModule.getName().str()+".csv", EC, llvm::sys::fs::F_RW);
+  FILE_OS << "Name," << CurrentModule.getName() << "\n";
   outs() << "------------ Printing stats for struct accesses: ---------------- \n";
   outs().changeColor(raw_ostream::YELLOW);
   outs() << "There are " << StructFieldAccessInfoMap.size() << " struct types are accessed in the program\n";
+  FILE_OS << "Total," << StructFieldAccessInfoMap.size() << "\n";
   for (auto &it : StructFieldAccessInfoMap){
     auto* type = it.first;
     assert(isa<StructType>(type));
+    auto Result = it.second->getTotalNumFieldAccess();
     if (dyn_cast<StructType>(type)->isLiteral()){
-      outs() << "A literal struct has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
+      if (Result){
+        outs() << "A literal struct has " << Result << " accesses.\n";
+        FILE_OS << "Literal," << Result << "\n";
+      }
     }
     else{
-      outs() << "Struct [" << type->getStructName() << "] has " << it.second->getTotalNumFieldAccess() << " accesses.\n";
+      if (Result){
+        outs() << "Struct [" << type->getStructName() << "] has " << Result << " accesses.\n";
+        FILE_OS << type->getStructName() << "," << Result << "\n";
+      }
     }
     for (auto i = 0; i < stats::max_stats; i++){
       StatCounts[i] += it.second->getStats(i);
@@ -570,11 +581,16 @@ void StructFieldAccessManager::printStats()
   outs().changeColor(raw_ostream::GREEN);
   outs() << "Stats:\n";
   for (auto i = 0; i < stats::max_stats; i++){
-    if (StatCounts[i])
+    if (StatCounts[i]){
       outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  " times\n";
+    }
   };
+  FILE_OS << "GEP as Arg," << StatCounts[stats::gep_in_arg] << "\n";
+  outs().changeColor(raw_ostream::BLUE);
+  outs() << "Stats are stored into " << "/tmp/SFCA-"+CurrentModule.getName().str()+".csv" << "\n";
   outs().resetColor();
   outs() << "----------------------------------------------------------------- \n";
+  FILE_OS.close();
 }
 
 static void performIRAnalysis(Module &M,
