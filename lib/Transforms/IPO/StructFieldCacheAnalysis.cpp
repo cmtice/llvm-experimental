@@ -24,6 +24,7 @@
 #include "llvm/IR/Operator.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
@@ -68,10 +69,10 @@ INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis",
 ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
 
 namespace llvm{
-typedef unsigned ExecutionCountType;
-//typedef float ExecutionCountType;
-typedef unsigned DataBytesType;
-//typedef float DataBytesType;
+//typedef unsigned ExecutionCountType;
+typedef float ExecutionCountType;
+//typedef unsigned DataBytesType;
+typedef float DataBytesType;
 typedef unsigned FieldNumType;
 
 class FieldReferenceGraph
@@ -414,7 +415,7 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
 // Functions for FieldReferenceGraph
 void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To)
 {
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnect edge: (" << FromNode->Id << "," << ToNode->Id <<") to (" << From->Id << "," << To->Id << ") with " << ExecutionCount << " and " << DataSize << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnect edge: (" << FromNode->Id << "," << ToNode->Id <<") to (" << From->Id << "," << To->Id << ") with " << format("%.0f", ExecutionCount) << " and " << format(".1f", DataSize) << "\n");
   assert(From != FromNode || To != ToNode); // Assume never reconnect two nodes already connected with this Edge
   Edge* ExistEdge = NULL;
   for (auto *E : From->OutEdges){
@@ -423,7 +424,7 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, Field
   }
   if (ExistEdge){
     assert(To->InEdges.find(ExistEdge) != To->InEdges.end());
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Node " << From->Id << " and Node " << To->Id << " already have an edge with " << ExistEdge->ExecutionCount << " and " << ExistEdge->DataSize << "\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Node " << From->Id << " and Node " << To->Id << " already have an edge with " << format("%.0f", ExistEdge->ExecutionCount) << " and " << format("%.1f", ExistEdge->DataSize) << "\n");
     // Reconnect edge to two nodes that have connection, weights need to be adjusted
     ExecutionCount += ExistEdge->ExecutionCount;
     DataSize = ((ExistEdge->ExecutionCount * ExistEdge->DataSize) + (ExecutionCount * DataSize)) / ExecutionCount;
@@ -438,7 +439,7 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, Field
   To->InEdges.insert(this);
   FromNode = From;
   ToNode = To;
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "After reconnection: (" << FromNode->Id << "," << ToNode->Id <<") with " << ExecutionCount << " and " << DataSize << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "After reconnection: (" << FromNode->Id << "," << ToNode->Id <<") with " << format("%.0f", ExecutionCount) << " and " << format("%.1f", DataSize) << "\n");
 }
 
 FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::createBasicBlockHelperInfo(const BasicBlock* BB)
@@ -502,7 +503,7 @@ void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
     OS << "Node " << Node->Id << " accesses " << Node->FieldNum << ": ";
     OS << "connect with {";
     for (auto* Edge : Node->OutEdges){
-      OS << " Node " << Edge->ToNode->Id << " (" << Edge->ExecutionCount << "," << Edge->DataSize << ")  ";
+      OS << " Node " << Edge->ToNode->Id << " (" << format("%.0f", Edge->ExecutionCount) << "," << format("%.1f", Edge->DataSize) << ")  ";
       ExamineList.push(Edge->ToNode);
     }
     OS << "}\n";
@@ -513,7 +514,7 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(raw_ostream& OS, FieldRefer
 {
   OS << "Collapsed entry for edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ")\n";
   for (auto* CE : E->CollapsedEntries){
-    OS << "Collapsed entry " << CE->Id << " field num: " << CE->FieldNum << ", count: " << CE->ExecutionCount << ", distance: " << CE->DataSize << "\n";
+    OS << "Collapsed entry " << CE->Id << " field num: " << CE->FieldNum << ", count: " << format("%.0f", CE->ExecutionCount) << ", distance: " << format("%.1f", CE->DataSize) << "\n";
   }
 }
 
@@ -777,14 +778,14 @@ void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
       std::swap(Src, Dest);
     }
     // Skip updates from/to a dummy node
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << C << " and distance " << D << ":\n");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << CloseProximityTable[Src-1][Dest-1].first << "," << CloseProximityTable[Src-1][Dest-1].second << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << format("%.0f", C) << " and distance " << format("%.1f", D) << ":\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << format("%.0f", CloseProximityTable[Src-1][Dest-1].first) << "," << format("%.1f", CloseProximityTable[Src-1][Dest-1].second) << ")\n");
     CloseProximityTable[Src-1][Dest-1] = std::make_pair(
         ( CloseProximityTable[Src-1][Dest-1].first + C ) ,
         ( ( CloseProximityTable[Src-1][Dest-1].first * CloseProximityTable[Src-1][Dest-1].second +
             C * D ) / ( CloseProximityTable[Src-1][Dest-1].first + C ) )
                                                         );
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << CloseProximityTable[Src-1][Dest-1].first << "," << CloseProximityTable[Src-1][Dest-1].second << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << format("%.0f", CloseProximityTable[Src-1][Dest-1].first) << "," << format("%.1f", CloseProximityTable[Src-1][Dest-1].second) << ")\n");
         // Count = C_old + C_new
         // Distance = weighted distance of old and new
   }
@@ -799,14 +800,14 @@ void StructFieldAccessInfo::updateGoldCPG(FieldNumType Src, FieldNumType Dest, E
     if (Src > Dest){
       std::swap(Src, Dest);
     }
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << C << " and distance " << D << ":\n");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << GoldCPT[Src-1][Dest-1].first << "," << GoldCPT[Src-1][Dest-1].second << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << format("%.0f", C) << " and distance " << format("%.1f", D) << ":\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << format("%.0f", GoldCPT[Src-1][Dest-1].first) << "," << format("%.1f", GoldCPT[Src-1][Dest-1].second) << ")\n");
     GoldCPT[Src-1][Dest-1] = std::make_pair(
         ( GoldCPT[Src-1][Dest-1].first + C ) ,
         ( ( GoldCPT[Src-1][Dest-1].first * GoldCPT[Src-1][Dest-1].second +
             C * D ) / ( GoldCPT[Src-1][Dest-1].first + C ) )
                                                         );
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << GoldCPT[Src-1][Dest-1].first << "," << GoldCPT[Src-1][Dest-1].second << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << format("%.0f", GoldCPT[Src-1][Dest-1].first) << "," << format("%.1f", GoldCPT[Src-1][Dest-1].second) << ")\n");
   }
 }
 
@@ -979,8 +980,8 @@ void StructFieldAccessInfo::createGoldCloseProximityRelations(FieldReferenceGrap
 void StructFieldAccessInfo::compareCloseProximityRelations() const{
   for (unsigned i = 0; i < NumElements; i++){
     for (unsigned j = i+1; j < NumElements; j++){
-      if (std::abs(GoldCPT[i][j].first - CloseProximityTable[i][j].first) > 1 ||
-          std::abs(GoldCPT[i][j].second - CloseProximityTable[i][j].second) > 1){
+      if (std::abs(GoldCPT[i][j].first - CloseProximityTable[i][j].first) > 0.1 ||
+          std::abs(GoldCPT[i][j].second - CloseProximityTable[i][j].second) > 0.1){
         outs() << "Found error in CPG: F" << i+1 << " and F" << j+1 << " should be (" << GoldCPT[i][j].first << "," << GoldCPT[i][j].second << ") but calculated as (" << CloseProximityTable[i][j].first << "," << CloseProximityTable[i][j].second << ")\n";
       }
     }
@@ -1031,7 +1032,7 @@ void StructFieldAccessInfo::debugPrintCloseProximityGraph(raw_ostream& OS) const
       if (j <= i)
         OS << "-\t";
       else
-        OS << "(" << CloseProximityTable[i][j].first << "," << CloseProximityTable[i][j].second << ")\t";
+        OS << "(" << format("%.0f", CloseProximityTable[i][j].first) << "," << format("%.1f", CloseProximityTable[i][j].second) << ")\t";
     }
     OS << "\n";
   }
@@ -1045,7 +1046,7 @@ void StructFieldAccessInfo::debugPrintGoldCPT(raw_ostream& OS) const
       if (j <= i)
         OS << "-\t";
       else
-        OS << "(" << GoldCPT[i][j].first << "," << GoldCPT[i][j].second << ")\t";
+        OS << "(" << format("%.0f", GoldCPT[i][j].first) << "," << format("%.1f", GoldCPT[i][j].second) << ")\t";
     }
     OS << "\n";
   }
