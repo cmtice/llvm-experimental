@@ -16,6 +16,7 @@
 
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -39,6 +40,9 @@ using namespace llvm;
 // Macros used to turn on detailed debug info for each step
 #define DEBUG_TYPE_IR "struct-analysis-IR"
 #define DEBUG_TYPE_FRG "struct-analysis-FRG"
+#define DEBUG_TYPE_CPG "struct-analysis-CPG"
+#define DEBUG_TYPE_CPG_BF "struct-analysis-CPG-brutal-force"
+//#define DEBUG_TYPE_CPG "struct-analysis"
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
@@ -51,6 +55,7 @@ class StructFieldCacheAnalysisPass : public ModulePass {
   bool runOnModule(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
+    AU.addRequired<LoopInfoWrapperPass>();
   }
 };
 }
@@ -58,35 +63,52 @@ class StructFieldCacheAnalysisPass : public ModulePass {
 char StructFieldCacheAnalysisPass::ID = 0;
 INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
 
 namespace llvm{
 typedef unsigned ExecutionCountType;
+//typedef float ExecutionCountType;
 typedef unsigned DataBytesType;
+//typedef float DataBytesType;
 typedef unsigned FieldNumType;
 
 class FieldReferenceGraph
 {
  public:
   struct Edge;
-  struct Node{
-    Node(unsigned I, FieldNumType N): Id(I), FieldNum(N) {}
+  struct Entry{
+    Entry(unsigned I, FieldNumType N, ExecutionCountType C, DataBytesType D) : Id(I), FieldNum(N), ExecutionCount(C), DataSize(D) {}
     unsigned Id;
     FieldNumType FieldNum;
+    ExecutionCountType ExecutionCount;
+    DataBytesType DataSize;
+  };
+  struct Node{
+    Node(unsigned I, FieldNumType N, DataBytesType S): Id(I), FieldNum(N), Size(S), Visited(false) {}
+    unsigned Id;
+    FieldNumType FieldNum;
+    DataBytesType Size;
+    bool Visited;
     std::unordered_set<Edge*> InEdges;
     std::unordered_set<Edge*> OutEdges;
   };
 
   struct Edge{
    public:
-    Edge(unsigned I, ExecutionCountType C, DataBytesType D): Id(I), ExecutionCount(C), DataSize(D){}
+    Edge(unsigned I, ExecutionCountType C, DataBytesType D): Id(I), ExecutionCount(C), DataSize(D), Collapsed(false), LoopArc(false) {}
     void connectNodes(Node* From, Node* To) { FromNode = From; ToNode = To; }
+    void reconnect(Node* From, Node* To);
     unsigned Id;
     ExecutionCountType ExecutionCount;
     DataBytesType DataSize;
+    bool Collapsed;
+    bool LoopArc;
     Node* FromNode;
     Node* ToNode;
+    // For Collpased Nodes
+    std::unordered_set<Entry*> CollapsedEntries;
   };
 
   struct BasicBlockHelperInfo{
@@ -97,43 +119,57 @@ class FieldReferenceGraph
   };
 
  public:
-  FieldReferenceGraph(const Function* F) : Func(F), EntryNode(NULL) {}
+  FieldReferenceGraph(const Function* F) : Func(F), RootNode(NULL) {}
   ~FieldReferenceGraph() {
     for (auto *N : NodeList)
       delete N;
     for (auto *E : EdgeList)
       delete E;
+    for (auto *E : EntryList)
+      delete E;
     for (auto &it : BBInfoMap)
       delete it.second;
     NodeList.clear();
     EdgeList.clear();
+    EntryList.clear();
     BBInfoMap.clear();
   }
 
+  // Functions for building FRG
   // Creator and getter of helper info for the basic block, useful when connect nodes from different basic blocks
   BasicBlockHelperInfo* createBasicBlockHelperInfo(const BasicBlock* BB);
   BasicBlockHelperInfo* getBasicBlockHelperInfo(const BasicBlock* BB);
 
   // The two functions are used to create a new node in the graph, unconnected with other nodes, and return the pointer to the Node
-  Node* createNewNode(FieldNumType FieldNum);
-  Node* createNewNode() { return createNewNode(0); }
+  Node* createNewNode(FieldNumType FieldNum, DataBytesType S);
+  Node* createNewNode() { return createNewNode(0, 0); }
 
   // The two functions are used to connect two nodes in FRG with or without given weight
-  void connectNodes(Node* From, Node* To, ExecutionCountType C, DataBytesType D);
+  void connectNodes(Node* From, Node* To, ExecutionCountType C, DataBytesType D, bool BackEdge = false);
   void connectNodes(Node* From, Node* To) { connectNodes(From, To, 0, 0); }
 
   // The getter and setter of entry node in the FRG
-  Node* getEntryNode() const { return EntryNode; }
-  void setEntryNode(Node* N) { EntryNode = N; }
+  Node* getRootNode() const { return RootNode; }
+  void setRootNode(Node* N) { RootNode = N; }
+
+  // Functions for collapsing FRG
+  // Convert a node to a collapsed entry and add it to Edge
+  void collapseNodeToEdge(Node* N, Edge* E);
+  // Copy a collapsed entry to a new edge
+  void moveCollapsedEntryToEdge(Entry* Entry, Edge* FromEdge, Edge* ToEdge);
+  unsigned getNumNodes() const { return NodeList.size(); }
+  Node* getNodeById(unsigned Id) const { assert(Id < NodeList.size()); return NodeList[Id]; }
 
   // For debug
   void debugPrint(raw_ostream& OS) const;
+  void debugPrintCollapsedEntries(raw_ostream& OS, FieldReferenceGraph::Edge* E) const;
 
  private:
   const Function* Func;
-  Node* EntryNode;
+  Node* RootNode;
   std::vector<Node*> NodeList;
   std::vector<Edge*> EdgeList;
+  std::vector<Entry*> EntryList;
   std::unordered_map<const BasicBlock*, BasicBlockHelperInfo*> BBInfoMap;
 };
 
@@ -145,8 +181,13 @@ class StructFieldAccessManager
      in the program.
   */
  public:
-  StructFieldAccessManager(const Module& M, function_ref<BlockFrequencyInfo *(Function &)> L):
-      CurrentModule(M), LookupBFI(L), StatCounts(Stats::max_stats) {};
+  StructFieldAccessManager(const Module& M,
+                           function_ref<BlockFrequencyInfo *(Function &)> LBFI,
+                           function_ref<LoopInfo *(Function &)> LLI):
+      CurrentModule(M),
+      LookupBFI(LBFI),
+      LookupLI(LLI),
+      StatCounts(Stats::max_stats) {};
   ~StructFieldAccessManager();
 
   // Retrieve debug info for all structs defined in the program
@@ -167,12 +208,17 @@ class StructFieldAccessManager
   // Functions for FRG build
   // Call functions to build FRG for all structs with accesses
   void buildFieldReferenceGraphForAllStructs();
+  void buildCloseProximityRelations();
+  // Check if an edge from FromBB to ToBB is a back edge in any loop
+  bool isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const;
 
   // Functions for debugging
   // Print all accesses of all struct types defined in the program
   void debugPrintAllStructAccesses() const;
   // Print all FRGs of all struct types
   void debugPrintAllFRGs() const;
+  // Print all CPGs of all struct types
+  void debugPrintAllCPGs() const;
   // Print the IR of the module with annotated information about struct access
   void debugPrintAnnotatedModule() const;
 
@@ -194,6 +240,8 @@ class StructFieldAccessManager
   const Module& CurrentModule;
   // Function reference that is used to retrive execution count for basic block
   function_ref<BlockFrequencyInfo *(Function &)> LookupBFI;
+  // Function reference that is used to retrive loop information
+  function_ref<LoopInfo *(Function &)> LookupLI;
   std::unordered_map<const Type*, StructFieldAccessInfo*> StructFieldAccessInfoMap;
   std::vector<unsigned> StatCounts;
   const std::vector<std::string> StatNames = {"Variable type is Struct**",
@@ -216,7 +264,17 @@ class StructFieldAccessInfo
     essential information for cache-aware struct field analysis.
   */
  public:
-  StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {}
+  StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {
+    CloseProximityTable.resize(NumElements);
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT.resize(NumElements));
+    for (unsigned i = 0; i < NumElements; i++){
+      CloseProximityTable[i].resize(NumElements);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i].resize(NumElements));
+    }
+    outs() << "Struct Elements: " << NumElements << "\n";
+    outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
+  }
+
   ~StructFieldAccessInfo() {
     for (auto* it : FRGArray){
       delete it;
@@ -243,12 +301,18 @@ class StructFieldAccessInfo
 
   // Functions for building FRG
   void buildFieldReferenceGraph();
-  void buildFieldReferenceGraph(const Function* FOA);
+  FieldReferenceGraph* buildFieldReferenceGraph(const Function* F);
+  // Functions for building CPG
+  void buildCloseProximityRelations();
 
   // Print all instructions that access any struct field
   void debugPrintAllStructAccesses(raw_ostream& OS) const;
   // Print all FRGs for this struct
   void debugPrintFieldReferenceGraph(raw_ostream& OS) const;
+  // Print the CPG of this struct
+  void debugPrintCloseProximityGraph(raw_ostream& OS) const;
+  // Print the Gold CPG of this struct
+  void debugPrintGoldCPT(raw_ostream& OS) const;
 
   // For stats
   void addStats(unsigned Category) { StatCounts[Category]++; }
@@ -266,10 +330,15 @@ class StructFieldAccessInfo
   std::unordered_set<const Function*> FunctionsForAnalysis;
   // A vector stores all FRGs for all functions
   std::vector<FieldReferenceGraph*> FRGArray;
+  // Close Proximity relation table
+  std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > > CloseProximityTable;
+  // Golden Close Proximity relation table for debugging
+  std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > > GoldCPT;
   //A vector stores per struct stats
   std::vector<unsigned> StatCounts;
 
   // Private functions
+  // Functions for building FRG
   // Calculate which field of the struct is the GEP pointing to, from GetElementPtrInst or GEPOperator
   FieldNumType calculateFieldNumFromGEP(const User* U) const;
   // Record all users of a GEP instruction/operator that calculates the address of a field.
@@ -280,6 +349,23 @@ class StructFieldAccessInfo
 
   // Use debug info to remaping struct fields (not using yet)
   void remapFieldFromDebugInfo();
+  // Calculate memory access data size in Bytes
+  DataBytesType getMemAccessDataSize(const Instruction* I) const;
+
+  // Functions for building CPG
+  void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
+  // Build CPG with brutal force
+  void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
+  void calculateCPRelation(std::vector<FieldReferenceGraph::Edge*>* Path);
+  void findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, std::vector<FieldReferenceGraph::Edge*>* Path);
+  void calculatePathBetween(FieldReferenceGraph::Node* FromNode, FieldReferenceGraph::Node* ToNode);
+  void createFRGPairs(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root, std::vector<FieldReferenceGraph::Edge*>* Path);
+  void createGoldCloseProximityRelations(FieldReferenceGraph* FRG);
+  void compareCloseProximityRelations() const;
+  // Build CPG with collapsing FRG first
+  bool collapseSuccessor(FieldReferenceGraph* FRG, FieldReferenceGraph::Edge* Arc);
+  bool collapseRoot(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
+  void collapseFieldReferenceGraph(FieldReferenceGraph* FRG);
 };
 
 class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
@@ -326,6 +412,35 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
 }
 
 // Functions for FieldReferenceGraph
+void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnect edge: (" << FromNode->Id << "," << ToNode->Id <<") to (" << From->Id << "," << To->Id << ") with " << ExecutionCount << " and " << DataSize << "\n");
+  assert(From != FromNode || To != ToNode); // Assume never reconnect two nodes already connected with this Edge
+  Edge* ExistEdge = NULL;
+  for (auto *E : From->OutEdges){
+    if (E->ToNode == To)
+      ExistEdge = E;
+  }
+  if (ExistEdge){
+    assert(To->InEdges.find(ExistEdge) != To->InEdges.end());
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Node " << From->Id << " and Node " << To->Id << " already have an edge with " << ExistEdge->ExecutionCount << " and " << ExistEdge->DataSize << "\n");
+    // Reconnect edge to two nodes that have connection, weights need to be adjusted
+    ExecutionCount += ExistEdge->ExecutionCount;
+    DataSize = ((ExistEdge->ExecutionCount * ExistEdge->DataSize) + (ExecutionCount * DataSize)) / ExecutionCount;
+    From->OutEdges.erase(ExistEdge);
+    To->InEdges.erase(ExistEdge);
+  }
+  if (From != FromNode)
+    FromNode->OutEdges.erase(this);
+  if (To != ToNode)
+    ToNode->InEdges.erase(this);
+  From->OutEdges.insert(this);
+  To->InEdges.insert(this);
+  FromNode = From;
+  ToNode = To;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "After reconnection: (" << FromNode->Id << "," << ToNode->Id <<") with " << ExecutionCount << " and " << DataSize << "\n");
+}
+
 FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::createBasicBlockHelperInfo(const BasicBlock* BB)
 {
   assert (BBInfoMap.find(BB) == BBInfoMap.end());
@@ -337,27 +452,46 @@ FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::getBasicBlockHel
   assert (BBInfoMap.find(BB) != BBInfoMap.end());
   return BBInfoMap[BB];
 }
-FieldReferenceGraph::Node* FieldReferenceGraph::createNewNode(FieldNumType FieldNum)
+FieldReferenceGraph::Node* FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S)
 {
-  auto* Node = new FieldReferenceGraph::Node(NodeList.size(), FieldNum);
+  auto* Node = new FieldReferenceGraph::Node(NodeList.size(), FieldNum, S);
   NodeList.push_back(Node);
   return Node;
 }
-void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, ExecutionCountType C, DataBytesType D)
+
+void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, ExecutionCountType C, DataBytesType D, bool BackEdge)
 {
   auto* Edge = new FieldReferenceGraph::Edge(EdgeList.size(), C, D);
   EdgeList.push_back(Edge);
   Edge->connectNodes(From, To);
   From->OutEdges.insert(Edge);
   To->InEdges.insert(Edge);
+  if (BackEdge)
+    Edge->LoopArc = true;
+}
+
+void FieldReferenceGraph::collapseNodeToEdge(FieldReferenceGraph::Node* N, FieldReferenceGraph::Edge* E)
+{
+  assert(E->Collapsed == false);
+  E->Collapsed = true;
+  auto* Entry = new FieldReferenceGraph::Entry(EntryList.size(), N->FieldNum, E->ExecutionCount, E->DataSize);
+  E->CollapsedEntries.insert(Entry);
+  EntryList.push_back(Entry);
+}
+
+void FieldReferenceGraph::moveCollapsedEntryToEdge(FieldReferenceGraph::Entry* Entry, FieldReferenceGraph::Edge* FromEdge, FieldReferenceGraph::Edge* ToEdge)
+{
+  assert(FromEdge->Collapsed);
+  ToEdge->CollapsedEntries.insert(Entry);
+  //FromEdge->CollapsedEntries.erase(Entry);
 }
 
 void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
 {
-  assert(EntryNode);
+  assert(RootNode);
   std::queue<Node*> ExamineList; // List of Nodes to print
   std::unordered_set<Node*> ExaminedSet; // Set of Nodes popped from list to avoid duplicate
-  ExamineList.push(EntryNode);
+  ExamineList.push(RootNode);
   OS << "Field Reference Graph for function: " << Func->getName() << "\n";
   while (!ExamineList.empty()){
     auto* Node = ExamineList.front();
@@ -372,6 +506,14 @@ void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
       ExamineList.push(Edge->ToNode);
     }
     OS << "}\n";
+  }
+}
+
+void FieldReferenceGraph::debugPrintCollapsedEntries(raw_ostream& OS, FieldReferenceGraph::Edge* E) const
+{
+  OS << "Collapsed entry for edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ")\n";
+  for (auto* CE : E->CollapsedEntries){
+    OS << "Collapsed entry " << CE->Id << " field num: " << CE->FieldNum << ", count: " << CE->ExecutionCount << ", distance: " << CE->DataSize << "\n";
   }
 }
 
@@ -538,7 +680,19 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
   }
 }
 
-void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
+DataBytesType StructFieldAccessInfo::getMemAccessDataSize(const Instruction* I) const
+{
+  assert(I->getOpcode() == Instruction::Load || I->getOpcode() == Instruction::Store);
+  Type* type;
+  if (I->getOpcode() == Instruction::Load)
+    type = I->getType();
+  else
+    type = I->getOperand(0)->getType();
+  assert (type->isSized());
+  return CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
+}
+
+FieldReferenceGraph* StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
 {
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a new empty FRG\n");
   auto* FRG = new FieldReferenceGraph(F);
@@ -551,7 +705,7 @@ void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
       if (auto FieldNum = getAccessFieldNum(&I)){
         // Case that I is a struct access
         DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Found an instruction " << I << " is a struct access on field [" << FieldNum.getValue() << "]\n");
-        auto* NewNode = FRG->createNewNode(FieldNum.getValue());
+        auto* NewNode = FRG->createNewNode(FieldNum.getValue(), getMemAccessDataSize(&I));
         if (BBI->LastNode){
           DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Previous nodes found in the BB\n");
           auto C = 0;
@@ -578,13 +732,7 @@ void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
             BBI->FirstNode = BBI->LastNode = FRG->createNewNode();
           }
           else{
-            Type* type;
-            if (I.getOpcode() == Instruction::Load)
-              type = I.getType();
-            else
-              type = I.getOperand(0)->getType();
-            assert (type->isSized());
-            BBI->RemainBytes += CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
+            BBI->RemainBytes += getMemAccessDataSize(&I);
             DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Increment remaining data size to " << BBI->RemainBytes << "\n");
           }
         }
@@ -607,17 +755,257 @@ void StructFieldAccessInfo::buildFieldReferenceGraph(const Function* F)
       if (BBCount.hasValue() && SBCount.hasValue())
         C = std::min(BBCount.getValue(), SBCount.getValue());
       auto D = BBI->RemainBytes; // Use size of remaining data in BB
-      FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D);
+      if (StructManager->isBackEdgeInLoop(&BB, SB))
+        FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D, true);
+      else
+        FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D);
     }
   }
   auto* BBI = FRG->getBasicBlockHelperInfo(&F->getEntryBlock());
-  FRG->setEntryNode(BBI->FirstNode);
+  FRG->setRootNode(BBI->FirstNode);
+  return FRG;
+}
+
+void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
+{
+  assert(Src <= NumElements && Dest <= NumElements);
+  if (Src == 0 || Dest == 0 || C == 0 || Src == Dest)
+    // Give up update if from or to a dummy node, or if the count is zero
+    return;
+  if (Src != 0 && Dest != 0){
+    if (Src > Dest){
+      std::swap(Src, Dest);
+    }
+    // Skip updates from/to a dummy node
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << C << " and distance " << D << ":\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << CloseProximityTable[Src-1][Dest-1].first << "," << CloseProximityTable[Src-1][Dest-1].second << ")\n");
+    CloseProximityTable[Src-1][Dest-1] = std::make_pair(
+        ( CloseProximityTable[Src-1][Dest-1].first + C ) ,
+        ( ( CloseProximityTable[Src-1][Dest-1].first * CloseProximityTable[Src-1][Dest-1].second +
+            C * D ) / ( CloseProximityTable[Src-1][Dest-1].first + C ) )
+                                                        );
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << CloseProximityTable[Src-1][Dest-1].first << "," << CloseProximityTable[Src-1][Dest-1].second << ")\n");
+        // Count = C_old + C_new
+        // Distance = weighted distance of old and new
+  }
+}
+
+void StructFieldAccessInfo::updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
+{
+  assert(Src <= NumElements && Dest <= NumElements);
+  if (Src == 0 || Dest == 0 || C == 0 || Src == Dest)
+    return;
+  if (Src != 0 && Dest != 0){
+    if (Src > Dest){
+      std::swap(Src, Dest);
+    }
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << C << " and distance " << D << ":\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << GoldCPT[Src-1][Dest-1].first << "," << GoldCPT[Src-1][Dest-1].second << ")\n");
+    GoldCPT[Src-1][Dest-1] = std::make_pair(
+        ( GoldCPT[Src-1][Dest-1].first + C ) ,
+        ( ( GoldCPT[Src-1][Dest-1].first * GoldCPT[Src-1][Dest-1].second +
+            C * D ) / ( GoldCPT[Src-1][Dest-1].first + C ) )
+                                                        );
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << GoldCPT[Src-1][Dest-1].first << "," << GoldCPT[Src-1][Dest-1].second << ")\n");
+  }
+}
+
+bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldReferenceGraph::Edge* Arc)
+{
+  // TODO: Why do this here?
+  /*
+  if (Arc->Collapsed){
+    for (auto* Entry : Arc->CollapsedEntries){
+      updateCPG(Arc->FromNode->FieldNum, Entry->FieldNum, Entry->ExecutionCount, Entry->DataSize);
+      // TODO: Update ARC->src, ARC->dest
+    }
+  }
+  */
+  bool Ret = false;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Collapse successor Edge (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ")\n");
+  updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
+  FRG->collapseNodeToEdge(Arc->ToNode, Arc);
+  for (auto *E : Arc->ToNode->OutEdges){
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check edge: ("  << E->FromNode->Id << "," << E->ToNode->Id << ")\n");
+    if (E->Collapsed){
+      for (auto* Entry : E->CollapsedEntries){
+        Entry->ExecutionCount = std::min(Entry->ExecutionCount, Arc->ExecutionCount);
+        Entry->DataSize += Arc->DataSize + Arc->ToNode->Size;
+        updateCPG(Arc->FromNode->FieldNum, Entry->FieldNum, Entry->ExecutionCount, Entry->DataSize);
+        FRG->moveCollapsedEntryToEdge(Entry, E, Arc);
+      }
+    }
+    else{
+      E->ExecutionCount = std::min(Arc->ExecutionCount, E->ExecutionCount);
+      E->DataSize += Arc->DataSize + Arc->ToNode->Size;
+      E->reconnect(Arc->FromNode, E->ToNode);
+      Ret = true;
+      if (Arc->ToNode->OutEdges.size() == 0)
+        break;
+    }
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, FRG->debugPrint(dbgs()));
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, FRG->debugPrintCollapsedEntries(dbgs(), Arc));
+  return Ret;
+}
+
+bool StructFieldAccessInfo::collapseRoot(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Collapse Node " << Root->Id << " as root\n");
+  //if (Root->Visited)
+  //return false;
+  //Root->Visited = true;
+  bool change = true;
+  bool SubtreeChange = false;
+  while (change){
+    change = false;
+    for (auto *E : Root->OutEdges){
+      change |= collapseRoot(FRG, E->ToNode);
+    }
+    for (auto *E : Root->OutEdges){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check out edge: (" << E->FromNode->Id << "," << E->ToNode->Id << "): ");
+      if (E->LoopArc){
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "It is a loop arc\n");
+        // Update CPG with accesses within SUCC loop
+        change = true;
+      }
+      else if (E->ToNode->InEdges.size() == 1 && !E->Collapsed){ // if SUCC can be collapsed, i.e. only has one predecessor
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found a successor can be collapsed\n");
+        if (collapseSuccessor(FRG, E)){
+          SubtreeChange = true;
+          change = true;
+        }
+      }
+      else{
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Successor cannot collapse and not a loop arc\n");
+      }
+    }
+    if (change)
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Subtree changes, need to collapse again\n");
+  }
+  return SubtreeChange;
+}
+
+void StructFieldAccessInfo::collapseFieldReferenceGraph(FieldReferenceGraph* FRG)
+{
+  auto* Root = FRG->getRootNode();
+  collapseRoot(FRG, Root);
+}
+
+void StructFieldAccessInfo::calculateCPRelation(std::vector<FieldReferenceGraph::Edge*>* Path)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Calculate path: \n");
+  for (auto* E: *Path){
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "(" << E->FromNode->Id << "," << E->ToNode->Id << ")" << ",");
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "\n");
+  assert(Path->size());
+  auto C = (*Path)[0]->ExecutionCount;
+  auto D = (*Path)[0]->DataSize;
+  float ExCnt = C;
+  for (unsigned i = 1; i < Path->size(); i++){
+    auto* E = (*Path)[i];
+    auto* From = E->FromNode;
+    if (From->OutEdges.size() == 1){
+      //DEBUG(dbgs() << "Out edge exeuction count: " << E->ExecutionCount << " vs " << C << "\n");
+      assert(ExCnt <= E->ExecutionCount);
+    }
+    else{
+      ExecutionCountType Sum = 0;
+      for (auto* Ed : From->OutEdges)
+        Sum += Ed->ExecutionCount;
+      ExCnt = (ExCnt * E->ExecutionCount) / (Sum);
+    }
+    D += E->DataSize + E->FromNode->Size;
+  }
+  C = (ExecutionCountType)ExCnt;
+  updateGoldCPG((*Path)[0]->FromNode->FieldNum, (*Path)[Path->size()-1]->ToNode->FieldNum, C, D);
+}
+
+void StructFieldAccessInfo::findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, std::vector<FieldReferenceGraph::Edge*>* Path)
+{
+  for (auto* E : Start->OutEdges){
+    if (E->ToNode == End){
+      Path->push_back(E);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Find the destination, gonna calculate\n");
+      calculateCPRelation(Path);
+      Path->pop_back();
+    }
+    else{
+      if (std::find(Path->begin(), Path->end(), E) != Path->end()){
+        // If this edge is already in the path, give up
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Loop found, don\'t go into the loop\n");
+        continue;
+      }
+      else if (E->ExecutionCount) {
+        Path->push_back(E);
+        findPathInFRG(E->ToNode, End, Path);
+        Path->pop_back();
+      }
+    }
+  }
+}
+
+void StructFieldAccessInfo::calculatePathBetween(FieldReferenceGraph::Node* FromNode, FieldReferenceGraph::Node* ToNode)
+{
+  std::vector<FieldReferenceGraph::Edge*> Path;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Calculate Path between " << FromNode->Id << " and " << ToNode->Id << "\n");
+  findPathInFRG(FromNode, ToNode, &Path);
+}
+
+void StructFieldAccessInfo::createFRGPairs(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root, std::vector<FieldReferenceGraph::Edge*>* Path)
+{
+  for (unsigned i = 0; i < FRG->getNumNodes(); i++){
+    auto* FromNode = FRG->getNodeById(i);
+    if (FromNode->FieldNum == 0) // Skip dummy nodes
+      continue;
+    for (unsigned j = i+1; j < FRG->getNumNodes(); j++){
+      auto* ToNode = FRG->getNodeById(j);
+      if (ToNode->FieldNum == 0) // Skip dummy nodes
+        continue;
+      calculatePathBetween(FromNode, ToNode);
+    }
+  }
+}
+
+void StructFieldAccessInfo::createGoldCloseProximityRelations(FieldReferenceGraph* FRG)
+{
+  auto* Root = FRG->getRootNode();
+  std::vector<FieldReferenceGraph::Edge*> Path;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Create CP Relations for FRG with brutal force\n");
+  createFRGPairs(FRG, Root, &Path);
+}
+
+void StructFieldAccessInfo::compareCloseProximityRelations() const{
+  for (unsigned i = 0; i < NumElements; i++){
+    for (unsigned j = i+1; j < NumElements; j++){
+      if (std::abs(GoldCPT[i][j].first - CloseProximityTable[i][j].first) > 1 ||
+          std::abs(GoldCPT[i][j].second - CloseProximityTable[i][j].second) > 1){
+        outs() << "Found error in CPG: F" << i+1 << " and F" << j+1 << " should be (" << GoldCPT[i][j].first << "," << GoldCPT[i][j].second << ") but calculated as (" << CloseProximityTable[i][j].first << "," << CloseProximityTable[i][j].second << ")\n";
+      }
+    }
+  }
 }
 
 void StructFieldAccessInfo::buildFieldReferenceGraph()
 {
   for (auto *F : FunctionsForAnalysis){
     buildFieldReferenceGraph(F);
+  }
+}
+
+void StructFieldAccessInfo::buildCloseProximityRelations()
+{
+  for (auto *F : FunctionsForAnalysis){
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F->getName() << "\n");
+    auto* FRG = buildFieldReferenceGraph(F);
+    assert(FRG);
+    // Collpase FRG and get CPG
+    collapseFieldReferenceGraph(FRG);
+    // Brutal force get CP relations
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, FRG = buildFieldReferenceGraph(F));
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, createGoldCloseProximityRelations(FRG));
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, compareCloseProximityRelations());
   }
 }
 
@@ -634,6 +1022,35 @@ void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS) const
     OS << "\tInstruction [" << *it.first << "] accesses field number [" << it.second << "]\n";
   }
 }
+
+void StructFieldAccessInfo::debugPrintCloseProximityGraph(raw_ostream& OS) const
+{
+  for (unsigned i = 0; i < NumElements; i++){
+    OS << "F" << i+1 << ": ";
+    for (unsigned j = 0; j < NumElements; j++){
+      if (j <= i)
+        OS << "-\t";
+      else
+        OS << "(" << CloseProximityTable[i][j].first << "," << CloseProximityTable[i][j].second << ")\t";
+    }
+    OS << "\n";
+  }
+}
+
+void StructFieldAccessInfo::debugPrintGoldCPT(raw_ostream& OS) const
+{
+  for (unsigned i = 0; i < NumElements; i++){
+    OS << "F" << i+1 << ": ";
+    for (unsigned j = 0; j < NumElements; j++){
+      if (j <= i)
+        OS << "-\t";
+      else
+        OS << "(" << GoldCPT[i][j].first << "," << GoldCPT[i][j].second << ")\t";
+    }
+    OS << "\n";
+  }
+}
+
 
 // Functions for StructFieldAccessManager
 StructFieldAccessManager::~StructFieldAccessManager() {
@@ -785,6 +1202,34 @@ void StructFieldAccessManager::buildFieldReferenceGraphForAllStructs()
   }
 }
 
+bool StructFieldAccessManager::isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const
+{
+  assert(FromBB->getParent() == ToBB->getParent());
+  auto* LoopInfo = LookupLI(*const_cast<Function*>(FromBB->getParent()));
+  assert(LoopInfo);
+  auto* Loop1 = LoopInfo->getLoopFor(FromBB);
+  auto* Loop2 = LoopInfo->getLoopFor(ToBB);
+  // If FromBB and ToBB are not in the same loop, it can't be a backedge
+  if (Loop1 != Loop2)
+    return false;
+  if (Loop1 == NULL)
+    return false;
+  // If ToBB is not the header of the loop, it can't be a backedge
+  if (ToBB != Loop1->getHeader())
+    return false;
+
+  return true;
+}
+
+void StructFieldAccessManager::buildCloseProximityRelations()
+{
+  for (auto& it : StructFieldAccessInfoMap){
+    if (it.second->getTotalNumFieldAccess() != 0){
+      it.second->buildCloseProximityRelations();
+    }
+  }
+}
+
 void StructFieldAccessManager::debugPrintAllStructAccesses() const
 {
   dbgs() << "------------ Printing all struct accesses: ---------------- \n";
@@ -820,6 +1265,27 @@ void StructFieldAccessManager::debugPrintAllFRGs() const
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintFieldReferenceGraph(dbgs());
+    dbgs().resetColor();
+  }
+  dbgs() << "----------------------------------------------------------- \n";
+}
+
+void StructFieldAccessManager::debugPrintAllCPGs() const
+{
+  dbgs() << "------------ Printing all CPGs: ------------------- \n";
+  for (auto &it : StructFieldAccessInfoMap){
+    dbgs().changeColor(raw_ostream::YELLOW);
+    auto* type = it.first;
+    assert(isa<StructType>(type));
+    if (dyn_cast<StructType>(type)->isLiteral()){
+      dbgs() << "A literal struct has CPG: \n";
+    }
+    else{
+      dbgs() << "Struct [" << type->getStructName() << "] has FRG: \n";
+    }
+    dbgs().changeColor(raw_ostream::GREEN);
+    it.second->debugPrintCloseProximityGraph(dbgs());
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, it.second->debugPrintGoldCPT(dbgs()));
     dbgs().resetColor();
   }
   dbgs() << "----------------------------------------------------------- \n";
@@ -978,25 +1444,35 @@ static void performIRAnalysis(Module &M,
   StructManager->printStats();
 }
 
+/*
 static void createFieldReferenceGraph(StructFieldAccessManager* StructManager)
 {
   //FIXME: add a filter to filter out structs to ignore
   StructManager->buildFieldReferenceGraphForAllStructs();
   DEBUG(StructManager->debugPrintAllFRGs());
 }
+*/
+
+static void collapseFieldReferenceGraphAndCreateCloseProximityGraph(StructFieldAccessManager* StructManager)
+{
+  StructManager->buildCloseProximityRelations();
+  DEBUG(StructManager->debugPrintAllCPGs());
+}
 
 static bool performStructFieldCacheAnalysis(Module &M,
-                                            function_ref<BlockFrequencyInfo *(Function &)> LookupBFI)
+                                            function_ref<BlockFrequencyInfo *(Function &)> LookupBFI,
+                                            function_ref<LoopInfo *(Function &)> LookupLI)
 {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
-  StructFieldAccessManager StructManager(M, LookupBFI);
+  StructFieldAccessManager StructManager(M, LookupBFI, LookupLI);
   // Step 0 - retrieve debug info for all struct FIXME: disable for now because it's not supporting annonymous structs
   //StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
   performIRAnalysis(M, &StructManager);
   // Step 2 - create Field Refernce Graph according to the results of IR analysis
-  createFieldReferenceGraph(&StructManager);
-
+  //createFieldReferenceGraph(&StructManager); // FIXME: This step can be skipped if Step 3 is finalized
+  // Step 3 - collapse Field Reference Graph and create Close Proximity Graph
+  collapseFieldReferenceGraphAndCreateCloseProximityGraph(&StructManager);
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }
@@ -1008,7 +1484,10 @@ PreservedAnalyses StructFieldCacheAnalysis::run(Module &M, ModuleAnalysisManager
   auto LookupBFI = [&FAM](Function& F) {
     return &FAM.getResult<BlockFrequencyAnalysis>(F);
   };
-  if (!performStructFieldCacheAnalysis(M, LookupBFI))
+  auto LookupLI = [&FAM](Function& F) {
+    return &FAM.getResult<LoopAnalysis>(F);
+  };
+  if (!performStructFieldCacheAnalysis(M, LookupBFI, LookupLI))
     return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
@@ -1018,5 +1497,8 @@ bool StructFieldCacheAnalysisPass::runOnModule(Module &M){
   auto LookupBFI = [this](Function& F) {
     return &this->getAnalysis<BlockFrequencyInfoWrapperPass>(F).getBFI();
   };
-  return performStructFieldCacheAnalysis(M, LookupBFI);
+  auto LookupLI = [this](Function& F) {
+    return &this->getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
+  };
+  return performStructFieldCacheAnalysis(M, LookupBFI, LookupLI);
 }
