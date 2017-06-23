@@ -45,6 +45,9 @@ using namespace llvm;
 #define DEBUG_TYPE_CPG_BF "struct-analysis-CPG-brutal-force"
 //#define DEBUG_TYPE_CPG "struct-analysis"
 
+#define DEBUG_PRINT_COUNT(x) (format("%.2f", (x)))
+#define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
+
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
  public:
@@ -70,9 +73,9 @@ ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldC
 
 namespace llvm{
 //typedef unsigned ExecutionCountType;
-typedef float ExecutionCountType;
+typedef double ExecutionCountType;
 //typedef unsigned DataBytesType;
-typedef float DataBytesType;
+typedef double DataBytesType;
 typedef unsigned FieldNumType;
 
 class FieldReferenceGraph
@@ -87,11 +90,13 @@ class FieldReferenceGraph
     DataBytesType DataSize;
   };
   struct Node{
-    Node(unsigned I, FieldNumType N, DataBytesType S): Id(I), FieldNum(N), Size(S), Visited(false) {}
+    Node(unsigned I, FieldNumType N, DataBytesType S): Id(I), FieldNum(N), Size(S), Visited(false), SelfLoop1(NULL), SelfLoop2(NULL) {}
     unsigned Id;
     FieldNumType FieldNum;
     DataBytesType Size;
     bool Visited;
+    Edge* SelfLoop1;
+    Edge* SelfLoop2;
     std::unordered_set<Edge*> InEdges;
     std::unordered_set<Edge*> OutEdges;
   };
@@ -271,6 +276,10 @@ class StructFieldAccessInfo
     for (unsigned i = 0; i < NumElements; i++){
       CloseProximityTable[i].resize(NumElements);
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i].resize(NumElements));
+      for (unsigned j = 0; j < NumElements; j++){
+        CloseProximityTable[i][j] = std::make_pair(0, 0);
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i][j] = std::make_pair(0, 0));
+      }
     }
     outs() << "Struct Elements: " << NumElements << "\n";
     outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
@@ -358,12 +367,14 @@ class StructFieldAccessInfo
   // Build CPG with brutal force
   void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
   void calculateCPRelation(std::vector<FieldReferenceGraph::Edge*>* Path);
-  void findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, std::vector<FieldReferenceGraph::Edge*>* Path);
+  void findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, std::vector<FieldReferenceGraph::Edge*>* Path, std::unordered_set<FieldReferenceGraph::Node*>* VisitedNodes);
   void calculatePathBetween(FieldReferenceGraph::Node* FromNode, FieldReferenceGraph::Node* ToNode);
   void createFRGPairs(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root, std::vector<FieldReferenceGraph::Edge*>* Path);
   void createGoldCloseProximityRelations(FieldReferenceGraph* FRG);
   void compareCloseProximityRelations() const;
   // Build CPG with collapsing FRG first
+  void updateCPGBetweenNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, FieldReferenceGraph::Edge* Edge, ExecutionCountType C, DataBytesType D, std::unordered_set<FieldReferenceGraph::Node*>* CheckList);
+  void updateCPGFromNodeToSubtree(FieldReferenceGraph::Edge* E);
   bool collapseSuccessor(FieldReferenceGraph* FRG, FieldReferenceGraph::Edge* Arc);
   bool collapseRoot(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
   void collapseFieldReferenceGraph(FieldReferenceGraph* FRG);
@@ -412,10 +423,52 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
 };
 }
 
+// Utility functions
+static void updatePairByMerging(ExecutionCountType& ResultCount, DataBytesType& ResultDistance, ExecutionCountType SourceCount1, DataBytesType SourceDistance1, ExecutionCountType SourceCount2, DataBytesType SourceDistance2)
+{
+  ResultCount = SourceCount1 + SourceCount2;
+  if (ResultCount != 0)
+    ResultDistance = (SourceCount1 * SourceDistance1 + SourceCount2 * SourceDistance2) / ResultCount;
+  else
+    ResultDistance = 0;
+}
+static void updatePairByMerging(ExecutionCountType& ResultCount, DataBytesType& ResultDistance, ExecutionCountType SourceCount, DataBytesType SourceDistance)
+{
+  //  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Before merging: " << DEBUG_PRINT_COUNT(ResultCount) << " and " << DEBUG_PRINT_DIST(ResultDistance));
+  if (SourceCount + ResultCount != 0)
+    ResultDistance = (SourceCount * SourceDistance + ResultCount * ResultDistance) / (SourceCount + ResultCount);
+  else
+    ResultDistance = 0;
+  ResultCount += SourceCount;
+  //DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "After merging: " << DEBUG_PRINT_COUNT(ResultCount) << " and " << DEBUG_PRINT_DIST(ResultDistance));
+  //updatePairByMerging(ResultCount, ResultDistance, ResultCount, ResultDistance, SourceCount, SourceDistance);
+}
+
+static void updatePairByConnecting(ExecutionCountType& ResultCount, DataBytesType& ResultDistance, ExecutionCountType SourceCount, double Ratio, DataBytesType SourceDistance1, DataBytesType SourceDistance2)
+{
+  assert(Ratio <= 1);
+  ResultCount = SourceCount * Ratio;
+  ResultDistance = SourceDistance1 + SourceDistance2;
+}
+
 // Functions for FieldReferenceGraph
 void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To)
 {
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnect edge: (" << FromNode->Id << "," << ToNode->Id <<") to (" << From->Id << "," << To->Id << ") with " << format("%.0f", ExecutionCount) << " and " << format(".1f", DataSize) << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnect edge: (" << FromNode->Id << "," << ToNode->Id <<") to (" << From->Id << "," << To->Id << ") with " << DEBUG_PRINT_COUNT(ExecutionCount) << " and " << DEBUG_PRINT_DIST(DataSize) << "\n");
+  if (From == To){
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnection results in a node pointing to itself, remove this edge\n");
+    FromNode->OutEdges.erase(this);
+    ToNode->InEdges.erase(this);
+    if (From->SelfLoop1 == NULL)
+      From->SelfLoop1 = this;
+    else{
+      assert(From->SelfLoop2 == NULL);
+      From->SelfLoop2 = this;
+    }
+    //FromNode = NULL;
+    //ToNode = NULL;
+    return;
+  }
   assert(From != FromNode || To != ToNode); // Assume never reconnect two nodes already connected with this Edge
   Edge* ExistEdge = NULL;
   for (auto *E : From->OutEdges){
@@ -424,10 +477,16 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, Field
   }
   if (ExistEdge){
     assert(To->InEdges.find(ExistEdge) != To->InEdges.end());
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Node " << From->Id << " and Node " << To->Id << " already have an edge with " << format("%.0f", ExistEdge->ExecutionCount) << " and " << format("%.1f", ExistEdge->DataSize) << "\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Node " << From->Id << " and Node " << To->Id << " already have an edge with " << DEBUG_PRINT_COUNT(ExistEdge->ExecutionCount) << " and " << DEBUG_PRINT_DIST(ExistEdge->DataSize) << "\n");
     // Reconnect edge to two nodes that have connection, weights need to be adjusted
+    updatePairByMerging(ExecutionCount, DataSize, ExistEdge->ExecutionCount, ExistEdge->DataSize);
+    /*
     ExecutionCount += ExistEdge->ExecutionCount;
-    DataSize = ((ExistEdge->ExecutionCount * ExistEdge->DataSize) + (ExecutionCount * DataSize)) / ExecutionCount;
+    if (ExecutionCount != 0)
+      DataSize = ((ExistEdge->ExecutionCount * ExistEdge->DataSize) + (ExecutionCount * DataSize)) / ExecutionCount;
+    else
+      DataSize = 0;
+    */
     From->OutEdges.erase(ExistEdge);
     To->InEdges.erase(ExistEdge);
   }
@@ -439,7 +498,7 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node* From, Field
   To->InEdges.insert(this);
   FromNode = From;
   ToNode = To;
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "After reconnection: (" << FromNode->Id << "," << ToNode->Id <<") with " << format("%.0f", ExecutionCount) << " and " << format("%.1f", DataSize) << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "After reconnection: (" << FromNode->Id << "," << ToNode->Id <<") with " << DEBUG_PRINT_COUNT(ExecutionCount) << " and " << DEBUG_PRINT_DIST(DataSize) << "\n");
 }
 
 FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::createBasicBlockHelperInfo(const BasicBlock* BB)
@@ -503,7 +562,7 @@ void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
     OS << "Node " << Node->Id << " accesses " << Node->FieldNum << ": ";
     OS << "connect with {";
     for (auto* Edge : Node->OutEdges){
-      OS << " Node " << Edge->ToNode->Id << " (" << format("%.0f", Edge->ExecutionCount) << "," << format("%.1f", Edge->DataSize) << ")  ";
+      OS << " Node " << Edge->ToNode->Id << " (" << DEBUG_PRINT_COUNT(Edge->ExecutionCount) << "," << DEBUG_PRINT_DIST(Edge->DataSize) << ")  ";
       ExamineList.push(Edge->ToNode);
     }
     OS << "}\n";
@@ -514,7 +573,7 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(raw_ostream& OS, FieldRefer
 {
   OS << "Collapsed entry for edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ")\n";
   for (auto* CE : E->CollapsedEntries){
-    OS << "Collapsed entry " << CE->Id << " field num: " << CE->FieldNum << ", count: " << format("%.0f", CE->ExecutionCount) << ", distance: " << format("%.1f", CE->DataSize) << "\n";
+    OS << "Collapsed entry " << CE->Id << " field num: " << CE->FieldNum << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount) << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
   }
 }
 
@@ -767,25 +826,34 @@ FieldReferenceGraph* StructFieldAccessInfo::buildFieldReferenceGraph(const Funct
   return FRG;
 }
 
+
 void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
 {
   assert(Src <= NumElements && Dest <= NumElements);
-  if (Src == 0 || Dest == 0 || C == 0 || Src == Dest)
+  if (Src == 0 || Dest == 0 || C < 1e-6 || Src == Dest)
     // Give up update if from or to a dummy node, or if the count is zero
     return;
+  assert(!isnan(C));
   if (Src != 0 && Dest != 0){
     if (Src > Dest){
       std::swap(Src, Dest);
     }
     // Skip updates from/to a dummy node
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << format("%.0f", C) << " and distance " << format("%.1f", D) << ":\n");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << format("%.0f", CloseProximityTable[Src-1][Dest-1].first) << "," << format("%.1f", CloseProximityTable[Src-1][Dest-1].second) << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[Src-1][Dest-1].second) << ")\n");
+    assert(CloseProximityTable[Src-1][Dest-1].first + C != 0);
+    updatePairByMerging(CloseProximityTable[Src-1][Dest-1].first, CloseProximityTable[Src-1][Dest-1].second, C, D);
+    /*
     CloseProximityTable[Src-1][Dest-1] = std::make_pair(
         ( CloseProximityTable[Src-1][Dest-1].first + C ) ,
         ( ( CloseProximityTable[Src-1][Dest-1].first * CloseProximityTable[Src-1][Dest-1].second +
             C * D ) / ( CloseProximityTable[Src-1][Dest-1].first + C ) )
-                                                        );
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << format("%.0f", CloseProximityTable[Src-1][Dest-1].first) << "," << format("%.1f", CloseProximityTable[Src-1][Dest-1].second) << ")\n");
+                                                      );
+    */
+    if (isnan(CloseProximityTable[Src-1][Dest-1].first) || isnan(CloseProximityTable[Src-1][Dest-1].second)){
+      errs() << "Update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << "\n";
+    }
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[Src-1][Dest-1].second) << ")\n");
         // Count = C_old + C_new
         // Distance = weighted distance of old and new
   }
@@ -794,21 +862,70 @@ void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
 void StructFieldAccessInfo::updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
 {
   assert(Src <= NumElements && Dest <= NumElements);
-  if (Src == 0 || Dest == 0 || C == 0 || Src == Dest)
+  if (Src == 0 || Dest == 0 || C < 1e-6 || Src == Dest)
     return;
   if (Src != 0 && Dest != 0){
     if (Src > Dest){
       std::swap(Src, Dest);
     }
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << format("%.0f", C) << " and distance " << format("%.1f", D) << ":\n");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << format("%.0f", GoldCPT[Src-1][Dest-1].first) << "," << format("%.1f", GoldCPT[Src-1][Dest-1].second) << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << DEBUG_PRINT_COUNT(GoldCPT[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(GoldCPT[Src-1][Dest-1].second) << ")\n");
+    updatePairByMerging(GoldCPT[Src-1][Dest-1].first, GoldCPT[Src-1][Dest-1].second, C, D);
+    /*
     GoldCPT[Src-1][Dest-1] = std::make_pair(
         ( GoldCPT[Src-1][Dest-1].first + C ) ,
         ( ( GoldCPT[Src-1][Dest-1].first * GoldCPT[Src-1][Dest-1].second +
             C * D ) / ( GoldCPT[Src-1][Dest-1].first + C ) )
-                                                        );
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << format("%.0f", GoldCPT[Src-1][Dest-1].first) << "," << format("%.1f", GoldCPT[Src-1][Dest-1].second) << ")\n");
+            );*/
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(GoldCPT[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(GoldCPT[Src-1][Dest-1].second) << ")\n");
   }
+}
+
+void StructFieldAccessInfo::updateCPGBetweenNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, FieldReferenceGraph::Edge* Arc, ExecutionCountType C, DataBytesType D, std::unordered_set<FieldReferenceGraph::Node*>* CheckList)
+{
+  if (To == NULL || To == From || CheckList->find(To) != CheckList->end())
+    return;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to " << To->Id << " with " << DEBUG_PRINT_COUNT(C) << " and " << DEBUG_PRINT_DIST(D) << "\n");
+  assert(!isnan(C));
+  updateCPG(From->FieldNum, To->FieldNum, C, D);
+  CheckList->insert(To);
+  ExecutionCountType Sum = 0;
+  for (auto* E : To->OutEdges)
+    Sum += E->ExecutionCount;
+  for (auto* E : To->OutEdges){
+    if (E->ToNode == From)
+      continue;
+    if (E->Collapsed){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to collapsed subtree edge (" << E->FromNode->Id << "," << E->ToNode->Id << ") with ratio " << C/E->ExecutionCount << "\n");
+      for (auto* Entry : E->CollapsedEntries){
+        auto ExCnt = C;
+        auto Dist = D;
+        assert(C <= Arc->ExecutionCount);
+        if (Arc->ExecutionCount > 0)
+          updatePairByConnecting(ExCnt, Dist, Entry->ExecutionCount, C/Arc->ExecutionCount, Dist, To->Size + Entry->DataSize);
+        assert(!isnan(ExCnt));
+        updateCPG(From->FieldNum, Entry->FieldNum, ExCnt, Dist);
+        //updateCPG(From->FieldNum, Entry->FieldNum, std::min(C, Entry->ExecutionCount), D + To->Size + Entry->DataSize);
+      }
+    }
+    else{
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found non-collapsed successor " << E->ToNode->Id << "\n");
+      auto ExCnt = C;
+      auto Dist = D;
+      if (Sum > 0)
+        updatePairByConnecting(ExCnt, Dist, ExCnt, E->ExecutionCount/Sum, Dist, To->Size + E->DataSize);
+      updateCPGBetweenNodes(From, E->ToNode, E, ExCnt, Dist, CheckList);
+      //updateCPGBetweenNodes(From, E->ToNode, std::min(C, E->ExecutionCount), D + To->Size + E->DataSize, CheckList);
+    }
+  }
+  CheckList->erase(To);
+}
+
+void StructFieldAccessInfo::updateCPGFromNodeToSubtree(FieldReferenceGraph::Edge* E)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << E->FromNode->Id << " to subtree " << E->ToNode->Id << "\n");
+  std::unordered_set<FieldReferenceGraph::Node*> CheckList;
+  updateCPGBetweenNodes(E->FromNode, E->ToNode, E, E->ExecutionCount, E->DataSize, &CheckList);
 }
 
 bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldReferenceGraph::Edge* Arc)
@@ -824,21 +941,45 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
   */
   bool Ret = false;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Collapse successor Edge (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ")\n");
+  assert(!isnan(Arc->ExecutionCount));
   updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
   FRG->collapseNodeToEdge(Arc->ToNode, Arc);
-  for (auto *E : Arc->ToNode->OutEdges){
+  auto Edges = Arc->ToNode->OutEdges;
+  double Ratio = 1.0;
+  if (Arc->ToNode->SelfLoop1){
+    if (Arc->ToNode->SelfLoop2){
+      if (Arc->ExecutionCount + Arc->ToNode->SelfLoop1->ExecutionCount + Arc->ToNode->SelfLoop2->ExecutionCount > 0)
+        Ratio = Arc->ExecutionCount / (Arc->ExecutionCount + Arc->ToNode->SelfLoop1->ExecutionCount + Arc->ToNode->SelfLoop2->ExecutionCount);
+      else
+        Ratio = 0;
+    }
+    else{
+      if (Arc->ExecutionCount + Arc->ToNode->SelfLoop1->ExecutionCount)
+        Ratio = Arc->ExecutionCount / (Arc->ExecutionCount + Arc->ToNode->SelfLoop1->ExecutionCount);
+      else
+        Ratio = 0;
+    }
+  }
+  for (auto *E : Edges){
+    assert(E->FromNode == Arc->ToNode);
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check edge: ("  << E->FromNode->Id << "," << E->ToNode->Id << ")\n");
     if (E->Collapsed){
       for (auto* Entry : E->CollapsedEntries){
-        Entry->ExecutionCount = std::min(Entry->ExecutionCount, Arc->ExecutionCount);
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Move collapsed entry " << Entry->Id << " from edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ") to (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ") with a ratio of " << format("%.3f", Ratio) << "\n");
+        //assert(Entry->ExecutionCount*Ratio < Arc->ExecutionCount);
+        Entry->ExecutionCount = std::min(Entry->ExecutionCount*Ratio, Arc->ExecutionCount);
         Entry->DataSize += Arc->DataSize + Arc->ToNode->Size;
+        //updatePairByConnecting(Entry->ExecutionCount, Entry->DataSize, Entry->ExecutionCount, Ratio, Entry->DataSize, Arc->DataSize+Arc->ToNode->Size);
+        assert(!isnan(Entry->ExecutionCount));
         updateCPG(Arc->FromNode->FieldNum, Entry->FieldNum, Entry->ExecutionCount, Entry->DataSize);
         FRG->moveCollapsedEntryToEdge(Entry, E, Arc);
       }
     }
     else{
-      E->ExecutionCount = std::min(Arc->ExecutionCount, E->ExecutionCount);
+      updateCPGFromNodeToSubtree(E);
+      E->ExecutionCount = std::min(Arc->ExecutionCount, E->ExecutionCount*Ratio);
       E->DataSize += Arc->DataSize + Arc->ToNode->Size;
+      //updatePairByConnecting(E->ExecutionCount, E->DataSize, Arc->ExecutionCount, Ratio, E->DataSize, Arc->DataSize+Arc->ToNode->Size);
       E->reconnect(Arc->FromNode, E->ToNode);
       Ret = true;
       if (Arc->ToNode->OutEdges.size() == 0)
@@ -861,14 +1002,15 @@ bool StructFieldAccessInfo::collapseRoot(FieldReferenceGraph* FRG, FieldReferenc
   while (change){
     change = false;
     for (auto *E : Root->OutEdges){
-      change |= collapseRoot(FRG, E->ToNode);
+      if (!E->LoopArc)
+        change |= collapseRoot(FRG, E->ToNode);
     }
     for (auto *E : Root->OutEdges){
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check out edge: (" << E->FromNode->Id << "," << E->ToNode->Id << "): ");
       if (E->LoopArc){
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "It is a loop arc\n");
         // Update CPG with accesses within SUCC loop
-        change = true;
+        //change = true;
       }
       else if (E->ToNode->InEdges.size() == 1 && !E->Collapsed){ // if SUCC can be collapsed, i.e. only has one predecessor
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found a successor can be collapsed\n");
@@ -903,27 +1045,33 @@ void StructFieldAccessInfo::calculateCPRelation(std::vector<FieldReferenceGraph:
   assert(Path->size());
   auto C = (*Path)[0]->ExecutionCount;
   auto D = (*Path)[0]->DataSize;
-  float ExCnt = C;
   for (unsigned i = 1; i < Path->size(); i++){
     auto* E = (*Path)[i];
+    /*
     auto* From = E->FromNode;
     if (From->OutEdges.size() == 1){
-      //DEBUG(dbgs() << "Out edge exeuction count: " << E->ExecutionCount << " vs " << C << "\n");
-      assert(ExCnt <= E->ExecutionCount);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Only one outedge exeuction count: " << DEBUG_PRINT_COUNT(E->ExecutionCount) << " vs " << DEBUG_PRINT_COUNT(ExCnt) << "\n");
+      //assert(ExCnt <= E->ExecutionCount);
+      //ExCnt = std::min(ExCnt, E->ExecutionCount);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Updated ExCnt " << DEBUG_PRINT_COUNT(ExCnt) << "\n");
     }
     else{
       ExecutionCountType Sum = 0;
       for (auto* Ed : From->OutEdges)
         Sum += Ed->ExecutionCount;
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Multiple successors found, sum is: " << format("%.0f, ", Sum) << " and current path is: " << DEBUG_PRINT_COUNT(E->ExecutionCount) << "\n");
       ExCnt = (ExCnt * E->ExecutionCount) / (Sum);
-    }
-    D += E->DataSize + E->FromNode->Size;
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Updated ExCnt " << DEBUG_PRINT_COUNT(ExCnt) << "\n");
+      }*/
+    ExecutionCountType Sum = 0;
+    for (auto* Ed : E->FromNode->OutEdges)
+        Sum += Ed->ExecutionCount;
+    updatePairByConnecting(C, D, C, E->ExecutionCount/Sum, D, E->DataSize + E->FromNode->Size);
   }
-  C = (ExecutionCountType)ExCnt;
   updateGoldCPG((*Path)[0]->FromNode->FieldNum, (*Path)[Path->size()-1]->ToNode->FieldNum, C, D);
 }
 
-void StructFieldAccessInfo::findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, std::vector<FieldReferenceGraph::Edge*>* Path)
+void StructFieldAccessInfo::findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, std::vector<FieldReferenceGraph::Edge*>* Path, std::unordered_set<FieldReferenceGraph::Node*>* VisitedNodes)
 {
   for (auto* E : Start->OutEdges){
     if (E->ToNode == End){
@@ -932,17 +1080,16 @@ void StructFieldAccessInfo::findPathInFRG(FieldReferenceGraph::Node* Start, Fiel
       calculateCPRelation(Path);
       Path->pop_back();
     }
-    else{
-      if (std::find(Path->begin(), Path->end(), E) != Path->end()){
-        // If this edge is already in the path, give up
-        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Loop found, don\'t go into the loop\n");
-        continue;
-      }
-      else if (E->ExecutionCount) {
-        Path->push_back(E);
-        findPathInFRG(E->ToNode, End, Path);
-        Path->pop_back();
-      }
+    else if (VisitedNodes->find(E->ToNode) != VisitedNodes->end()) {
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Loop found, don\'t continue to find path\n");
+      continue;
+    }
+    else if (E->ExecutionCount) {
+      Path->push_back(E);
+      VisitedNodes->insert(E->ToNode);
+      findPathInFRG(E->ToNode, End, Path, VisitedNodes);
+      Path->pop_back();
+      VisitedNodes->erase(E->ToNode);
     }
   }
 }
@@ -950,8 +1097,11 @@ void StructFieldAccessInfo::findPathInFRG(FieldReferenceGraph::Node* Start, Fiel
 void StructFieldAccessInfo::calculatePathBetween(FieldReferenceGraph::Node* FromNode, FieldReferenceGraph::Node* ToNode)
 {
   std::vector<FieldReferenceGraph::Edge*> Path;
+  std::unordered_set<FieldReferenceGraph::Node*> VisitedNodes;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Calculate Path between " << FromNode->Id << " and " << ToNode->Id << "\n");
-  findPathInFRG(FromNode, ToNode, &Path);
+  assert(FromNode != ToNode);
+  VisitedNodes.insert(FromNode);
+  findPathInFRG(FromNode, ToNode, &Path, &VisitedNodes);
 }
 
 void StructFieldAccessInfo::createFRGPairs(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root, std::vector<FieldReferenceGraph::Edge*>* Path)
@@ -960,9 +1110,13 @@ void StructFieldAccessInfo::createFRGPairs(FieldReferenceGraph* FRG, FieldRefere
     auto* FromNode = FRG->getNodeById(i);
     if (FromNode->FieldNum == 0) // Skip dummy nodes
       continue;
-    for (unsigned j = i+1; j < FRG->getNumNodes(); j++){
+    for (unsigned j = 0; j < FRG->getNumNodes(); j++){
+      if (i == j)
+        continue;
       auto* ToNode = FRG->getNodeById(j);
       if (ToNode->FieldNum == 0) // Skip dummy nodes
+        continue;
+      if (FromNode->FieldNum == ToNode->FieldNum)
         continue;
       calculatePathBetween(FromNode, ToNode);
     }
@@ -980,9 +1134,9 @@ void StructFieldAccessInfo::createGoldCloseProximityRelations(FieldReferenceGrap
 void StructFieldAccessInfo::compareCloseProximityRelations() const{
   for (unsigned i = 0; i < NumElements; i++){
     for (unsigned j = i+1; j < NumElements; j++){
-      if (std::abs(GoldCPT[i][j].first - CloseProximityTable[i][j].first) > 0.1 ||
-          std::abs(GoldCPT[i][j].second - CloseProximityTable[i][j].second) > 0.1){
-        outs() << "Found error in CPG: F" << i+1 << " and F" << j+1 << " should be (" << GoldCPT[i][j].first << "," << GoldCPT[i][j].second << ") but calculated as (" << CloseProximityTable[i][j].first << "," << CloseProximityTable[i][j].second << ")\n";
+      if (std::abs(GoldCPT[i][j].first - CloseProximityTable[i][j].first) / GoldCPT[i][j].first > 0.05 ||
+          std::abs(GoldCPT[i][j].second - CloseProximityTable[i][j].second) / GoldCPT[i][j].second > 0.01){
+        outs() << "Found error in CPG: F" << i+1 << " and F" << j+1 << " should be (" << DEBUG_PRINT_COUNT(GoldCPT[i][j].first) << "," << DEBUG_PRINT_DIST(GoldCPT[i][j].second) << ") but calculated as (" << DEBUG_PRINT_COUNT(CloseProximityTable[i][j].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[i][j].second) << ")\n";
       }
     }
   }
@@ -1001,6 +1155,9 @@ void StructFieldAccessInfo::buildCloseProximityRelations()
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F->getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(F);
     assert(FRG);
+    DEBUG(dbgs() << "---------- FRG for function " << F->getName() << "----------------\n");
+    DEBUG(FRG->debugPrint(dbgs()));
+    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
     // Collpase FRG and get CPG
     collapseFieldReferenceGraph(FRG);
     // Brutal force get CP relations
@@ -1032,7 +1189,7 @@ void StructFieldAccessInfo::debugPrintCloseProximityGraph(raw_ostream& OS) const
       if (j <= i)
         OS << "-\t";
       else
-        OS << "(" << format("%.0f", CloseProximityTable[i][j].first) << "," << format("%.1f", CloseProximityTable[i][j].second) << ")\t";
+        OS << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[i][j].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[i][j].second) << ")\t";
     }
     OS << "\n";
   }
@@ -1046,7 +1203,7 @@ void StructFieldAccessInfo::debugPrintGoldCPT(raw_ostream& OS) const
       if (j <= i)
         OS << "-\t";
       else
-        OS << "(" << format("%.0f", GoldCPT[i][j].first) << "," << format("%.1f", GoldCPT[i][j].second) << ")\t";
+        OS << "(" << DEBUG_PRINT_COUNT(GoldCPT[i][j].first) << "," << DEBUG_PRINT_DIST(GoldCPT[i][j].second) << ")\t";
     }
     OS << "\n";
   }
@@ -1399,13 +1556,7 @@ static void performIRAnalysis(Module &M,
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isStructTy()){
             DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an alloca of a struct*: " << I << "\n");
-            auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type);
-            structInfoPtr->analyzeUsersOfStructValue(&I);
-          }
-          else if (type->isPointerTy() && type->getPointerElementType()->isStructTy()){
-            DEBUG(dbgs() << "Found an alloca of a struct*: " << I << "\n");
             auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type->getPointerElementType());
-            assert(structInfoPtr);
             structInfoPtr->analyzeUsersOfStructPointerValue(&I);
             //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
           }
@@ -1445,14 +1596,13 @@ static void performIRAnalysis(Module &M,
   StructManager->printStats();
 }
 
-/*
+
 static void createFieldReferenceGraph(StructFieldAccessManager* StructManager)
 {
   //FIXME: add a filter to filter out structs to ignore
   StructManager->buildFieldReferenceGraphForAllStructs();
   DEBUG(StructManager->debugPrintAllFRGs());
 }
-*/
 
 static void collapseFieldReferenceGraphAndCreateCloseProximityGraph(StructFieldAccessManager* StructManager)
 {
