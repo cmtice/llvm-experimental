@@ -66,7 +66,7 @@ class StructFieldAccessManager
   */
  public:
   StructFieldAccessManager(const Module& M, function_ref<BlockFrequencyInfo *(Function &)> L):
-      CurrentModule(M), LookupBFI(L), StatCounts(stats::max_stats) {};
+      CurrentModule(M), LookupBFI(L), StatCounts(Stats::max_stats) {};
   // Retrieve debug info for all structs defined in the program
   void retrieveDebugInfoForAllStructs();
   // Check if the struct type is created before; if not, create a new StructFieldAccessInfo object for it
@@ -86,7 +86,7 @@ class StructFieldAccessManager
   void debugPrintAnnotatedModule();
 
   // For stats
-  enum stats{
+  enum Stats{
     struct_pointer_pointer,
     func_arg_value,
     func_arg_not_defined,
@@ -129,7 +129,7 @@ class StructFieldAccessInfo
     essential information for cache-aware struct field analysis.
   */
  public:
-  StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::stats::max_stats) {}
+  StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {}
   // Analyze a value pointing to a struct and collect struct access from it. It can be allocas/function args/globals
   void analyzeUsersOfStructValue(const Value* V);
   // Analyze a value pointing to a struct* and collect struct access from it. It can be allocas/function args/globals
@@ -151,7 +151,7 @@ class StructFieldAccessInfo
   // For stats
   void addStats(unsigned Category, unsigned Opcode = 0) {
     StatCounts[Category]++;
-    if (Category == StructFieldAccessManager::stats::gep_in_unknown){
+    if (Category == StructFieldAccessManager::Stats::gep_in_unknown){
       UnknownOpcodes.insert(Opcode);
     }
   }
@@ -322,13 +322,13 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       }
       else{
         if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
-          addStats(StructFieldAccessManager::stats::gep_in_arg);
+          addStats(StructFieldAccessManager::Stats::gep_in_arg);
         }
         else if (Inst->getOpcode() == Instruction::BitCast){
-          addStats(StructFieldAccessManager::stats::gep_in_bitcast);
+          addStats(StructFieldAccessManager::Stats::gep_in_bitcast);
         }
         else{
-          addStats(StructFieldAccessManager::stats::gep_in_unknown, Inst->getOpcode());
+          addStats(StructFieldAccessManager::Stats::gep_in_unknown, Inst->getOpcode());
         }
       }
     }
@@ -337,14 +337,14 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
               || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
       if (Inst->getOpcode() == Instruction::BitCast){
-        addStats(StructFieldAccessManager::stats::gep_in_bitcast);
+        addStats(StructFieldAccessManager::Stats::gep_in_bitcast);
       }
       else{
-        addStats(StructFieldAccessManager::stats::gep_in_unknown, Inst->getOpcode());
+        addStats(StructFieldAccessManager::Stats::gep_in_unknown, Inst->getOpcode());
       }
     }
     else {
-      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
     }
   }
 }
@@ -372,7 +372,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
       addFieldAccessFromGEP(Inst);
     }
     else{
-      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
     }
   }
 }
@@ -401,7 +401,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
       analyzeUsersOfStructValue(Inst);
     }
     else{
-      addStats(StructFieldAccessManager::stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
     }
   }
 }
@@ -610,19 +610,19 @@ void StructFieldAccessManager::printStats()
   outs().changeColor(raw_ostream::GREEN);
   outs() << "Stats:\n";
   for (auto &it : StructFieldAccessInfoMap){
-    for (auto i = 0; i < stats::max_stats; i++){
+    for (auto i = 0; i < Stats::max_stats; i++){
       StatCounts[i] += it.second->getStats(i);
-      if (i == stats::gep_in_unknown){
+      if (i == Stats::gep_in_unknown){
         it.second->printUnknownOpcodes(outs());
       }
     }
   }
-  for (auto i = 0; i < stats::max_stats; i++){
+  for (auto i = 0; i < Stats::max_stats; i++){
     if (StatCounts[i]){
       outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  " times\n";
     }
   };
-  FILE_OS << "GEP as Arg," << StatCounts[stats::gep_in_arg] << "\n";
+  FILE_OS << "GEP as Arg," << StatCounts[Stats::gep_in_arg] << "\n";
   outs().changeColor(raw_ostream::BLUE);
   outs() << "Stats are stored into " << "/tmp/SFCA-"+CurrentModule.getName().str()+".csv" << "\n";
   outs().resetColor();
@@ -652,12 +652,12 @@ static void performIRAnalysis(Module &M,
       auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(G.getValueType()->getPointerElementType(), NULL);
       assert(structInfoPtr);
       structInfoPtr->analyzeUsersOfStructPointerValue(&G);
-      //StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
+      //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
     }
     // Case for struct**
     else if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isPointerTy() && G.getType()->getPointerElementType()->getPointerElementType()->isStructTy()){
       DEBUG(dbgs() << "Found a global has struct** type: " << G << " but we ignored this\n");
-      StructManager->addStats(StructFieldAccessManager::stats::struct_pointer_pointer);
+      StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer_pointer);
     }
     DEBUG(dbgs().resetColor());
   }
@@ -683,11 +683,11 @@ static void performIRAnalysis(Module &M,
             auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type->getPointerElementType(), &F);
             assert(structInfoPtr);
             structInfoPtr->analyzeUsersOfStructPointerValue(&I);
-            //StructManager->addStats(StructFieldAccessManager::stats::struct_pointer);
+            //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isPointerTy() && type->getPointerElementType()->getPointerElementType()->isStructTy()){
             DEBUG(dbgs() << "Found an alloca of a struct**: " << I << " but we ignore this\n");
-            StructManager->addStats(StructFieldAccessManager::stats::struct_pointer_pointer);
+            StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer_pointer);
           }
         }
       }
@@ -700,7 +700,7 @@ static void performIRAnalysis(Module &M,
     for (auto &AG : F.args()){
       if (AG.getType()->isStructTy()){
         DEBUG(dbgs() << "Found an argument of a struct pass by value: " << AG << " and no support for this yet\n");
-        StructManager->addStats(StructFieldAccessManager::stats::func_arg_value);
+        StructManager->addStats(StructFieldAccessManager::Stats::func_arg_value);
       }
       if (AG.getType()->isPointerTy() && AG.getType()->getPointerElementType()->isStructTy()){
         // Identified AG is an argument with a struct type
@@ -711,7 +711,7 @@ static void performIRAnalysis(Module &M,
         }
         else{
           DEBUG(dbgs() << "Found an argument of a struct not defined in the program: " << AG << "\n");
-          StructManager->addStats(StructFieldAccessManager::stats::func_arg_not_defined);
+          StructManager->addStats(StructFieldAccessManager::Stats::func_arg_not_defined);
         }
       }
     }
