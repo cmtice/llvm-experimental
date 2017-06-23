@@ -32,6 +32,7 @@
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace llvm;
@@ -234,6 +235,8 @@ class StructFieldAccessManager
     func_arg_value,
     func_arg_not_defined,
     gep_in_arg,
+    gep_in_bitcast,
+    gep_in_unknown,
     user_not_instruction_nor_operator,
     max_stats
   };
@@ -254,6 +257,8 @@ class StructFieldAccessManager
                                               "Function argument is a value",
                                               "Function argument is not defined in the program",
                                               "GEP value passed into function calls",
+                                              "GEP value passed into bitcast",
+                                              "GEP value passed into unexpected opcode",
                                               "User is not Instruction nor Operator"
   };
 
@@ -325,8 +330,22 @@ class StructFieldAccessInfo
   void debugPrintGoldCPT(raw_ostream& OS) const;
 
   // For stats
-  void addStats(unsigned Category) { StatCounts[Category]++; }
+  void addStats(unsigned Category, unsigned Opcode = 0) {
+    StatCounts[Category]++;
+    if (Category == StructFieldAccessManager::Stats::gep_in_unknown){
+      UnknownOpcodes.insert(Opcode);
+    }
+  }
   unsigned getStats(unsigned Category) const { return StatCounts[Category]; }
+  void printUnknownOpcodes(raw_ostream& OS) const {
+    if (UnknownOpcodes.size() == 0)
+      return;
+    OS << "Unknown opcodes: ";
+    for (auto& it : UnknownOpcodes){
+      OS << it << " ";
+    }
+    OS << "\n";
+  }
 
  private:
   const Module& CurrentModule;
@@ -346,6 +365,7 @@ class StructFieldAccessInfo
   std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > > GoldCPT;
   //A vector stores per struct stats
   std::vector<unsigned> StatCounts;
+  std::unordered_set<unsigned> UnknownOpcodes;
 
   // Private functions
   // Functions for building FRG
@@ -670,12 +690,24 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
         if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
           addStats(StructFieldAccessManager::Stats::gep_in_arg);
         }
+        else if (Inst->getOpcode() == Instruction::BitCast){
+          addStats(StructFieldAccessManager::Stats::gep_in_bitcast);
+        }
+        else{
+          addStats(StructFieldAccessManager::Stats::gep_in_unknown, Inst->getOpcode());
+        }
       }
     }
     else if (isa<Operator>(User)){
       auto* Inst = dyn_cast<Operator>(U);
       assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
               || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
+      if (Inst->getOpcode() == Instruction::BitCast){
+        addStats(StructFieldAccessManager::Stats::gep_in_bitcast);
+      }
+      else{
+        addStats(StructFieldAccessManager::Stats::gep_in_unknown, Inst->getOpcode());
+      }
     }
     else{
       addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
@@ -1486,13 +1518,18 @@ void StructFieldAccessManager::printStats()
         FILE_OS << type->getStructName() << "," << Result << "\n";
       }
     }
-    for (auto i = 0; i < Stats::max_stats; i++){
-      StatCounts[i] += it.second->getStats(i);
-    }
   }
   outs().resetColor();
   outs().changeColor(raw_ostream::GREEN);
   outs() << "Stats:\n";
+  for (auto &it : StructFieldAccessInfoMap){
+    for (auto i = 0; i < Stats::max_stats; i++){
+      StatCounts[i] += it.second->getStats(i);
+      if (i == Stats::gep_in_unknown){
+        it.second->printUnknownOpcodes(outs());
+      }
+    }
+  }
   for (auto i = 0; i < Stats::max_stats; i++){
     if (StatCounts[i]){
       outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  " times\n";
