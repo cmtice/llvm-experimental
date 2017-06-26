@@ -16,6 +16,7 @@
 
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -68,6 +69,7 @@ class StructFieldCacheAnalysisPass : public ModulePass {
 char StructFieldCacheAnalysisPass::ID = 0;
 INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis", "Struct Field Cache Analysis", false, false)
 ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldCacheAnalysisPass; }
@@ -91,7 +93,7 @@ class FieldReferenceGraph
     DataBytesType DataSize;
   };
   struct Node{
-    Node(unsigned I, FieldNumType N, DataBytesType S): Id(I), FieldNum(N), Size(S), Visited(false), SelfLoop1(NULL), SelfLoop2(NULL) {}
+    Node(unsigned I, FieldNumType N, DataBytesType S): Id(I), FieldNum(N), Size(S), Visited(false), SelfLoop1(NULL), SelfLoop2(NULL), InSum(0), OutSum(0) {}
     unsigned Id;
     FieldNumType FieldNum;
     DataBytesType Size;
@@ -100,6 +102,8 @@ class FieldReferenceGraph
     Edge* SelfLoop2;
     std::unordered_set<Edge*> InEdges;
     std::unordered_set<Edge*> OutEdges;
+    ExecutionCountType InSum;
+    ExecutionCountType OutSum;
   };
 
   struct Edge{
@@ -169,6 +173,7 @@ class FieldReferenceGraph
 
   // For debug
   void debugPrint(raw_ostream& OS) const;
+  void checkInOutSum() const;
   void debugPrintCollapsedEntries(raw_ostream& OS, FieldReferenceGraph::Edge* E) const;
 
  private:
@@ -190,9 +195,11 @@ class StructFieldAccessManager
  public:
   StructFieldAccessManager(const Module& M,
                            function_ref<BlockFrequencyInfo *(Function &)> LBFI,
+                           function_ref<BranchProbabilityInfo *(Function &)> LBPI,
                            function_ref<LoopInfo *(Function &)> LLI):
       CurrentModule(M),
       LookupBFI(LBFI),
+      LookupBPI(LBPI),
       LookupLI(LLI),
       StatCounts(Stats::max_stats) {};
   ~StructFieldAccessManager();
@@ -208,6 +215,12 @@ class StructFieldAccessManager
   Optional<uint64_t> getExecutionCount(const BasicBlock* BB) const{
     Function* func = const_cast<Function*>(BB->getParent());
     return LookupBFI(*func)->getBlockProfileCount(BB);
+  }
+  Optional<double> getBranchProbability(const BasicBlock* FromBB, const BasicBlock* ToBB) const{
+    assert(FromBB->getParent() == ToBB->getParent());
+    Function* func = const_cast<Function*>(FromBB->getParent());
+    auto Prob = LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
+    return 1.0 * Prob.getNumerator() / Prob.getDenominator();
   }
   // Retrive a pair of information if the instruction is accessing any struct type and field number
   Optional<std::pair<const Type*, FieldNumType> > getFieldAccessOnInstruction(const Instruction* I) const;
@@ -249,6 +262,8 @@ class StructFieldAccessManager
   const Module& CurrentModule;
   // Function reference that is used to retrive execution count for basic block
   function_ref<BlockFrequencyInfo *(Function &)> LookupBFI;
+  // Function reference that is used to calculate branch probability
+  function_ref<BranchProbabilityInfo *(Function &)> LookupBPI;
   // Function reference that is used to retrive loop information
   function_ref<LoopInfo *(Function &)> LookupLI;
   std::unordered_map<const Type*, StructFieldAccessInfo*> StructFieldAccessInfoMap;
@@ -313,7 +328,9 @@ class StructFieldAccessInfo
   Optional<uint64_t> getExecutionCount(const Instruction* I) const {
     return StructManager->getExecutionCount(I->getParent());
   }
-
+  Optional<double> getBranchProbability(const BasicBlock* FromBB, const BasicBlock* ToBB) const{
+    return StructManager->getBranchProbability(FromBB, ToBB);
+  }
   // Functions for building FRG
   void buildFieldReferenceGraph();
   FieldReferenceGraph* buildFieldReferenceGraph(const Function* F);
@@ -392,6 +409,7 @@ class StructFieldAccessInfo
   void createFRGPairs(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root, std::vector<FieldReferenceGraph::Edge*>* Path);
   void createGoldCloseProximityRelations(FieldReferenceGraph* FRG);
   void compareCloseProximityRelations() const;
+  void checkFRG() const;
   // Build CPG with collapsing FRG first
   void updateCPGBetweenNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, FieldReferenceGraph::Edge* Edge, ExecutionCountType C, DataBytesType D, std::unordered_set<FieldReferenceGraph::Node*>* CheckList);
   void updateCPGFromNodeToSubtree(FieldReferenceGraph::Edge* E);
@@ -546,6 +564,8 @@ void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node* From, FieldRef
   Edge->connectNodes(From, To);
   From->OutEdges.insert(Edge);
   To->InEdges.insert(Edge);
+  From->OutSum += C;
+  To->InSum += C;
   if (BackEdge)
     Edge->LoopArc = true;
 }
@@ -564,6 +584,28 @@ void FieldReferenceGraph::moveCollapsedEntryToEdge(FieldReferenceGraph::Entry* E
   assert(FromEdge->Collapsed);
   ToEdge->CollapsedEntries.insert(Entry);
   //FromEdge->CollapsedEntries.erase(Entry);
+}
+
+void FieldReferenceGraph::checkInOutSum() const
+{
+  assert(RootNode);
+  std::queue<Node*> ExamineList; // List of Nodes to check
+  std::unordered_set<Node*> ExaminedSet; // Set of Nodes popped from list to avoid duplicate checking
+  ExamineList.push(RootNode);
+  while (!ExamineList.empty()){
+    auto* Node = ExamineList.front();
+    ExamineList.pop();
+    if (ExaminedSet.find(Node) != ExaminedSet.end())
+      continue;
+    ExaminedSet.insert(Node);
+    if (Node->InEdges.size() && Node->OutEdges.size() && std::abs(Node->InSum-Node->OutSum)/Node->InSum > 1e-2){
+      errs() << "Node " << Node->Id << " accessing field " << Node->FieldNum << " has in-sum " << Node->InSum << " and out-sum " << Node->OutSum << "\n";
+      assert(0 && "Node in-sum not equal to out-sum");
+    }
+    for (auto* Edge : Node->OutEdges){
+      ExamineList.push(Edge->ToNode);
+    }
+  }
 }
 
 void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
@@ -843,9 +885,14 @@ FieldReferenceGraph* StructFieldAccessInfo::buildFieldReferenceGraph(const Funct
     for (const auto *SB : Term->successors()){
       auto* SBI = FRG->getBasicBlockHelperInfo(SB);
       ExecutionCountType C = 0;
-      auto BBCount = getExecutionCount(&BB), SBCount = getExecutionCount(SB);
-      if (BBCount.hasValue() && SBCount.hasValue())
-        C = std::min(BBCount.getValue(), SBCount.getValue());
+      auto BBCount = getExecutionCount(&BB); //, SBCount = getExecutionCount(SB);
+      if (BBCount.hasValue()){
+        //C = std::min(BBCount.getValue(), SBCount.getValue());
+        // Take probability of the branch
+        auto Prob = getBranchProbability(&BB, SB);
+        assert(Prob.hasValue());
+        C = BBCount.getValue() * Prob.getValue();
+      }
       auto D = BBI->RemainBytes; // Use size of remaining data in BB
       if (StructManager->isBackEdgeInLoop(&BB, SB))
         FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D, true);
@@ -855,6 +902,10 @@ FieldReferenceGraph* StructFieldAccessInfo::buildFieldReferenceGraph(const Funct
   }
   auto* BBI = FRG->getBasicBlockHelperInfo(&F->getEntryBlock());
   FRG->setRootNode(BBI->FirstNode);
+  DEBUG(dbgs() << "---------- FRG for function " << F->getName() << "----------------\n");
+  DEBUG(FRG->debugPrint(dbgs()));
+  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
+  FRG->checkInOutSum();
   return FRG;
 }
 
@@ -1187,9 +1238,6 @@ void StructFieldAccessInfo::buildCloseProximityRelations()
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F->getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(F);
     assert(FRG);
-    DEBUG(dbgs() << "---------- FRG for function " << F->getName() << "----------------\n");
-    DEBUG(FRG->debugPrint(dbgs()));
-    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
     // Collpase FRG and get CPG
     collapseFieldReferenceGraph(FRG);
     // Brutal force get CP relations
@@ -1649,10 +1697,11 @@ static void collapseFieldReferenceGraphAndCreateCloseProximityGraph(StructFieldA
 
 static bool performStructFieldCacheAnalysis(Module &M,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI,
+                                            function_ref<BranchProbabilityInfo *(Function &)> LookupBPI,
                                             function_ref<LoopInfo *(Function &)> LookupLI)
 {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
-  StructFieldAccessManager StructManager(M, LookupBFI, LookupLI);
+  StructFieldAccessManager StructManager(M, LookupBFI, LookupBPI, LookupLI);
   // Step 0 - retrieve debug info for all struct FIXME: disable for now because it's not supporting annonymous structs
   //StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
@@ -1672,10 +1721,13 @@ PreservedAnalyses StructFieldCacheAnalysis::run(Module &M, ModuleAnalysisManager
   auto LookupBFI = [&FAM](Function& F) {
     return &FAM.getResult<BlockFrequencyAnalysis>(F);
   };
+  auto LookupBPI = [&FAM](Function& F) {
+    return &FAM.getResult<BranchProbabilityAnalysis>(F);
+  };
   auto LookupLI = [&FAM](Function& F) {
     return &FAM.getResult<LoopAnalysis>(F);
   };
-  if (!performStructFieldCacheAnalysis(M, LookupBFI, LookupLI))
+  if (!performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI, LookupLI))
     return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
@@ -1685,8 +1737,11 @@ bool StructFieldCacheAnalysisPass::runOnModule(Module &M){
   auto LookupBFI = [this](Function& F) {
     return &this->getAnalysis<BlockFrequencyInfoWrapperPass>(F).getBFI();
   };
+  auto LookupBPI = [this](Function& F) {
+    return &this->getAnalysis<BranchProbabilityInfoWrapperPass>(F).getBPI();
+  };
   auto LookupLI = [this](Function& F) {
     return &this->getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
   };
-  return performStructFieldCacheAnalysis(M, LookupBFI, LookupLI);
+  return performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI, LookupLI);
 }
