@@ -915,7 +915,7 @@ void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
   if (Src == 0 || Dest == 0 || C < 1e-3 || Src == Dest)
     // Give up update if from or to a dummy node, or if the count is zero
     return;
-  assert(!isnan(C));
+  assert(!std::isnan(C));
   if (Src != 0 && Dest != 0){
     if (Src > Dest){
       std::swap(Src, Dest);
@@ -932,7 +932,7 @@ void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
             C * D ) / ( CloseProximityTable[Src-1][Dest-1].first + C ) )
                                                       );
     */
-    if (isnan(CloseProximityTable[Src-1][Dest-1].first) || isnan(CloseProximityTable[Src-1][Dest-1].second)){
+    if (std::isnan(CloseProximityTable[Src-1][Dest-1].first) || std::isnan(CloseProximityTable[Src-1][Dest-1].second)){
       errs() << "Update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << "\n";
     }
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[Src-1][Dest-1].second) << ")\n");
@@ -968,7 +968,7 @@ void StructFieldAccessInfo::updateCPGBetweenNodes(FieldReferenceGraph::Node* Fro
   if (To == NULL || To == From || CheckList->find(To) != CheckList->end())
     return;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to " << To->Id << " with " << DEBUG_PRINT_COUNT(C) << " and " << DEBUG_PRINT_DIST(D) << "\n");
-  assert(!isnan(C));
+  assert(!std::isnan(C));
   updateCPG(From->FieldNum, To->FieldNum, C, D);
   CheckList->insert(To);
   for (auto* E : To->OutEdges){
@@ -982,7 +982,7 @@ void StructFieldAccessInfo::updateCPGBetweenNodes(FieldReferenceGraph::Node* Fro
         // FIXME: this doesn't feel right
         assert(To->InSum > 0);
         updatePairByConnecting(ExCnt, Dist, Entry->ExecutionCount, Arc->ExecutionCount/To->InSum, Dist, To->Size + Entry->DataSize);
-        assert(!isnan(ExCnt));
+        assert(!std::isnan(ExCnt));
         updateCPG(From->FieldNum, Entry->FieldNum, ExCnt, Dist);
       }
     }
@@ -1021,7 +1021,7 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
   */
   bool Ret = false;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Collapse successor Edge (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ")\n");
-  assert(!isnan(Arc->ExecutionCount));
+  assert(!std::isnan(Arc->ExecutionCount));
   if (Arc->ToNode->FieldNum != 0){
     updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
     FRG->collapseNodeToEdge(Arc->ToNode, Arc);
@@ -1037,7 +1037,7 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Move collapsed entry " << Entry->Id << " from edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ") to (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ") with a ratio of " << format("%.3f", Ratio) << "\n");
         Entry->ExecutionCount = std::min(Entry->ExecutionCount*Ratio, Arc->ExecutionCount);
         Entry->DataSize += Arc->DataSize + Arc->ToNode->Size;
-        assert(!isnan(Entry->ExecutionCount));
+        assert(!std::isnan(Entry->ExecutionCount));
         updateCPG(Arc->FromNode->FieldNum, Entry->FieldNum, Entry->ExecutionCount, Entry->DataSize);
         FRG->moveCollapsedEntryToEdge(Entry, E, Arc);
       }
