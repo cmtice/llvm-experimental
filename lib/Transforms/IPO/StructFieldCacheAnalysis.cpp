@@ -30,6 +30,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
 
+#include <list>
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
@@ -45,10 +46,13 @@ using namespace llvm;
 #define DEBUG_TYPE_FRG "struct-analysis-FRG"
 #define DEBUG_TYPE_CPG "struct-analysis-CPG"
 #define DEBUG_TYPE_CPG_BF "struct-analysis-CPG-brutal-force"
-//#define DEBUG_TYPE_CPG "struct-analysis"
+#define DEBUG_TYPE_REORDER "struct-analysis-reorder"
+//#define DEBUG_TYPE_REORDER "struct-analysis"
 
 #define DEBUG_PRINT_COUNT(x) (format("%.2f", (x)))
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
+
+#define CACHEBLOCKSIZE 64
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
@@ -230,6 +234,9 @@ class StructFieldAccessManager
   // Check if an edge from FromBB to ToBB is a back edge in any loop
   bool isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const;
 
+  // Functions for making suggestions
+  void suggestFieldReordering() const;
+
   // Functions for debugging
   // Print all accesses of all struct types defined in the program
   void debugPrintAllStructAccesses() const;
@@ -334,6 +341,8 @@ class StructFieldAccessInfo
   FieldReferenceGraph* buildFieldReferenceGraph(const Function* F);
   // Functions for building CPG
   void buildCloseProximityRelations();
+  // Functions for making suggestions
+  void suggestFieldReordering() const;
 
   // Print all instructions that access any struct field
   void debugPrintAllStructAccesses(raw_ostream& OS) const;
@@ -414,6 +423,51 @@ class StructFieldAccessInfo
   bool collapseSuccessor(FieldReferenceGraph* FRG, FieldReferenceGraph::Edge* Arc);
   bool collapseRoot(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
   void collapseFieldReferenceGraph(FieldReferenceGraph* FRG);
+
+};
+
+class FieldReorderAnalyzer
+{
+  struct FieldDebugInfo
+  {
+    FieldDebugInfo(FieldNumType F): FieldName(""), FieldType(""), FieldNum(F) {}
+    FieldDebugInfo(FieldNumType F, StringRef FN, StringRef FT): FieldName(FN), FieldType(FT), FieldNum(F) {}
+    StringRef FieldName;
+    StringRef FieldType;
+    FieldNumType FieldNum;
+  };
+
+ public:
+  FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG);
+  ~FieldReorderAnalyzer(){
+    for (auto* FDI : FieldDI){
+      delete FDI;
+    }
+    FieldDI.clear();
+  }
+  void makeSuggestions();
+ private:
+  const StructType* StructureType;
+  FieldNumType NumElements;
+  const DICompositeType* DebugInfo;
+  std::vector< std::vector<double> > WCPT;
+  std::list<FieldNumType> NewOrder;
+  std::unordered_set<FieldNumType> FieldsToReorder;
+  std::vector<unsigned> FieldSizes;
+  std::vector<FieldDebugInfo*> FieldDI;
+
+  // Decide if two fields can fit within one cache block
+  bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
+  // Map fields to the debug info, useful to give recommendation and filter out padding
+  void mapFieldsToDefinition();
+  // Calculate WCP for every pair of fields that can fit within a cache block
+  double calculateWCPWithinCacheBlock(std::vector<FieldNumType>* CacheBlock) const;
+  // Calculate WCP for a sequence of fields
+  double getWCP() const;
+  // Calculate WCP for a sequence of fields adding a field to the end
+  double estimateWCPAtBack(FieldNumType FieldNum);
+  // Calculate WCP for a sequence of fields adding a field to the front
+  double estimateWCPAtFront(FieldNumType FieldNum);
 };
 
 class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
@@ -1033,7 +1087,7 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check edge: ("  << E->FromNode->Id << "," << E->ToNode->Id << ")\n");
     if (E->Collapsed){
       for (auto* Entry : E->CollapsedEntries){
-        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Move collapsed entry " << Entry->Id << " from edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ") to (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ") with a ratio of " << format("%.3f", Ratio) << "\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Move collapsed entry " << Entry->Id << " from edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ") to (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ") with a ratio of " << DEBUG_PRINT_DIST(Ratio) << "\n");
         Entry->ExecutionCount = std::min(Entry->ExecutionCount*Ratio, Arc->ExecutionCount);
         Entry->DataSize += Arc->DataSize + Arc->ToNode->Size;
         assert(!isnan(Entry->ExecutionCount));
@@ -1207,6 +1261,12 @@ void StructFieldAccessInfo::buildCloseProximityRelations()
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, compareCloseProximityRelations());
 }
 
+void StructFieldAccessInfo::suggestFieldReordering() const
+{
+  FieldReorderAnalyzer FRA(CurrentModule, StructureType, DebugInfo, CloseProximityTable);
+  FRA.makeSuggestions();
+}
+
 void StructFieldAccessInfo::debugPrintFieldReferenceGraph(raw_ostream& OS) const
 {
   for (auto *FRG : FRGArray){
@@ -1249,6 +1309,274 @@ void StructFieldAccessInfo::debugPrintGoldCPT(raw_ostream& OS) const
   }
 }
 
+// Functions for FieldReorderAnalyzer
+FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructureType(S), NumElements(S->getNumElements()), DebugInfo(DI)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing FieldReorderAnalyzer of size: " << NumElements << "\n");
+  WCPT.resize(NumElements);
+  FieldsToReorder.clear();
+  FieldSizes.resize(NumElements);
+  double MaxWCP = 0;
+  FieldNumType MaxI, MaxJ;
+  for (unsigned i = 0; i < NumElements; i++){
+    WCPT[i].resize(NumElements);
+    FieldSizes[i] = CM.getDataLayout().getTypeSizeInBits(StructureType->getElementType(i)) / 8;
+    FieldsToReorder.insert(i);
+    for (unsigned j = i+1; j < NumElements; j++){
+      if (!canFitInOneCacheBlock(i, j)){
+        WCPT[i][j] = 0;
+        continue;
+      }
+      if (CPG[i][j].first < 1e-3){
+        WCPT[i][j] = 0;
+        continue;
+      }
+      else if (CPG[i][j].second < 1){
+        // Distance == 0
+        WCPT[i][j] = CPG[i][j].first;
+      }
+      else{
+        WCPT[i][j] = CPG[i][j].first / CPG[i][j].second;
+      }
+      if (WCPT[i][j] > MaxWCP){
+        MaxWCP = WCPT[i][j];
+        MaxI = i;
+        MaxJ = j;
+      }
+    }
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "CPG for field reordering recommendation\n");
+  for (unsigned i = 0; i < CPG.size(); i++){
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "F" << i+1 << "\t");
+    for (unsigned j = 0; j < CPG.size(); j++)
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << DEBUG_PRINT_COUNT(WCPT[i][j]) << "\t");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "\n");
+  }
+  // FIXME: Need to reconsider if the order of the pair makes differences
+  NewOrder.push_back(MaxI);
+  NewOrder.push_back(MaxJ);
+  FieldsToReorder.erase(MaxI);
+  FieldsToReorder.erase(MaxJ);
+  mapFieldsToDefinition();
+  for (unsigned i = 0; i < NumElements; i++){
+    if (FieldDI[i] == NULL){
+      //DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << i+1 << " is actually a padding, ignore in reordering...\n");
+      outs() << "Field " << i+1 << " is actually a padding, ignore in reordering...\n";
+      FieldsToReorder.erase(i);
+    }
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxI+1 << " and F" << MaxJ+1 << " as seeds in reordering\n");
+  assert(MaxWCP == getWCP());
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << "\n");
+}
+
+bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const
+{
+  if (FieldSizes[Field1] % CACHEBLOCKSIZE == 0)
+    return false;
+  return true;
+}
+
+void FieldReorderAnalyzer::mapFieldsToDefinition()
+{
+  FieldDI.resize(NumElements);
+  if (DebugInfo){
+    assert(DebugInfo->getElements().size() <= NumElements);
+    FieldNumType FieldNum = 0;
+    for (unsigned i = 0; i < DebugInfo->getElements().size(); i++){
+      DINode* node = DebugInfo->getElements()[i];
+      assert(node && isa<DIDerivedType>(node) && dyn_cast<DIDerivedType>(node)->getTag() == dwarf::Tag::DW_TAG_member);
+      Metadata* T = dyn_cast<DIDerivedType>(node)->getBaseType();
+      assert(T && isa<DIType>(T));
+      auto Size = dyn_cast<DIType>(T)->getSizeInBits()/8 != FieldSizes[FieldNum];
+      if (Size == 0){
+        if (dyn_cast<DIType>(T)->getTag() == dwarf::Tag::DW_TAG_structure_type){
+          assert(isa<DICompositeType>(T));
+        }
+      }
+      while (Size && FieldNum < NumElements){
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << FieldNum+1 << " might be a padding because its size is " << FieldSizes[FieldNum] << " Bytes but the actual field is " << dyn_cast<DIType>(T)->getSizeInBits()/8 << " Bytes\n");
+        FieldDI[FieldNum] = NULL;
+        FieldNum++;
+      }
+      assert(FieldNum < NumElements);
+      assert(dyn_cast<DIType>(T)->getSizeInBits()/8 == FieldSizes[FieldNum]);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << *dyn_cast<DIType>(T) << "\n");
+      FieldDI[FieldNum] = new FieldDebugInfo(i, dyn_cast<DIDerivedType>(node)->getName(), dyn_cast<DIType>(T)->getName());
+      FieldNum++;
+    }
+  }
+  else{
+    unsigned Address;
+    unsigned FieldNum = 0;
+    for (unsigned i = 0; i < NumElements; i++){
+      auto* Ty = StructureType->getElementType(i);
+      if (!Ty->isArrayTy()){
+        FieldDI[i] = new FieldDebugInfo(FieldNum++);
+        Address += FieldSizes[i];
+      }
+      else{
+        //ArrayTy is suspicious to be a padding
+        if ((i < NumElements-1 && FieldSizes[i] > FieldSizes[i+1]) ||
+            (i == NumElements-1 && FieldSizes[i] > FieldSizes[i-1]))
+          FieldDI[i] = new FieldDebugInfo(FieldNum++);
+        else if ((i < NumElements-1 && Address % FieldSizes[i+1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i+1] == 0) ||
+                 (i == NumElements-1 && Address % FieldSizes[i-1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i-1] == 0)){
+          // If remove this field, the next/previous field is not aligned and add this field, it is aligned, it's likely to be a padding
+          unsigned MaxWCP = 0;
+          for (unsigned j = 0; j < NumElements; j++){
+            if (i < j){
+              if (WCPT[i][j] > MaxWCP)
+                MaxWCP = WCPT[i][j];
+            }
+            else{
+              if (WCPT[j][i] > MaxWCP)
+                MaxWCP = WCPT[j][i];
+            }
+          }
+          if (MaxWCP != 0)
+            FieldDI[i] = new FieldDebugInfo(FieldNum++);
+          else
+            // This is highly likely to be a padding because there's no WCP with other fields
+            FieldDI[i] = NULL;
+        }
+        Address += FieldSizes[i];
+      }
+    }
+  }
+}
+
+double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(std::vector<FieldNumType>* CacheBlock) const
+{
+  double WCP = 0;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Calculate WCP within a cache block: ");
+  for (unsigned i = 0; i < CacheBlock->size(); i++){
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "F" << (*CacheBlock)[i]+1 << " ");
+    for (unsigned j = i+1; j < CacheBlock->size(); j++)
+      if ((*CacheBlock)[i] < (*CacheBlock)[j])
+        WCP += WCPT[(*CacheBlock)[i]][(*CacheBlock)[j]];
+      else
+        WCP += WCPT[(*CacheBlock)[j]][(*CacheBlock)[i]];
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "produces WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
+  return WCP;
+}
+
+double FieldReorderAnalyzer::getWCP() const
+{
+  unsigned CurrentCacheBlockSize = 0;
+  std::vector<FieldNumType> CurrentCacheBlock;
+  double WCP = 0;
+  for (auto& FieldNum : NewOrder){
+    auto Size = FieldSizes[FieldNum];
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << FieldNum+1 << " size is " << Size << "\n");
+    if (!StructureType->getElementType(FieldNum)->isAggregateType() && CurrentCacheBlockSize % Size){
+      // Alignment needed, need to add padding. Ignore alignment for aggregated type (array and struct)
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Need to add " << (CurrentCacheBlockSize / Size + 1) * Size - CurrentCacheBlockSize << " Bytes of padding\n");
+      CurrentCacheBlockSize = (CurrentCacheBlockSize / Size + 1) * Size;
+      assert(CurrentCacheBlockSize <= CACHEBLOCKSIZE);
+    }
+    if (CurrentCacheBlockSize == CACHEBLOCKSIZE){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Need to put into a new cache block calculate current one\n");
+      WCP += calculateWCPWithinCacheBlock(&CurrentCacheBlock);
+      CurrentCacheBlockSize = 0;
+      CurrentCacheBlock.clear();
+    }
+    else{
+      CurrentCacheBlockSize += Size;
+      CurrentCacheBlock.push_back(FieldNum);
+      if (CurrentCacheBlockSize >= CACHEBLOCKSIZE){
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current cache block cannot fit remaining field\n");
+        WCP += calculateWCPWithinCacheBlock(&CurrentCacheBlock);
+        CurrentCacheBlockSize -= CACHEBLOCKSIZE;
+        CurrentCacheBlock.clear();
+        if (CurrentCacheBlockSize > 0)
+          CurrentCacheBlock.push_back(FieldNum);
+      }
+    }
+  }
+  WCP += calculateWCPWithinCacheBlock(&CurrentCacheBlock);
+  return WCP;
+}
+
+double FieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum)
+{
+  NewOrder.push_back(FieldNum);
+  auto WCP = getWCP();
+  NewOrder.pop_back();
+  return WCP;
+}
+
+double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum)
+{
+  NewOrder.push_front(FieldNum);
+  auto WCP = getWCP();
+  NewOrder.pop_front();
+  return WCP;
+}
+
+void FieldReorderAnalyzer::makeSuggestions()
+{
+  double MaxWCP = 0;
+  while (FieldsToReorder.size()){
+    FieldNumType MaxField = 0;
+    bool InFront = false;
+    MaxWCP = 0;
+    for (auto& F : FieldsToReorder){
+      auto WCP = estimateWCPAtBack(F);
+      if (WCP > MaxWCP){
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Found better ordering by add F" << F+1 << " in the end\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
+        MaxWCP = WCP;
+        MaxField = F;
+        InFront = false;
+      }
+      WCP = estimateWCPAtFront(F);
+      if (WCP > MaxWCP){
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Found better ordering by add F" << F+1 << " in the front\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
+        MaxWCP = WCP;
+        MaxField = F;
+        InFront = true;
+      }
+    }
+    if (InFront)
+      NewOrder.push_front(MaxField);
+    else
+      NewOrder.push_back(MaxField);
+    FieldsToReorder.erase(MaxField);
+  }
+
+  // Print suggestions
+  std::list<FieldNumType> BestOrder(NewOrder);
+  NewOrder.clear();
+  for (unsigned i = 0; i < NumElements; i++){
+    if (FieldDI[i])
+      NewOrder.push_back(i);
+  }
+  auto OldWCP = getWCP();
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "New WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << " vs Old WCP: " << DEBUG_PRINT_COUNT(OldWCP) << "\n");
+  assert(MaxWCP >= OldWCP || std::abs(OldWCP-MaxWCP)/OldWCP < 1e-3);
+  auto Confidence = 100.0 * (MaxWCP - OldWCP) / OldWCP;
+  if (Confidence > 100.0)
+    Confidence = 100.0;
+  if (Confidence < 1.0){
+    outs() << "Suggest to keep the current order: \n";
+    for (auto& FieldNum : NewOrder){
+      assert(FieldDI[FieldNum]);
+      outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
+    }
+    outs() << "\n";
+  }
+  else{
+    outs() << "Suggest to reorder the fields according to: ";
+    for (auto& FieldNum : BestOrder){
+      assert(FieldDI[FieldNum]);
+      outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
+    }
+    outs() << " might improve performance with " << format("%.0f", Confidence) << " % confident\n";
+  }
+}
 
 // Functions for StructFieldAccessManager
 StructFieldAccessManager::~StructFieldAccessManager() {
@@ -1426,6 +1754,25 @@ void StructFieldAccessManager::buildCloseProximityRelations()
       it.second->buildCloseProximityRelations();
     }
   }
+}
+
+void StructFieldAccessManager::suggestFieldReordering() const
+{
+  outs() << "------------- Suggestions ------------------\n";
+  for (auto& it : StructFieldAccessInfoMap){
+    if (it.second->getTotalNumFieldAccess() != 0){
+      auto* type = it.first;
+      assert(isa<StructType>(type));
+      if (dyn_cast<StructType>(type)->isLiteral()){
+        outs() << "Recommendation on an anonymous struct:\n";
+      }
+      else{
+        outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
+      }
+      it.second->suggestFieldReordering();
+    }
+  }
+  outs() << "--------------------------------------------\n";
 }
 
 void StructFieldAccessManager::debugPrintAllStructAccesses() const
@@ -1655,6 +2002,11 @@ static void collapseFieldReferenceGraphAndCreateCloseProximityGraph(StructFieldA
   DEBUG(StructManager->debugPrintAllCPGs());
 }
 
+static void suggestFieldReordering(StructFieldAccessManager* StructManager)
+{
+  StructManager->suggestFieldReordering();
+}
+
 static bool performStructFieldCacheAnalysis(Module &M,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI,
                                             function_ref<BranchProbabilityInfo *(Function &)> LookupBPI,
@@ -1670,6 +2022,8 @@ static bool performStructFieldCacheAnalysis(Module &M,
   //createFieldReferenceGraph(&StructManager); // FIXME: This step can be skipped if Step 3 is finalized
   // Step 3 - collapse Field Reference Graph and create Close Proximity Graph
   collapseFieldReferenceGraphAndCreateCloseProximityGraph(&StructManager);
+  // Step 4 - give recommendations of reordering based on CPG
+  suggestFieldReordering(&StructManager);
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }
