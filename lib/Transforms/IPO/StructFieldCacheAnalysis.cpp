@@ -30,6 +30,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
 
+#include <cmath>
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
