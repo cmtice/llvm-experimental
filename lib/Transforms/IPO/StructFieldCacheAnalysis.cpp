@@ -45,11 +45,14 @@ using namespace llvm;
 #define DEBUG_TYPE_IR "struct-analysis-IR"
 #define DEBUG_TYPE_FRG "struct-analysis-FRG"
 #define DEBUG_TYPE_CPG "struct-analysis-CPG"
-#define DEBUG_TYPE_CPG_BF "struct-analysis-CPG-brutal-force"
 //#define DEBUG_TYPE_CPG "struct-analysis"
 
 #define DEBUG_PRINT_COUNT(x) (format("%.2f", (x)))
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
+
+static cl::opt<bool> PerformCPGCheck(
+    "struct-field-cache-analysis-check-CPG", cl::init(false), cl::Hidden,
+    cl::desc("Perform CPG checking algorithm that takes a long time"));
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
@@ -291,17 +294,23 @@ class StructFieldAccessInfo
  public:
   StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {
     CloseProximityTable.resize(NumElements);
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT.resize(NumElements));
     for (unsigned i = 0; i < NumElements; i++){
       CloseProximityTable[i].resize(NumElements);
-      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i].resize(NumElements));
       for (unsigned j = 0; j < NumElements; j++){
         CloseProximityTable[i][j] = std::make_pair(0, 0);
-        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i][j] = std::make_pair(0, 0));
       }
     }
-    outs() << "Struct Elements: " << NumElements << "\n";
-    outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
+    if (PerformCPGCheck){
+      GoldCPT.resize(NumElements);
+      for (unsigned i = 0; i < NumElements; i++){
+        GoldCPT[i].resize(NumElements);
+        for (unsigned j = 0; j < NumElements; j++){
+          GoldCPT[i][j] = std::make_pair(0, 0);
+        }
+      }
+    }
+    //outs() << "Struct Elements: " << NumElements << "\n";
+    //outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
   }
 
   ~StructFieldAccessInfo() {
@@ -571,6 +580,8 @@ void FieldReferenceGraph::collapseNodeToEdge(FieldReferenceGraph::Node* N, Field
 {
   assert(E->Collapsed == false);
   E->Collapsed = true;
+  if (N->FieldNum == 0)
+    return;
   auto* Entry = new FieldReferenceGraph::Entry(EntryList.size(), N->FieldNum, E->ExecutionCount, E->DataSize);
   E->CollapsedEntries.insert(Entry);
   EntryList.push_back(Entry);
@@ -1022,10 +1033,8 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
   bool Ret = false;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Collapse successor Edge (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ")\n");
   assert(!std::isnan(Arc->ExecutionCount));
-  if (Arc->ToNode->FieldNum != 0){
-    updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
-    FRG->collapseNodeToEdge(Arc->ToNode, Arc);
-  }
+  updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
+  FRG->collapseNodeToEdge(Arc->ToNode, Arc);
   auto Edges = Arc->ToNode->OutEdges;
   assert(Arc->ToNode->InSum > 0);
   auto Ratio = Arc->ExecutionCount/Arc->ToNode->InSum;
@@ -1199,13 +1208,14 @@ void StructFieldAccessInfo::buildCloseProximityRelations()
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F->getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(F);
     assert(FRG);
+    // Brutal force get CP relations
+    if (PerformCPGCheck)
+      createGoldCloseProximityRelations(FRG);
     // Collpase FRG and get CPG
     collapseFieldReferenceGraph(FRG);
-    // Brutal force get CP relations
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, FRG = buildFieldReferenceGraph(F));
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, createGoldCloseProximityRelations(FRG));
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, compareCloseProximityRelations());
+  if (PerformCPGCheck)
+    compareCloseProximityRelations();
 }
 
 void StructFieldAccessInfo::debugPrintFieldReferenceGraph(raw_ostream& OS) const
@@ -1484,7 +1494,9 @@ void StructFieldAccessManager::debugPrintAllCPGs() const
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintCloseProximityGraph(dbgs());
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, it.second->debugPrintGoldCPT(dbgs()));
+    if (PerformCPGCheck){
+      it.second->debugPrintGoldCPT(dbgs());
+    }
     dbgs().resetColor();
   }
   dbgs() << "----------------------------------------------------------- \n";
