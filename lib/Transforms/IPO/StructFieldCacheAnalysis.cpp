@@ -435,8 +435,9 @@ class StructFieldAccessInfo
 
 };
 
-class FieldReorderAnalyzer
+class StructTransformAnalyzer
 {
+ public:
   struct FieldDebugInfo
   {
     FieldDebugInfo(FieldNumType F): FieldName(""), FieldType(""), FieldNum(F) {}
@@ -445,31 +446,42 @@ class FieldReorderAnalyzer
     StringRef FieldType;
     FieldNumType FieldNum;
   };
-
- public:
-  FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG);
-  ~FieldReorderAnalyzer(){
+  StructTransformAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG);
+  ~StructTransformAnalyzer() {
     for (auto* FDI : FieldDI){
       delete FDI;
     }
     FieldDI.clear();
   }
-  void makeSuggestions();
- private:
+  virtual void makeSuggestions() = 0;
+ protected:
   const StructType* StructureType;
   FieldNumType NumElements;
   const DICompositeType* DebugInfo;
-  std::vector< std::vector<double> > WCPT;
-  std::list<FieldNumType> NewOrder;
-  std::unordered_set<FieldNumType> FieldsToReorder;
   std::vector<unsigned> FieldSizes;
   std::vector<FieldDebugInfo*> FieldDI;
-  bool Ineligible; // True if the struct either has too few fields, or has zero count between all pairs
+  std::vector< std::vector<double> > CloseProximityRelations;
+  bool Eligibility; // If the struct is eligible for this kind of transformation
 
-  // Decide if two fields can fit within one cache block
-  bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
   // Map fields to the debug info, useful to give recommendation and filter out padding
   void mapFieldsToDefinition();
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2, ExecutionCountType C, DataBytesType D) = 0;
+};
+
+class FieldReorderAnalyzer : public StructTransformAnalyzer
+{
+ public:
+  FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG);
+  ~FieldReorderAnalyzer() {}
+
+  virtual void makeSuggestions();
+ private:
+  std::list<FieldNumType> NewOrder;
+  std::unordered_set<FieldNumType> FieldsToReorder;
+
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2, ExecutionCountType C, DataBytesType D);
+  // Decide if two fields can fit within one cache block
+  bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
   // Calculate WCP for every pair of fields that can fit within a cache block
   double calculateWCPWithinCacheBlock(std::vector<FieldNumType>* CacheBlock) const;
   // Calculate WCP for a sequence of fields
@@ -1319,83 +1331,19 @@ void StructFieldAccessInfo::debugPrintGoldCPT(raw_ostream& OS) const
   }
 }
 
-// Functions for FieldReorderAnalyzer
-FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructureType(S), NumElements(S->getNumElements()), DebugInfo(DI), Ineligible(false)
+// Functions for StructTransformAnalyzer
+StructTransformAnalyzer::StructTransformAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructureType(S), NumElements(S->getNumElements()), DebugInfo(DI), Eligibility(true)
 {
   if (NumElements <= 2){
-    Ineligible = true;
-    return;
+    Eligibility = false;
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing FieldReorderAnalyzer of size: " << NumElements << "\n");
-  WCPT.resize(NumElements);
-  FieldsToReorder.clear();
   FieldSizes.resize(NumElements);
-  double MaxWCP = 0;
-  FieldNumType MaxI, MaxJ;
   for (unsigned i = 0; i < NumElements; i++){
-    WCPT[i].resize(NumElements);
     FieldSizes[i] = CM.getDataLayout().getTypeSizeInBits(StructureType->getElementType(i)) / 8;
-    FieldsToReorder.insert(i);
-    for (unsigned j = i+1; j < NumElements; j++){
-      if (!canFitInOneCacheBlock(i, j)){
-        WCPT[i][j] = 0;
-        continue;
-      }
-      if (CPG[i][j].first < 1e-3){
-        WCPT[i][j] = 0;
-        continue;
-      }
-      else if (CPG[i][j].second < 1){
-        // Distance == 0
-        WCPT[i][j] = CPG[i][j].first;
-      }
-      else{
-        WCPT[i][j] = CPG[i][j].first / CPG[i][j].second;
-      }
-      if (WCPT[i][j] > MaxWCP){
-        MaxWCP = WCPT[i][j];
-        MaxI = i;
-        MaxJ = j;
-      }
-    }
   }
-  if (MaxWCP < 1e-3){
-    Ineligible = true;
-    return;
-  }
-  DEBUG(dbgs() << "CPG for field reordering recommendation\n");
-  for (unsigned i = 0; i < CPG.size(); i++){
-    DEBUG(dbgs() << "F" << i+1 << "\t");
-    for (unsigned j = 0; j < CPG.size(); j++)
-      DEBUG(dbgs() << DEBUG_PRINT_COUNT(WCPT[i][j]) << "\t");
-    DEBUG(dbgs() << "\n");
-  }
-  // FIXME: Need to reconsider if the order of the pair makes differences
-  NewOrder.push_back(MaxI);
-  NewOrder.push_back(MaxJ);
-  FieldsToReorder.erase(MaxI);
-  FieldsToReorder.erase(MaxJ);
-  mapFieldsToDefinition();
-  for (unsigned i = 0; i < NumElements; i++){
-    if (FieldDI[i] == NULL){
-      //DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << i+1 << " is actually a padding, ignore in reordering...\n");
-      outs() << "Field " << i+1 << " is actually a padding, ignore in reordering...\n";
-      FieldsToReorder.erase(i);
-    }
-  }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxI+1 << " and F" << MaxJ+1 << " as seeds in reordering\n");
-  assert(MaxWCP == getWCP());
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << "\n");
 }
 
-bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const
-{
-  if (FieldSizes[Field1] % CACHEBLOCKSIZE == 0)
-    return false;
-  return true;
-}
-
-void FieldReorderAnalyzer::mapFieldsToDefinition()
+void StructTransformAnalyzer::mapFieldsToDefinition()
 {
   FieldDI.resize(NumElements);
   if (DebugInfo){
@@ -1443,14 +1391,8 @@ void FieldReorderAnalyzer::mapFieldsToDefinition()
           // If remove this field, the next/previous field is not aligned and add this field, it is aligned, it's likely to be a padding
           unsigned MaxWCP = 0;
           for (unsigned j = 0; j < NumElements; j++){
-            if (i < j){
-              if (WCPT[i][j] > MaxWCP)
-                MaxWCP = WCPT[i][j];
-            }
-            else{
-              if (WCPT[j][i] > MaxWCP)
-                MaxWCP = WCPT[j][i];
-            }
+            if (CloseProximityRelations[i][j] > MaxWCP)
+              MaxWCP = CloseProximityRelations[i][j];
           }
           if (MaxWCP != 0)
             FieldDI[i] = new FieldDebugInfo(FieldNum++);
@@ -1464,6 +1406,79 @@ void FieldReorderAnalyzer::mapFieldsToDefinition()
   }
 }
 
+// Functions for FieldReorderAnalyzer
+FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructTransformAnalyzer(CM, S, DI, CPG)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing FieldReorderAnalyzer of size: " << NumElements << "\n");
+  CloseProximityRelations.resize(NumElements);
+  FieldsToReorder.clear();
+  double MaxWCP = 0;
+  FieldNumType MaxI, MaxJ;
+  for (unsigned i = 0; i < NumElements; i++){
+    FieldsToReorder.insert(i);
+    CloseProximityRelations[i].resize(NumElements);
+    for (unsigned j = 0; j < NumElements; j++){
+      if (i < j)
+        CloseProximityRelations[i][j] = calculateCloseProximity(i, j, CPG[i][j].first, CPG[i][j].second);
+      else
+        CloseProximityRelations[i][j] = calculateCloseProximity(i, j, CPG[j][i].first, CPG[j][i].second);
+      if (i < j && CloseProximityRelations[i][j] > MaxWCP){
+        MaxWCP = CloseProximityRelations[i][j];
+        MaxI = i;
+        MaxJ = j;
+      }
+    }
+  }
+  if (MaxWCP < 1e-3){
+    Eligibility = false;
+    return;
+  }
+  DEBUG(dbgs() << "CPG for field reordering recommendation\n");
+  for (unsigned i = 0; i < CPG.size(); i++){
+    DEBUG(dbgs() << "F" << i+1 << "\t");
+    for (unsigned j = 0; j < CPG.size(); j++)
+      DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
+    DEBUG(dbgs() << "\n");
+  }
+
+  mapFieldsToDefinition();
+  // FIXME: Need to reconsider if the order of the pair makes differences
+  NewOrder.push_back(MaxI);
+  NewOrder.push_back(MaxJ);
+  FieldsToReorder.erase(MaxI);
+  FieldsToReorder.erase(MaxJ);
+
+  for (unsigned i = 0; i < NumElements; i++){
+    if (FieldDI[i] == NULL){
+      outs() << "Field " << i+1 << " is actually a padding, ignore in reordering...\n";
+      FieldsToReorder.erase(i);
+    }
+  }
+
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxI+1 << " and F" << MaxJ+1 << " as seeds in reordering\n");
+  assert(MaxWCP == getWCP());
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << "\n");
+}
+
+double FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNumType Field2, ExecutionCountType C, DataBytesType D){
+  if (Field1 == Field2)
+    return 0;
+  if (!canFitInOneCacheBlock(Field1, Field2))
+    return 0;
+  if (C < 1e-3)
+    return 0;
+  if (D < 1)
+    return C;
+  return C / D;
+}
+
+bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const
+{
+  if (FieldSizes[Field1] % CACHEBLOCKSIZE == 0)
+    return false;
+  return true;
+}
+
 double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(std::vector<FieldNumType>* CacheBlock) const
 {
   double WCP = 0;
@@ -1472,9 +1487,9 @@ double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(std::vector<FieldNumTy
     DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "F" << (*CacheBlock)[i]+1 << " ");
     for (unsigned j = i+1; j < CacheBlock->size(); j++)
       if ((*CacheBlock)[i] < (*CacheBlock)[j])
-        WCP += WCPT[(*CacheBlock)[i]][(*CacheBlock)[j]];
+        WCP += CloseProximityRelations[(*CacheBlock)[i]][(*CacheBlock)[j]];
       else
-        WCP += WCPT[(*CacheBlock)[j]][(*CacheBlock)[i]];
+        WCP += CloseProximityRelations[(*CacheBlock)[j]][(*CacheBlock)[i]];
   }
   DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "produces WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
   return WCP;
@@ -1535,7 +1550,7 @@ double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum)
 
 void FieldReorderAnalyzer::makeSuggestions()
 {
-  if (Ineligible){
+  if (!Eligibility){
     outs() << "Struct has too few fields or cold in profiling for reordering\n";
     return;
   }
