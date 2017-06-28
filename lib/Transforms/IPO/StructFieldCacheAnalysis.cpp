@@ -30,6 +30,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
 
+#include <cmath>
 #include <list>
 #include <queue>
 #include <unordered_set>
@@ -45,14 +46,16 @@ using namespace llvm;
 #define DEBUG_TYPE_IR "struct-analysis-IR"
 #define DEBUG_TYPE_FRG "struct-analysis-FRG"
 #define DEBUG_TYPE_CPG "struct-analysis-CPG"
-#define DEBUG_TYPE_CPG_BF "struct-analysis-CPG-brutal-force"
 #define DEBUG_TYPE_REORDER "struct-analysis-reorder"
-//#define DEBUG_TYPE_REORDER "struct-analysis"
 
 #define DEBUG_PRINT_COUNT(x) (format("%.2f", (x)))
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
 
 #define CACHEBLOCKSIZE 64
+
+static cl::opt<bool> PerformCPGCheck(
+    "struct-field-cache-analysis-check-CPG", cl::init(false), cl::Hidden,
+    cl::desc("Perform CPG checking algorithm that takes a long time"));
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
@@ -297,17 +300,23 @@ class StructFieldAccessInfo
  public:
   StructFieldAccessInfo(const Type* T, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D): CurrentModule(MD), StructureType(dyn_cast<StructType>(T)), DebugInfo(D), NumElements(StructureType->getNumElements()), StructManager(M), StatCounts(StructFieldAccessManager::Stats::max_stats) {
     CloseProximityTable.resize(NumElements);
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT.resize(NumElements));
     for (unsigned i = 0; i < NumElements; i++){
       CloseProximityTable[i].resize(NumElements);
-      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i].resize(NumElements));
       for (unsigned j = 0; j < NumElements; j++){
         CloseProximityTable[i][j] = std::make_pair(0, 0);
-        DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, GoldCPT[i][j] = std::make_pair(0, 0));
       }
     }
-    outs() << "Struct Elements: " << NumElements << "\n";
-    outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
+    if (PerformCPGCheck){
+      GoldCPT.resize(NumElements);
+      for (unsigned i = 0; i < NumElements; i++){
+        GoldCPT[i].resize(NumElements);
+        for (unsigned j = 0; j < NumElements; j++){
+          GoldCPT[i][j] = std::make_pair(0, 0);
+        }
+      }
+    }
+    //outs() << "Struct Elements: " << NumElements << "\n";
+    //outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
   }
 
   ~StructFieldAccessInfo() {
@@ -455,6 +464,7 @@ class FieldReorderAnalyzer
   std::unordered_set<FieldNumType> FieldsToReorder;
   std::vector<unsigned> FieldSizes;
   std::vector<FieldDebugInfo*> FieldDI;
+  bool Ineligible; // True if the struct either has too few fields, or has zero count between all pairs
 
   // Decide if two fields can fit within one cache block
   bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
@@ -624,6 +634,8 @@ void FieldReferenceGraph::collapseNodeToEdge(FieldReferenceGraph::Node* N, Field
 {
   assert(E->Collapsed == false);
   E->Collapsed = true;
+  if (N->FieldNum == 0)
+    return;
   auto* Entry = new FieldReferenceGraph::Entry(EntryList.size(), N->FieldNum, E->ExecutionCount, E->DataSize);
   E->CollapsedEntries.insert(Entry);
   EntryList.push_back(Entry);
@@ -968,7 +980,7 @@ void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
   if (Src == 0 || Dest == 0 || C < 1e-3 || Src == Dest)
     // Give up update if from or to a dummy node, or if the count is zero
     return;
-  assert(!isnan(C));
+  assert(!std::isnan(C));
   if (Src != 0 && Dest != 0){
     if (Src > Dest){
       std::swap(Src, Dest);
@@ -985,7 +997,7 @@ void StructFieldAccessInfo::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
             C * D ) / ( CloseProximityTable[Src-1][Dest-1].first + C ) )
                                                       );
     */
-    if (isnan(CloseProximityTable[Src-1][Dest-1].first) || isnan(CloseProximityTable[Src-1][Dest-1].second)){
+    if (std::isnan(CloseProximityTable[Src-1][Dest-1].first) || std::isnan(CloseProximityTable[Src-1][Dest-1].second)){
       errs() << "Update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << "\n";
     }
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[Src-1][Dest-1].second) << ")\n");
@@ -1021,7 +1033,7 @@ void StructFieldAccessInfo::updateCPGBetweenNodes(FieldReferenceGraph::Node* Fro
   if (To == NULL || To == From || CheckList->find(To) != CheckList->end())
     return;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to " << To->Id << " with " << DEBUG_PRINT_COUNT(C) << " and " << DEBUG_PRINT_DIST(D) << "\n");
-  assert(!isnan(C));
+  assert(!std::isnan(C));
   updateCPG(From->FieldNum, To->FieldNum, C, D);
   CheckList->insert(To);
   for (auto* E : To->OutEdges){
@@ -1035,7 +1047,7 @@ void StructFieldAccessInfo::updateCPGBetweenNodes(FieldReferenceGraph::Node* Fro
         // FIXME: this doesn't feel right
         assert(To->InSum > 0);
         updatePairByConnecting(ExCnt, Dist, Entry->ExecutionCount, Arc->ExecutionCount/To->InSum, Dist, To->Size + Entry->DataSize);
-        assert(!isnan(ExCnt));
+        assert(!std::isnan(ExCnt));
         updateCPG(From->FieldNum, Entry->FieldNum, ExCnt, Dist);
       }
     }
@@ -1074,14 +1086,11 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
   */
   bool Ret = false;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Collapse successor Edge (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ")\n");
-  assert(!isnan(Arc->ExecutionCount));
-  if (Arc->ToNode->FieldNum != 0){
-    updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
-    FRG->collapseNodeToEdge(Arc->ToNode, Arc);
-  }
+  assert(!std::isnan(Arc->ExecutionCount));
+  updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount, Arc->DataSize);
+  FRG->collapseNodeToEdge(Arc->ToNode, Arc);
   auto Edges = Arc->ToNode->OutEdges;
-  assert(Arc->ToNode->InSum > 0);
-  auto Ratio = Arc->ExecutionCount/Arc->ToNode->InSum;
+  auto Ratio = (Arc->ToNode->InSum == 0) ? 0 : Arc->ExecutionCount/Arc->ToNode->InSum;
   for (auto *E : Edges){
     assert(E->FromNode == Arc->ToNode);
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check edge: ("  << E->FromNode->Id << "," << E->ToNode->Id << ")\n");
@@ -1090,7 +1099,7 @@ bool StructFieldAccessInfo::collapseSuccessor(FieldReferenceGraph* FRG, FieldRef
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Move collapsed entry " << Entry->Id << " from edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ") to (" << Arc->FromNode->Id << "," << Arc->ToNode->Id << ") with a ratio of " << DEBUG_PRINT_DIST(Ratio) << "\n");
         Entry->ExecutionCount = std::min(Entry->ExecutionCount*Ratio, Arc->ExecutionCount);
         Entry->DataSize += Arc->DataSize + Arc->ToNode->Size;
-        assert(!isnan(Entry->ExecutionCount));
+        assert(!std::isnan(Entry->ExecutionCount));
         updateCPG(Arc->FromNode->FieldNum, Entry->FieldNum, Entry->ExecutionCount, Entry->DataSize);
         FRG->moveCollapsedEntryToEdge(Entry, E, Arc);
       }
@@ -1252,13 +1261,14 @@ void StructFieldAccessInfo::buildCloseProximityRelations()
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F->getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(F);
     assert(FRG);
+    // Brutal force get CP relations
+    if (PerformCPGCheck)
+      createGoldCloseProximityRelations(FRG);
     // Collpase FRG and get CPG
     collapseFieldReferenceGraph(FRG);
-    // Brutal force get CP relations
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, FRG = buildFieldReferenceGraph(F));
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, createGoldCloseProximityRelations(FRG));
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, compareCloseProximityRelations());
+  if (PerformCPGCheck)
+    compareCloseProximityRelations();
 }
 
 void StructFieldAccessInfo::suggestFieldReordering() const
@@ -1310,8 +1320,12 @@ void StructFieldAccessInfo::debugPrintGoldCPT(raw_ostream& OS) const
 }
 
 // Functions for FieldReorderAnalyzer
-FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructureType(S), NumElements(S->getNumElements()), DebugInfo(DI)
+FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructureType(S), NumElements(S->getNumElements()), DebugInfo(DI), Ineligible(false)
 {
+  if (NumElements <= 2){
+    Ineligible = true;
+    return;
+  }
   DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing FieldReorderAnalyzer of size: " << NumElements << "\n");
   WCPT.resize(NumElements);
   FieldsToReorder.clear();
@@ -1345,12 +1359,16 @@ FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S
       }
     }
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "CPG for field reordering recommendation\n");
+  if (MaxWCP < 1e-3){
+    Ineligible = true;
+    return;
+  }
+  DEBUG(dbgs() << "CPG for field reordering recommendation\n");
   for (unsigned i = 0; i < CPG.size(); i++){
-    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "F" << i+1 << "\t");
+    DEBUG(dbgs() << "F" << i+1 << "\t");
     for (unsigned j = 0; j < CPG.size(); j++)
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << DEBUG_PRINT_COUNT(WCPT[i][j]) << "\t");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "\n");
+      DEBUG(dbgs() << DEBUG_PRINT_COUNT(WCPT[i][j]) << "\t");
+    DEBUG(dbgs() << "\n");
   }
   // FIXME: Need to reconsider if the order of the pair makes differences
   NewOrder.push_back(MaxI);
@@ -1517,9 +1535,14 @@ double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum)
 
 void FieldReorderAnalyzer::makeSuggestions()
 {
-  double MaxWCP = 0;
+  if (Ineligible){
+    outs() << "Struct has too few fields or cold in profiling for reordering\n";
+    return;
+  }
+
+  double MaxWCP = getWCP();
   while (FieldsToReorder.size()){
-    FieldNumType MaxField = 0;
+    FieldNumType MaxField;
     bool InFront = false;
     MaxWCP = 0;
     for (auto& F : FieldsToReorder){
@@ -1830,7 +1853,9 @@ void StructFieldAccessManager::debugPrintAllCPGs() const
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintCloseProximityGraph(dbgs());
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG_BF, it.second->debugPrintGoldCPT(dbgs()));
+    if (PerformCPGCheck){
+      it.second->debugPrintGoldCPT(dbgs());
+    }
     dbgs().resetColor();
   }
   dbgs() << "----------------------------------------------------------- \n";
