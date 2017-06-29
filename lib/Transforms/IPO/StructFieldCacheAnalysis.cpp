@@ -47,6 +47,7 @@ using namespace llvm;
 #define DEBUG_TYPE_FRG "struct-analysis-FRG"
 #define DEBUG_TYPE_CPG "struct-analysis-CPG"
 #define DEBUG_TYPE_REORDER "struct-analysis-reorder"
+#define DEBUG_TYPE_SPLIT "struct-analysis-split"
 
 #define DEBUG_PRINT_COUNT(x) (format("%.2f", (x)))
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
@@ -56,6 +57,23 @@ using namespace llvm;
 static cl::opt<bool> PerformCPGCheck(
     "struct-field-cache-analysis-check-CPG", cl::init(false), cl::Hidden,
     cl::desc("Perform CPG checking algorithm that takes a long time"));
+
+// Parameter tuning for struct split
+static cl::opt<int> StructSplitColdRatio(
+    "struct-field-cache-analysis-split-cold-ratio", cl::init(4), cl::Hidden,
+    cl::desc("Set COLD_RATIO in struct split algorithm"));
+
+static cl::opt<int> StructSplitDistanceThreshold(
+    "struct-field-cache-analysis-split-distance-threshold", cl::init(8), cl::Hidden,
+    cl::desc("Set DISTANCE_THRESHOLD in struct split algorithm"));
+
+static cl::opt<int> StructSplitMaxSize(
+    "struct-field-cache-analysis-split-max-size", cl::init(32), cl::Hidden,
+    cl::desc("Set MAX_SIZE in struct split algorithm"));
+
+static cl::opt<int> StructSplitSizePenalty(
+    "struct-field-cache-analysis-split-size-penalty", cl::init(2), cl::Hidden,
+    cl::desc("Set SIZE_PENALTY in struct split algorithm"));
 
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
@@ -87,6 +105,7 @@ typedef double ExecutionCountType;
 //typedef unsigned DataBytesType;
 typedef double DataBytesType;
 typedef unsigned FieldNumType;
+typedef std::pair<FieldNumType, FieldNumType> FieldPairType;
 
 class FieldReferenceGraph
 {
@@ -239,7 +258,7 @@ class StructFieldAccessManager
 
   // Functions for making suggestions
   void suggestFieldReordering() const;
-
+  void suggestStructSplitting() const;
   // Functions for debugging
   // Print all accesses of all struct types defined in the program
   void debugPrintAllStructAccesses() const;
@@ -352,6 +371,7 @@ class StructFieldAccessInfo
   void buildCloseProximityRelations();
   // Functions for making suggestions
   void suggestFieldReordering() const;
+  void suggestStructSplitting() const;
 
   // Print all instructions that access any struct field
   void debugPrintAllStructAccesses(raw_ostream& OS) const;
@@ -490,6 +510,30 @@ class FieldReorderAnalyzer : public StructTransformAnalyzer
   double estimateWCPAtBack(FieldNumType FieldNum);
   // Calculate WCP for a sequence of fields adding a field to the front
   double estimateWCPAtFront(FieldNumType FieldNum);
+};
+
+class StructSplitAnalyzer : public StructTransformAnalyzer
+{
+ public:
+  StructSplitAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG);
+  ~StructSplitAnalyzer() {
+    for (auto* R : SubRecords)
+      delete R;
+    SubRecords.clear();
+  }
+
+  virtual void makeSuggestions();
+ private:
+  typedef std::vector<FieldNumType> SubRecordType;
+
+  struct Parameters{
+    unsigned ColdRatio, DistanceThreshold, MaxSize, SizePenalty;
+  };
+  Parameters Params;
+  std::vector<SubRecordType*> SubRecords;
+  std::unordered_set<FieldNumType> FieldsToRegroup;
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2, ExecutionCountType C, DataBytesType D);
+  FieldPairType findMaxRemainCP() const;
 };
 
 class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter {
@@ -1289,6 +1333,12 @@ void StructFieldAccessInfo::suggestFieldReordering() const
   FRA.makeSuggestions();
 }
 
+void StructFieldAccessInfo::suggestStructSplitting() const
+{
+  StructSplitAnalyzer SSA(CurrentModule, StructureType, DebugInfo, CloseProximityTable);
+  SSA.makeSuggestions();
+}
+
 void StructFieldAccessInfo::debugPrintFieldReferenceGraph(raw_ostream& OS) const
 {
   for (auto *FRG : FRGArray){
@@ -1434,9 +1484,9 @@ FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S
     return;
   }
   DEBUG(dbgs() << "CPG for field reordering recommendation\n");
-  for (unsigned i = 0; i < CPG.size(); i++){
+  for (unsigned i = 0; i < NumElements; i++){
     DEBUG(dbgs() << "F" << i+1 << "\t");
-    for (unsigned j = 0; j < CPG.size(); j++)
+    for (unsigned j = 0; j < NumElements; j++)
       DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
     DEBUG(dbgs() << "\n");
   }
@@ -1613,6 +1663,156 @@ void FieldReorderAnalyzer::makeSuggestions()
       outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
     }
     outs() << " might improve performance with " << format("%.0f", Confidence) << " % confident\n";
+  }
+}
+
+// Functions for StructSplitAnalyzer
+StructSplitAnalyzer::StructSplitAnalyzer(const Module& CM, const StructType* S, const DICompositeType* DI, const std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > >& CPG) : StructTransformAnalyzer(CM, S, DI, CPG), Params({StructSplitColdRatio, StructSplitDistanceThreshold, StructSplitMaxSize, StructSplitSizePenalty})
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Initializing StructSplitAnalyzer of size: " << NumElements << "\n");
+  CloseProximityRelations.resize(NumElements);
+  for (unsigned i = 0; i < NumElements; i++){
+    CloseProximityRelations[i].resize(NumElements);
+    FieldsToRegroup.insert(i);
+    for (unsigned j = 0; j < NumElements; j++){
+      if (i < j)
+        CloseProximityRelations[i][j] = calculateCloseProximity(i, j, CPG[i][j].first, CPG[i][j].second);
+      else
+        CloseProximityRelations[i][j] = calculateCloseProximity(i, j, CPG[j][i].first, CPG[j][i].second);
+    }
+  }
+  DEBUG(dbgs() << "Parameters used in struct spliting: \n");
+  DEBUG(dbgs() << "COLD_RATIO: " << Params.ColdRatio << "\n");
+  DEBUG(dbgs() << "DISTANCE_THRESHOLD: " << Params.DistanceThreshold << "\n");
+  DEBUG(dbgs() << "MAX_SIZE: " << Params.MaxSize << "\n");
+  DEBUG(dbgs() << "SIZE_PENALTY: " << Params.SizePenalty << "\n");
+  DEBUG(dbgs() << "CPG for struct split recommendation\n");
+  for (unsigned i = 0; i < NumElements; i++){
+    DEBUG(dbgs() << "F" << i+1 << "\t");
+    for (unsigned j = 0; j < NumElements; j++)
+      DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
+    DEBUG(dbgs() << "\n");
+  }
+  mapFieldsToDefinition();
+  for (unsigned i = 0; i < NumElements; i++){
+    if (FieldDI[i] == NULL)
+      FieldsToRegroup.erase(i);
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Finish constructor\n");
+}
+
+double StructSplitAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNumType Field2, ExecutionCountType C, DataBytesType D)
+{
+  if (D > Params.DistanceThreshold)
+    return 0;
+  if (FieldSizes[Field1] + FieldSizes[Field2] > Params.MaxSize)
+    return 0;
+  auto Ratio = 0;
+  if (FieldSizes[Field1] > FieldSizes[Field2])
+    Ratio = FieldSizes[Field1] / FieldSizes[Field2];
+  else
+    Ratio = FieldSizes[Field2] / FieldSizes[Field1];
+  Ratio *= Params.SizePenalty;
+  return C / Ratio;
+}
+
+FieldPairType StructSplitAnalyzer::findMaxRemainCP() const
+{
+  double MaxCP = 0;
+  auto it = FieldsToRegroup.begin();
+  auto Field1 = *(it++);
+  assert(it != FieldsToRegroup.end());
+  auto Field2 = *it;
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Try to find a pair with maxmium CP\n");
+  for (auto& F1 : FieldsToRegroup)
+    for (auto& F2 : FieldsToRegroup)
+      if (F1 != F2){
+        if (CloseProximityRelations[F1][F2] > MaxCP){
+          MaxCP = CloseProximityRelations[F1][F2];
+          Field1 = F1;
+          Field2 = F2;
+        }
+      }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "The pair with largest CP is: (F" << Field1+1 << ", F" << Field2+1 << ")\n");
+  return std::make_pair(Field1, Field2);
+}
+
+void StructSplitAnalyzer::makeSuggestions()
+{
+  if (!Eligibility){
+    outs() << "Struct has too few fields or cold in profiling for splitting\n";
+    return;
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Making suggestions for struct splitting\n");
+  while (FieldsToRegroup.size()){
+    auto* NewRecord = new SubRecordType;
+    SubRecords.push_back(NewRecord);
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Create a new empty record\n");
+    if (FieldsToRegroup.size() == 1){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Only have one remaining field...\n");
+      NewRecord->push_back(*FieldsToRegroup.begin());
+      FieldsToRegroup.clear();
+      break;
+    }
+    auto BestPair = findMaxRemainCP();
+    double Threshold = CloseProximityRelations[BestPair.first][BestPair.second] / Params.ColdRatio;
+    if (Threshold == 0){
+      // All the remaining fields are cold with others, create record for each for them
+      NewRecord->push_back(BestPair.first);
+      FieldsToRegroup.erase(BestPair.first);
+      for (auto& F : FieldsToRegroup){
+        NewRecord = new SubRecordType;
+        SubRecords.push_back(NewRecord);
+        NewRecord->push_back(F);
+      }
+      FieldsToRegroup.clear();
+      break;
+    }
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "CP value is: " << DEBUG_PRINT_COUNT(CloseProximityRelations[BestPair.first][BestPair.second]) << " and threshold is: " << DEBUG_PRINT_COUNT(Threshold) << "\n");
+    // Add the pair into the new sub record and remove from remaining fields
+    NewRecord->push_back(BestPair.first);
+    NewRecord->push_back(BestPair.second);
+    auto NewRecordSize = FieldSizes[BestPair.first] + FieldSizes[BestPair.second];
+    FieldsToRegroup.erase(BestPair.first);
+    FieldsToRegroup.erase(BestPair.second);
+    // If the pair is enough to take the MAX_SIZE, no need to add more fields to the subrecord
+    if (NewRecordSize >= Params.MaxSize)
+      continue;
+    while (FieldsToRegroup.size()){
+      double MaxSum = 0;
+      FieldNumType MaxF = 0;
+      for (auto& Field : FieldsToRegroup){
+        // If the field is too large to fit in the new sub record, give up on this one
+        if (FieldSizes[Field] + NewRecordSize > Params.MaxSize)
+          continue;
+        auto Sum = 0;
+        for (auto& Fi : *NewRecord){
+          Sum += CloseProximityRelations[Field][Fi];
+        }
+        if (Sum > MaxSum){
+          MaxSum = Sum;
+          MaxF = Field;
+        }
+      }
+      // Take average
+      MaxSum /= NewRecord->size();
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "F" << MaxF+1 << " has the best CP relations with new record: " << DEBUG_PRINT_COUNT(MaxSum) << "\n");
+      if (MaxSum < Threshold)
+        // None of the remaining fields is suitable to put into this sub record
+        break;
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "F" << MaxF+1 << " is added to the new record\n");
+      NewRecord->push_back(MaxF);
+      NewRecordSize += FieldSizes[MaxF];
+      FieldsToRegroup.erase(MaxF);
+    }
+  }
+  assert(FieldsToRegroup.size() == 0);
+  for (unsigned i = 0; i < SubRecords.size(); i++){
+    outs() << "Group #" << i+1 << ":{ ";
+    for (auto& F : *SubRecords[i]){
+      outs() << "F" << F+1 << " ";
+    }
+    outs() << "}\n";
   }
 }
 
@@ -1808,6 +2008,25 @@ void StructFieldAccessManager::suggestFieldReordering() const
         outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
       }
       it.second->suggestFieldReordering();
+    }
+  }
+  outs() << "--------------------------------------------\n";
+}
+
+void StructFieldAccessManager::suggestStructSplitting() const
+{
+  outs() << "------------- Suggestions ------------------\n";
+  for (auto& it : StructFieldAccessInfoMap){
+    if (it.second->getTotalNumFieldAccess() != 0){
+      auto* type = it.first;
+      assert(isa<StructType>(type));
+      if (dyn_cast<StructType>(type)->isLiteral()){
+        outs() << "Recommendation on an anonymous struct:\n";
+      }
+      else{
+        outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
+      }
+      it.second->suggestStructSplitting();
     }
   }
   outs() << "--------------------------------------------\n";
@@ -2042,9 +2261,10 @@ static void collapseFieldReferenceGraphAndCreateCloseProximityGraph(StructFieldA
   DEBUG(StructManager->debugPrintAllCPGs());
 }
 
-static void suggestFieldReordering(StructFieldAccessManager* StructManager)
+static void giveSuggestions(StructFieldAccessManager* StructManager)
 {
-  StructManager->suggestFieldReordering();
+  //StructManager->suggestFieldReordering();
+  StructManager->suggestStructSplitting();
 }
 
 static bool performStructFieldCacheAnalysis(Module &M,
@@ -2063,7 +2283,7 @@ static bool performStructFieldCacheAnalysis(Module &M,
   // Step 3 - collapse Field Reference Graph and create Close Proximity Graph
   collapseFieldReferenceGraphAndCreateCloseProximityGraph(&StructManager);
   // Step 4 - give recommendations of reordering based on CPG
-  suggestFieldReordering(&StructManager);
+  giveSuggestions(&StructManager);
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }
