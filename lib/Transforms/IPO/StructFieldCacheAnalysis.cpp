@@ -251,7 +251,6 @@ class StructFieldAccessManager
 
   // Functions for FRG build
   // Call functions to build FRG for all structs with accesses
-  void buildFieldReferenceGraphForAllStructs();
   void buildCloseProximityRelations();
   // Check if an edge from FromBB to ToBB is a back edge in any loop
   bool isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const;
@@ -338,12 +337,7 @@ class StructFieldAccessInfo
     //outs() << "CPG rows: " << CloseProximityTable.size() << " columns: " << CloseProximityTable[0].size() << "\n";
   }
 
-  ~StructFieldAccessInfo() {
-    for (auto* it : FRGArray){
-      delete it;
-    }
-    FRGArray.clear();
-  }
+  ~StructFieldAccessInfo() {}
 
   // Functions for IR analysis
   // Analyze a value pointing to a struct and collect struct access from it. It can be allocas/function args/globals
@@ -365,7 +359,6 @@ class StructFieldAccessInfo
     return StructManager->getBranchProbability(FromBB, ToBB);
   }
   // Functions for building FRG
-  void buildFieldReferenceGraph();
   FieldReferenceGraph* buildFieldReferenceGraph(const Function* F);
   // Functions for building CPG
   void buildCloseProximityRelations();
@@ -410,8 +403,6 @@ class StructFieldAccessInfo
   std::unordered_map<const Instruction*, FieldNumType> FieldAccessMap;
   // A vector stores functions that contains struct accesses for further analysis
   std::unordered_set<const Function*> FunctionsForAnalysis;
-  // A vector stores all FRGs for all functions
-  std::vector<FieldReferenceGraph*> FRGArray;
   // Close Proximity relation table
   std::vector< std::vector< std::pair<ExecutionCountType, DataBytesType> > > CloseProximityTable;
   // Golden Close Proximity relation table for debugging
@@ -948,7 +939,6 @@ FieldReferenceGraph* StructFieldAccessInfo::buildFieldReferenceGraph(const Funct
 {
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a new empty FRG\n");
   auto* FRG = new FieldReferenceGraph(F);
-  FRGArray.push_back(FRG);
   // Create and connect node inside each basic block
   for (auto &BB : *F){
     DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Build partial FRG for BB: " << BB << "\n");
@@ -1304,13 +1294,6 @@ void StructFieldAccessInfo::compareCloseProximityRelations() const{
   }
 }
 
-void StructFieldAccessInfo::buildFieldReferenceGraph()
-{
-  for (auto *F : FunctionsForAnalysis){
-    buildFieldReferenceGraph(F);
-  }
-}
-
 void StructFieldAccessInfo::buildCloseProximityRelations()
 {
   for (auto *F : FunctionsForAnalysis){
@@ -1322,6 +1305,7 @@ void StructFieldAccessInfo::buildCloseProximityRelations()
       createGoldCloseProximityRelations(FRG);
     // Collpase FRG and get CPG
     collapseFieldReferenceGraph(FRG);
+    delete FRG;
   }
   if (PerformCPGCheck)
     compareCloseProximityRelations();
@@ -1337,13 +1321,6 @@ void StructFieldAccessInfo::suggestStructSplitting() const
 {
   StructSplitAnalyzer SSA(CurrentModule, StructureType, DebugInfo, CloseProximityTable);
   SSA.makeSuggestions();
-}
-
-void StructFieldAccessInfo::debugPrintFieldReferenceGraph(raw_ostream& OS) const
-{
-  for (auto *FRG : FRGArray){
-    FRG->debugPrint(OS);
-  }
 }
 
 void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS) const
@@ -1957,15 +1934,6 @@ Optional<std::pair<const Type*, FieldNumType> > StructFieldAccessManager::getFie
   return ret;
 }
 
-void StructFieldAccessManager::buildFieldReferenceGraphForAllStructs()
-{
-  for (auto& it : StructFieldAccessInfoMap){
-    if (it.second->getTotalNumFieldAccess() != 0){
-      it.second->buildFieldReferenceGraph();
-    }
-  }
-}
-
 bool StructFieldAccessManager::isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const
 {
   assert(FromBB->getParent() == ToBB->getParent());
@@ -2047,26 +2015,6 @@ void StructFieldAccessManager::debugPrintAllStructAccesses() const
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintAllStructAccesses(dbgs());
-    dbgs().resetColor();
-  }
-  dbgs() << "----------------------------------------------------------- \n";
-}
-
-void StructFieldAccessManager::debugPrintAllFRGs() const
-{
-  dbgs() << "------------ Printing all FRGs: ------------------- \n";
-  for (auto &it : StructFieldAccessInfoMap){
-    dbgs().changeColor(raw_ostream::YELLOW);
-    auto* type = it.first;
-    assert(isa<StructType>(type));
-    if (dyn_cast<StructType>(type)->isLiteral()){
-      dbgs() << "A literal struct has FRGs: \n";
-    }
-    else{
-      dbgs() << "Struct [" << type->getStructName() << "] has FRGs: \n";
-    }
-    dbgs().changeColor(raw_ostream::GREEN);
-    it.second->debugPrintFieldReferenceGraph(dbgs());
     dbgs().resetColor();
   }
   dbgs() << "----------------------------------------------------------- \n";
@@ -2247,13 +2195,6 @@ static void performIRAnalysis(Module &M,
   StructManager->printStats();
 }
 
-
-static void createFieldReferenceGraph(StructFieldAccessManager* StructManager)
-{
-  //FIXME: add a filter to filter out structs to ignore
-  StructManager->buildFieldReferenceGraphForAllStructs();
-  DEBUG(StructManager->debugPrintAllFRGs());
-}
 
 static void collapseFieldReferenceGraphAndCreateCloseProximityGraph(StructFieldAccessManager* StructManager)
 {
