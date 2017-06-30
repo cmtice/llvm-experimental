@@ -17,6 +17,7 @@
 #include "llvm/Transforms/IPO/StructFieldCacheAnalysis.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
@@ -26,7 +27,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
 
-#include <llvm/IR/DebugInfoMetadata.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -83,7 +83,7 @@ class StructFieldAccessManager
   };
 
   StructFieldAccessManager(const Module& M, function_ref<BlockFrequencyInfo *(Function &)> L):
-      CurrentModule(M), LookupBFI(L), StatCounts(Stats::max_stats) {};
+      CurrentModule(M), LookupBFI(L), StatCounts(Stats::MaxNumStats) {};
   // Retrieve debug info for all structs defined in the program
   void retrieveDebugInfoForAllStructs();
   // Check if the struct type is created before; if not, create a new StructFieldAccessInfo object for it
@@ -108,16 +108,16 @@ class StructFieldAccessManager
 
   // For stats
   enum Stats{
-    struct_pointer_pointer,
-    func_arg_value,
-    func_arg_not_defined,
-    gep_in_arg,
-    gep_in_bitcast,
-    gep_in_unknown,
-    user_not_instruction_nor_operator,
+    StructPtrPtr,
+    FuncArgValue,
+    FuncArgNotDefined,
+    GepPassedInfoFunc,
+    GepPassedIntoBitcast,
+    GepUnknownUse,
+    UserNotInstructionNorOperator,
     NoAccess,
     PassedIntoOutsideFunction,
-    max_stats
+    MaxNumStats
   };
 
   // Increment stats for one category
@@ -196,7 +196,7 @@ class StructFieldAccessInfo
       DebugInfo(D),
       NumElements(StructureType->getNumElements()),
       StructManager(M),
-      StatCounts(StructFieldAccessManager::Stats::max_stats) {}
+      StatCounts(StructFieldAccessManager::Stats::MaxNumStats) {}
 
   ~StructFieldAccessInfo() {
     for (auto& it : CallInstFieldAccessMap){
@@ -232,7 +232,7 @@ class StructFieldAccessInfo
   // For stats
   void addStats(unsigned Category, unsigned Opcode = 0) {
     StatCounts[Category]++;
-    if (Category == StructFieldAccessManager::Stats::gep_in_unknown){
+    if (Category == StructFieldAccessManager::Stats::GepUnknownUse){
       UnknownOpcodes.insert(Opcode);
     }
   }
@@ -398,8 +398,6 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
     return;
   for (auto *User : U->users()){
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Check user of " << *U << ": " << *User << "\n");
-    //DEBUG(dbgs() << "Print the use of this user: " << *User->getOperandList()->get() << " and its user: " << *User->getOperandList()->getUser() << "\n");
-    //assert(isa<Instruction>(User) || isa<Operator>(User)); // || isa<Operator>(U));
     if (isa<Instruction>(User)){
       auto* Inst = dyn_cast<Instruction>(User);
       if (Inst->getOpcode() == Instruction::Load)
@@ -424,10 +422,11 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
           }
         }
         else if (Inst->getOpcode() == Instruction::BitCast){
-          addStats(StructFieldAccessManager::Stats::gep_in_bitcast);
+          addStats(StructFieldAccessManager::Stats::GepPassedIntoBitcast);
         }
         else{
-          addStats(StructFieldAccessManager::Stats::gep_in_unknown, Inst->getOpcode());
+          // TODO: Collect stats of this kind of access and add analysis later
+          addStats(StructFieldAccessManager::Stats::GepUnknownUse, Inst->getOpcode());
         }
       }
     }
@@ -436,14 +435,15 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
               || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
       if (Inst->getOpcode() == Instruction::BitCast){
-        addStats(StructFieldAccessManager::Stats::gep_in_bitcast);
+        addStats(StructFieldAccessManager::Stats::GepPassedIntoBitcast);
       }
       else{
-        addStats(StructFieldAccessManager::Stats::gep_in_unknown, Inst->getOpcode());
+        // TODO: Collect stats of this kind of access and add analysis later
+        addStats(StructFieldAccessManager::Stats::GepUnknownUse, Inst->getOpcode());
       }
     }
     else {
-      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::UserNotInstructionNorOperator);
     }
   }
 }
@@ -485,7 +485,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
       addFieldAccessFromGEP(Inst);
     }
     else{
-      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::UserNotInstructionNorOperator);
     }
   }
 }
@@ -496,7 +496,6 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
   assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isPointerTy() && V->getType()->getPointerElementType()->getPointerElementType()->isStructTy());
   for (auto *U : V->users()){
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
-    //assert(isa<Instruction>(U) || isa<Operator>(U));
     if (isa<Instruction>(U)){
       auto *Inst = dyn_cast<Instruction>(U);
       if (Inst->getOpcode() != Instruction::Load){
@@ -514,7 +513,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
       analyzeUsersOfStructValue(Inst);
     }
     else{
-      addStats(StructFieldAccessManager::Stats::user_not_instruction_nor_operator);
+      addStats(StructFieldAccessManager::Stats::UserNotInstructionNorOperator);
     }
   }
 }
@@ -577,7 +576,7 @@ void StructFieldAccessManager::recursiveFindDebugInfoOfStruct(DIType* Ty)
     assert(ST); // This assertion will fail on annonymous struct
     if (StructDebugInfo.find(ST) != StructDebugInfo.end()){
       DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found existing debugging info " << *dyn_cast<DICompositeType>(Ty));
-      // FIXME: use the one with more struct fields, because they might be shown as two different debug info
+      // TODO: use the one with more struct fields, because they might be shown as two different debug info
       if (dyn_cast<DICompositeType>(Ty)->getElements().size() > StructDebugInfo[ST]->getElements().size())
         StructDebugInfo[ST] = dyn_cast<DICompositeType>(Ty);
     }
@@ -639,7 +638,7 @@ void StructFieldAccessManager::retrieveDebugInfoForAllStructs()
             assert(isa<DIDerivedType>(T));
             Metadata* BT = dyn_cast<DIDerivedType>(T)->getBaseType();
             assert(BT && isa<DIType>(BT));
-            if (!dyn_cast<DIType>(BT)->getName().empty()) // FIXME: only support one level pointer now
+            if (!dyn_cast<DIType>(BT)->getName().empty()) // TODO: only support one level pointer now
               DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Field " << i << ": " << dyn_cast<DIDerivedType>(node)->getName() << " type: " << dyn_cast<DIType>(BT)->getName() << "*\n");
           }
         }
@@ -774,19 +773,19 @@ void StructFieldAccessManager::printStats()
   outs().changeColor(raw_ostream::GREEN);
   outs() << "Stats:\n";
   for (auto &it : StructFieldAccessInfoMap){
-    for (auto i = 0; i < Stats::max_stats; i++){
+    for (auto i = 0; i < Stats::MaxNumStats; i++){
       StatCounts[i] += it.second->getStats(i);
-      if (i == Stats::gep_in_unknown){
+      if (i == Stats::GepUnknownUse){
         it.second->printUnknownOpcodes(outs());
       }
     }
   }
-  for (auto i = 0; i < Stats::max_stats; i++){
+  for (auto i = 0; i < Stats::MaxNumStats; i++){
     if (StatCounts[i]){
       outs() << "Case " << StatNames[i] << " was found " << StatCounts[i] <<  " times\n";
     }
   };
-  FILE_OS << "GEP as Arg," << StatCounts[Stats::gep_in_arg] << "\n";
+  FILE_OS << "GEP as Arg," << StatCounts[Stats::GepPassedInfoFunc] << "\n";
   outs().changeColor(raw_ostream::BLUE);
   outs() << "Stats are stored into " << "/tmp/SFCA-"+CurrentModule.getName().str()+".csv" << "\n";
   outs().resetColor();
@@ -816,12 +815,11 @@ static void performIRAnalysis(Module &M,
       auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(G.getValueType()->getPointerElementType(), StructFieldAccessManager::StructDefinitionType::GlobalStructPtr);
       assert(structInfoPtr);
       structInfoPtr->analyzeUsersOfStructPointerValue(&G);
-      //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
     }
     // Case for struct**
     else if (G.getType()->isPointerTy() && G.getType()->getPointerElementType()->isPointerTy() && G.getType()->getPointerElementType()->getPointerElementType()->isStructTy()){
       DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a global has struct** type: " << G << " but we ignored this\n");
-      StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer_pointer);
+      StructManager->addStats(StructFieldAccessManager::Stats::StructPtrPtr);
     }
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().resetColor());
   }
@@ -847,11 +845,10 @@ static void performIRAnalysis(Module &M,
             auto* structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(type->getPointerElementType(), StructFieldAccessManager::StructDefinitionType::LocalStructPtr);
             assert(structInfoPtr);
             structInfoPtr->analyzeUsersOfStructPointerValue(&I);
-            //StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer);
           }
           else if (type->isPointerTy() && type->getPointerElementType()->isPointerTy() && type->getPointerElementType()->getPointerElementType()->isStructTy()){
             DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an alloca of a struct**: " << I << " but we ignore this\n");
-            StructManager->addStats(StructFieldAccessManager::Stats::struct_pointer_pointer);
+            StructManager->addStats(StructFieldAccessManager::Stats::StructPtrPtr);
           }
         }
       }
@@ -864,7 +861,7 @@ static void performIRAnalysis(Module &M,
     for (auto &AG : F.args()){
       if (AG.getType()->isStructTy()){
         DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an argument of a struct pass by value: " << AG << " and no support for this yet\n");
-        StructManager->addStats(StructFieldAccessManager::Stats::func_arg_value);
+        StructManager->addStats(StructFieldAccessManager::Stats::FuncArgValue);
       }
       if (AG.getType()->isPointerTy() && AG.getType()->getPointerElementType()->isStructTy()){
         // Identified AG is an argument with a struct type
@@ -875,7 +872,7 @@ static void performIRAnalysis(Module &M,
         }
         else{
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found an argument of a struct not defined in the program: " << AG << "\n");
-          StructManager->addStats(StructFieldAccessManager::Stats::func_arg_not_defined);
+          StructManager->addStats(StructFieldAccessManager::Stats::FuncArgNotDefined);
         }
       }
     }
@@ -890,7 +887,7 @@ static bool performStructFieldCacheAnalysis(Module &M,
 {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
   StructFieldAccessManager StructManager(M, LookupBFI);
-  // Step 0 - retrieve debug info for all struct FIXME: disable for now because it's not supporting annonymous structs
+  // Step 0 - retrieve debug info for all struct TODO: disable for now because it's not supporting annonymous structs
   //StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
   performIRAnalysis(M, &StructManager);
