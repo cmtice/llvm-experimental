@@ -23,6 +23,7 @@
 
 # Nested build directory
 /build
+/build_ninja
 
 #==============================================================================#
 # Explicit files to ignore (only matches one).
