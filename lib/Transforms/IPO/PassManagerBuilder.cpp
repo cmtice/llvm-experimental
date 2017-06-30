@@ -874,6 +874,14 @@ void PassManagerBuilder::populateThinLTOPassManager(
 
   populateModulePassManager(PM);
 
+  // FIXME: Need to figure out a earlier place to put this pass to avoid complexity
+  // After all optimizations have been performed, struct field cache analysis will be performed if enabled
+  if (EnableStructFieldCacheAnalysis){
+    //assert (!PGOInstrUse.empty() && "illegal to use -struct-field-cache-analysis without -fprofile-use");
+    //TODO: Need to make sure the profile-use pass has been executed
+    PM.add(createStructFieldCacheAnalysisPass());
+  }
+
   if (VerifyOutput)
     PM.add(createVerifierPass());
   PerformThinLTO = false;
@@ -911,6 +919,9 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
     //TODO: Need to make sure the profile-use pass has been executed
     PM.add(createStructFieldCacheAnalysisPass());
   }
+
+  if (VerifyOutput)
+    PM.add(createVerifierPass());
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {
