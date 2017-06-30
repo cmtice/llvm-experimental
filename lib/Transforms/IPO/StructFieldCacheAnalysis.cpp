@@ -695,6 +695,7 @@ void StructFieldAccessManager::summarizeFunctionCalls()
 
 void StructFieldAccessManager::applyFiltersToStructs()
 {
+  // TODO: This function needs more work to add more filters to reduce the number of structs for analysis
   for (auto it = StructFieldAccessInfoMap.begin(); it != StructFieldAccessInfoMap.end(); ){
     if (!it->second->isEligible()){
       delete it->second;
@@ -708,7 +709,7 @@ void StructFieldAccessManager::applyFiltersToStructs()
       StructFieldAccessInfoMap.erase(ToRemove);
       addStats(Stats::NoAccess);
     }
-    else if (it->second->isEligible()){
+    else{
       it++;
     }
   }
