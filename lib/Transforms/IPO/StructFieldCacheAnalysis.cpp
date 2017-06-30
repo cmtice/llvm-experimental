@@ -35,11 +35,15 @@ using namespace llvm;
 
 #define DEBUG_TYPE "struct-analysis"
 #define DEBUG_TYPE_IR "struct-analysis-IR"
+#define DEBUG_TYPE_STATS "struct-analysis-detailed-stats"
+
 
 static cl::opt<unsigned>
 MinimalAccessCountForAnalysis("struct-analysis-minimal-count", cl::init(1), cl::Hidden,
                               cl::desc("Minimal access count to make the struct eligible for analysis"));
-
+static cl::opt<unsigned>
+NumberBucketsInStructHotness("struct-analysis-number-buckets", cl::init(10), cl::Hidden,
+                             cl::desc("Number of buckets used when creating histogram for struct hotness"));
 namespace{
 class StructFieldCacheAnalysisPass : public ModulePass {
  public:
@@ -63,9 +67,25 @@ ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldC
 
 namespace llvm{
 typedef unsigned FieldNumType;
+typedef uint64_t ExecutionCountType;
 typedef std::vector<FieldNumType> FieldNumArrayType;
 
 class StructFieldAccessInfo;
+class StructHotnessAnalyzer
+{
+ public:
+  StructHotnessAnalyzer(unsigned S): MaxHotness(0), HistogramSize(S) {}
+  void addStruct(const StructFieldAccessInfo* SI);
+  void summarize();
+ private:
+  ExecutionCountType MaxHotness;
+  //std::unordered_map<const StructType*, ExecutionCountType> StructTotalAccess;
+  //std::unordered_map<const StructType*, ExecutionCountType> StructAverageAccess;
+  std::vector<ExecutionCountType> TotalHotnessToSort;
+  std::vector<unsigned> Histogram;
+  const unsigned HistogramSize;
+};
+
 class StructFieldAccessManager
 {
   /* This class is used to keep track of all StructFieldAccessInfo objects in the program
@@ -83,7 +103,12 @@ class StructFieldAccessManager
   };
 
   StructFieldAccessManager(const Module& M, function_ref<BlockFrequencyInfo *(Function &)> L):
-      CurrentModule(M), LookupBFI(L), StatCounts(Stats::MaxNumStats) {};
+      CurrentModule(M), LookupBFI(L), StatCounts(Stats::MaxNumStats) {
+    HotnessAnalyzer = new StructHotnessAnalyzer(NumberBucketsInStructHotness);
+  }
+  ~StructFieldAccessManager(){
+    delete HotnessAnalyzer;
+  }
   // Retrieve debug info for all structs defined in the program
   void retrieveDebugInfoForAllStructs();
   // Check if the struct type is created before; if not, create a new StructFieldAccessInfo object for it
@@ -91,7 +116,7 @@ class StructFieldAccessManager
   // Retrieve the pointer to the previous created StructFieldAccessInfo object for the type
   StructFieldAccessInfo* getStructFieldAccessInfo(const Type* T) const;
   // Retrieve execution count for a basic block
-  Optional<uint64_t> getExecutionCount(const BasicBlock* BB) const{
+  Optional<ExecutionCountType> getExecutionCount(const BasicBlock* BB) const{
     Function* func = const_cast<Function*>(BB->getParent());
     return LookupBFI(*func)->getBlockProfileCount(BB);
   }
@@ -131,6 +156,7 @@ class StructFieldAccessManager
   function_ref<BlockFrequencyInfo *(Function &)> LookupBFI;
   std::unordered_map<const Type*, StructFieldAccessInfo*> StructFieldAccessInfoMap;
   std::vector<unsigned> StatCounts;
+  StructHotnessAnalyzer* HotnessAnalyzer;
   const std::vector<std::string> StatNames = {
     "Variable type is Struct**",
     "Function argument is a value",
@@ -219,13 +245,14 @@ class StructFieldAccessInfo
   // Obtain total number of instructions that access the struct fields
   unsigned getTotalNumFieldAccess() const { return LoadStoreFieldAccessMap.size() + CallInstFieldAccessMap.size(); }
   // Obtain execution count for the BasicBlock/Instruction from profiling info, if any
-  Optional<uint64_t> getExecutionCount(const BasicBlock* BB) const {
+  Optional<ExecutionCountType> getExecutionCount(const BasicBlock* BB) const {
     return StructManager->getExecutionCount(BB);
   }
-  Optional<uint64_t> getExecutionCount(const Instruction* I) const {
+  Optional<ExecutionCountType> getExecutionCount(const Instruction* I) const {
     return StructManager->getExecutionCount(I->getParent());
   }
   void summarizeFunctionCalls();
+  ExecutionCountType calculateTotalHotness() const;
   // Print all instructions that access any struct field
   void debugPrintAllStructAccesses(raw_ostream& OS);
 
@@ -542,6 +569,22 @@ void StructFieldAccessInfo::summarizeFunctionCalls()
 
 }
 
+ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const
+{
+  ExecutionCountType Hotness = 0;
+  for (auto &it : LoadStoreFieldAccessMap){
+    auto Count = getExecutionCount(it.first);
+    if (Count.hasValue())
+      Hotness += Count.getValue();
+  }
+  for (auto &it : CallInstFieldAccessMap){
+    auto Count = getExecutionCount(it.first);
+    if (Count.hasValue())
+      Hotness += Count.getValue();
+  }
+  return Hotness;
+}
+
 void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS)
 {
   for (auto &it : LoadStoreFieldAccessMap){
@@ -550,6 +593,46 @@ void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS)
   for (auto &it : CallInstFieldAccessMap){
     OS << "\tInstruction [" << *it.first << "] calls function " << it.second->FunctionDeclaration->getName() << " access fields\n";
   }
+}
+
+// Functions for StructHotnessAnalyzer
+void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo* SI)
+{
+  /*
+  assert(StructTotalAccess.find(ST) == StructInfo.end());
+  assert(StructAverageAccess.find(ST) == StructInfo.end());
+  StructTotalAccess[ST] = Hotness;
+  StructAverageAccess[ST] = Hotness / NumFields;
+  TotalHotnessToSort.push_back(Hotness);
+  AverageHotnessToSort.push_back(Hotness / NumFields);
+  */
+  auto Hotness = SI->calculateTotalHotness();
+  if (Hotness > MaxHotness)
+    MaxHotness = Hotness;
+  TotalHotnessToSort.push_back(Hotness);
+}
+
+void StructHotnessAnalyzer::summarize()
+{
+  /*
+  std::sort(TotalHotnessToSort.begin(), TotalHotnessToSort.end());
+  std::sort(AverageHotnessToSort.begin(), AverageHotnessToSort.end());
+  unsigned Index_best = 0, Index_25 = TotalHotnessToSort.size() / 4, Index_50 = TotalHotnessToSort.size() / 2, Index_75 = TotalHotnessToSort.size() / 4 * 3, Index_top10 = 10;
+  for (auto &it : StructTotalAccess){
+    if (it->second > Index_best){
+
+    }
+    }*/
+  // TODO: vary the number of buckets
+  Histogram.resize(HistogramSize);
+  MaxHotness += 1; // To avoid the largest one out of bound
+  for (auto Hotness : TotalHotnessToSort){
+    auto Index = Hotness * 10 / MaxHotness;
+    Histogram[Index]++;
+  }
+  dbgs() << "Distribution of struct hotness: \n";
+  for (unsigned i = 0; i < Histogram.size(); i++)
+    dbgs() << "Hotness >" << MaxHotness * i << ": " << Histogram[i] << "\n";
 }
 
 // Functions for StructFieldAccessManager
@@ -710,9 +793,11 @@ void StructFieldAccessManager::applyFiltersToStructs()
       addStats(Stats::NoAccess);
     }
     else{
+      HotnessAnalyzer->addStruct(it->second);
       it++;
     }
   }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->summarize());
 }
 
 void StructFieldAccessManager::debugPrintAllStructAccesses()
