@@ -236,8 +236,7 @@ class StructFieldAccessInfo
   // Obtain which field the instruction is accessing and return no val if not accessing any struct field
   Optional<FieldNumType> getAccessFieldNum(const Instruction* I) const;
   // Obtain total number of instructions that access the struct fields
-  //unsigned getTotalNumFieldAccess() const { return LoadStoreFieldAccessMap.size() + CallInstFieldAccessMap.size(); }
-  unsigned getTotalNumFieldAccess() const { return LoadStoreFieldAccessMap.size(); }
+  unsigned getTotalNumFieldAccess() const { return LoadStoreFieldAccessMap.size() + CallInstFieldAccessMap.size(); }
   // Obtain execution count for the BasicBlock/Instruction from profiling info, if any
   Optional<ExecutionCountType> getExecutionCount(const BasicBlock* BB) const {
     return StructManager->getExecutionCount(BB);
@@ -350,6 +349,22 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, FieldNumType
   LoadStoreFieldAccessMap[I] = FieldNum;
 }
 
+void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, const Function* F, unsigned Arg, FieldNumType FieldNum)
+{
+  assert(I->getOpcode() == Instruction::Call || I->getOpcode() == Instruction::Invoke); // Only calls and invokes
+  if (F->isDeclaration())
+    // Give up if the function only has declaration
+    return;
+  if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()){
+    CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
+  }
+  else{
+    auto* CallSite = CallInstFieldAccessMap[I];
+    assert(CallSite->FunctionDeclaration == F);
+    CallSite->insertCallInfo(Arg, FieldNum);
+  }
+}
+
 Optional<FieldNumType> StructFieldAccessInfo::getAccessFieldNum(const Instruction* I) const
 {
   Optional<FieldNumType> ret;
@@ -402,8 +417,19 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
           addFieldAccessNum(Inst, FieldLoc);
       }
       else{
-        if (Inst->getOpcode() == Instruction::Call || Inst->getOpcode() == Instruction::Invoke){
-          addStats(StructFieldAccessManager::Stats::GepPassedIntoFunc);
+        if (Inst->getOpcode() == Instruction::Call){
+          auto* Call = dyn_cast<CallInst>(Inst);
+          for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
+            if (Call->getArgOperand(i) == U)
+              addFieldAccessNum(Inst, Call->getCalledFunction(), i, FieldLoc);
+          }
+        }
+        else if (Inst->getOpcode() == Instruction::Invoke){
+          auto* Call = dyn_cast<InvokeInst>(Inst);
+          for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
+            if (Call->getArgOperand(i) == U)
+              addFieldAccessNum(Inst, Call->getCalledFunction(), i, FieldLoc);
+          }
         }
         else if (Inst->getOpcode() == Instruction::BitCast){
           addStats(StructFieldAccessManager::Stats::GepPassedIntoBitcast);
@@ -554,6 +580,9 @@ void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS)
 {
   for (auto &it : LoadStoreFieldAccessMap){
     OS << "\tInstruction [" << *it.first << "] accesses field number [" << it.second << "]\n";
+  }
+  for (auto &it : CallInstFieldAccessMap){
+    OS << "\tInstruction [" << *it.first << "] calls function " << it.second->FunctionDeclaration->getName() << " access fields\n";
   }
 }
 
