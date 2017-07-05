@@ -117,6 +117,8 @@ class StructFieldAccessManager
     UserNotInstructionNorOperator,
     NoAccess,
     PassedIntoOutsideFunction,
+    GepUsedOnStructPtr,
+    UnknownUsesOnStructPtr,
     MaxNumStats
   };
 
@@ -140,7 +142,9 @@ class StructFieldAccessManager
     "GEP value passed into unexpected opcode",
     "User is not Instruction nor Operator",
     "Struct defined but no accesses",
-    "Struct passed into functions defined out of scope"
+    "Struct passed into functions defined out of scope",
+    "GEP instruction directly used on struct*",
+    "Unknown instruction directly used on struct*"
   };
   const std::vector<std::string> StructDefinitionTypeNames = {
     "global struct",
@@ -498,19 +502,27 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     if (isa<Instruction>(U)){
       auto *Inst = dyn_cast<Instruction>(U);
-      if (Inst->getOpcode() != Instruction::Load){
-        // Only load is allowed to access struct*
-        continue;
+      if (Inst->getOpcode() == Instruction::Load){
+        analyzeUsersOfStructValue(Inst);
       }
-      analyzeUsersOfStructValue(Inst);
+      else if (Inst->getOpcode() == Instruction::GetElementPtr){
+        addStats(StructFieldAccessManager::Stats::GepUsedOnStructPtr);
+      }
+      else{
+        addStats(StructFieldAccessManager::Stats::UnknownUsesOnStructPtr);
+      }
     }
     else if (isa<Operator>(U)){
       auto *Inst = dyn_cast<Operator>(U);
-      if (Inst->getOpcode() != Instruction::Load){
-        // Only support access struct through GEP for now
-        continue;
+      if (Inst->getOpcode() == Instruction::Load){
+        analyzeUsersOfStructValue(Inst);
       }
-      analyzeUsersOfStructValue(Inst);
+      else if (Inst->getOpcode() == Instruction::GetElementPtr){
+        addStats(StructFieldAccessManager::Stats::GepUsedOnStructPtr);
+      }
+      else{
+        addStats(StructFieldAccessManager::Stats::UnknownUsesOnStructPtr);
+      }
     }
     else{
       addStats(StructFieldAccessManager::Stats::UserNotInstructionNorOperator);
