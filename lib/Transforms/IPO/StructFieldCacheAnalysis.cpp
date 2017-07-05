@@ -838,6 +838,8 @@ static bool performStructFieldCacheAnalysis(Module &M,
   //StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
   performIRAnalysis(M, &StructManager);
+  StructManager.summarizeFunctionCalls();
+  StructManager.applyFiltersToStructs();
   StructManager.printStats();
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
