@@ -471,8 +471,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
         if (Inst->getOpcode() == Instruction::Call){
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is a call instruction\n");
           auto* F = dyn_cast<CallInst>(Inst)->getCalledFunction();
-          assert(F);
-          if (F->isDeclaration()){
+          if (!F || F->isDeclaration()){
             // If a struct is passed to a function not declared in the program, we can't analyze it...
             Eligiblity = false;
           }
@@ -480,8 +479,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
         else if (Inst->getOpcode() == Instruction::Invoke){
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is an invoke instruction\n");
           auto* F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
-          assert(F);
-          if (F->isDeclaration()){
+          if (!F || F->isDeclaration()){
             // If a struct is passed to a function not declared in the program, we can't analyze it...
             Eligiblity = false;
           }
@@ -627,7 +625,7 @@ void StructHotnessAnalyzer::summarize()
   }
   dbgs() << "Distribution of struct hotness: \n";
   for (unsigned i = 0; i < Histogram.size(); i++)
-    dbgs() << "Hotness >" << MaxHotness * i << ": " << Histogram[i] << "\n";
+    dbgs() << "Hotness >=" << MaxHotness * i << ": " << Histogram[i] << "\n";
 }
 
 // Functions for StructFieldAccessManager
@@ -740,12 +738,13 @@ void StructFieldAccessManager::printStats()
     assert(isa<StructType>(type));
     auto Result = it.second->getTotalNumFieldAccess();
     assert(Result);
+    auto Hotness = it.second->calculateTotalHotness();
     if (dyn_cast<StructType>(type)->isLiteral()){
-      outs() << "A literal struct defined as " << StructDefinitionTypeNames[it.second->getStructDefinition()] << " has " << Result << " accesses.\n";
+      outs() << "A literal struct defined as " << StructDefinitionTypeNames[it.second->getStructDefinition()] << " has " << Result << " accesses and " << Hotness <<" execution count.\n";
       FILE_OS << "Literal," << Result << "\n";
     }
     else{
-      outs() << "Struct [" << type->getStructName() << "] defined as " << StructDefinitionTypeNames[it.second->getStructDefinition()] << " has " << Result << " accesses.\n";
+      outs() << "Struct [" << type->getStructName() << "] defined as " << StructDefinitionTypeNames[it.second->getStructDefinition()] << " has " << Result << " accesses and " << Hotness << " execution count.\n";
       FILE_OS << type->getStructName() << "," << Result << "\n";
     }
   }
@@ -858,8 +857,8 @@ static void performIRAnalysis(Module &M,
     }
   }
   // Summarizes all uses of fields in function calls
-  DEBUG(StructManager->debugPrintAllStructAccesses());
-  DEBUG(StructManager->debugPrintAnnotatedModule());
+  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAllStructAccesses());
+  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAnnotatedModule());
 }
 
 static bool performStructFieldCacheAnalysis(Module &M,
