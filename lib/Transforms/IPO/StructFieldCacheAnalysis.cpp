@@ -469,14 +469,18 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
       if (Inst->getOpcode() != Instruction::GetElementPtr){
         // Only support access struct through GEP for now
         if (Inst->getOpcode() == Instruction::Call){
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is a call instruction\n");
           auto* F = dyn_cast<CallInst>(Inst)->getCalledFunction();
+          assert(F);
           if (F->isDeclaration()){
             // If a struct is passed to a function not declared in the program, we can't analyze it...
             Eligiblity = false;
           }
         }
         else if (Inst->getOpcode() == Instruction::Invoke){
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is an invoke instruction\n");
           auto* F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
+          assert(F);
           if (F->isDeclaration()){
             // If a struct is passed to a function not declared in the program, we can't analyze it...
             Eligiblity = false;
