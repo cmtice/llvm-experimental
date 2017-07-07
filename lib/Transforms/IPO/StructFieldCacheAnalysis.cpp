@@ -379,9 +379,9 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       }
     }
     else if (isa<Operator>(User)){
-      auto* Inst = dyn_cast<Operator>(U);
-      assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
-              || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
+      auto* Inst = dyn_cast<Operator>(User);
+      assert (Inst->getOpcode() != Instruction::Load && Inst->getOpcode() != Instruction::Store
+              && Inst->getOpcode() != Instruction::Call && Inst->getOpcode() != Instruction::Invoke);
       if (Inst->getOpcode() == Instruction::BitCast){
         addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
       }
@@ -406,20 +406,6 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
       auto *Inst = dyn_cast<Instruction>(U);
       if (Inst->getOpcode() != Instruction::GetElementPtr){
         // Only support access struct through GEP for now
-        if (Inst->getOpcode() == Instruction::Call){
-          auto* F = dyn_cast<CallInst>(Inst)->getCalledFunction();
-          if (F->isDeclaration()){
-            // If a struct is passed to a function not declared in the program, we can't analyze it...
-            Eligiblity = false;
-          }
-        }
-        else if (Inst->getOpcode() == Instruction::Invoke){
-          auto* F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
-          if (F->isDeclaration()){
-            // If a struct is passed to a function not declared in the program, we can't analyze it...
-            Eligiblity = false;
-          }
-        }
         continue;
       }
       addFieldAccessFromGEP(Inst);
