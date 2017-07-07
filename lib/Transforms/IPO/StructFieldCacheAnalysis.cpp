@@ -418,17 +418,19 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       }
       else{
         if (Inst->getOpcode() == Instruction::Call){
-          auto* Call = dyn_cast<CallInst>(Inst);
-          for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
-            if (Call->getArgOperand(i) == U)
-              addFieldAccessNum(Inst, Call->getCalledFunction(), i, FieldLoc);
+          if (auto* Call = dyn_cast<CallInst>(Inst)){
+            for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
+              if (Call->getArgOperand(i) == U)
+                addFieldAccessNum(Inst, Call->getCalledFunction(), i, FieldLoc);
+            }
           }
         }
         else if (Inst->getOpcode() == Instruction::Invoke){
-          auto* Call = dyn_cast<InvokeInst>(Inst);
-          for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
-            if (Call->getArgOperand(i) == U)
-              addFieldAccessNum(Inst, Call->getCalledFunction(), i, FieldLoc);
+          if (auto* Call = dyn_cast<InvokeInst>(Inst)){
+            for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
+              if (Call->getArgOperand(i) == U)
+                addFieldAccessNum(Inst, Call->getCalledFunction(), i, FieldLoc);
+            }
           }
         }
         else if (Inst->getOpcode() == Instruction::BitCast){
