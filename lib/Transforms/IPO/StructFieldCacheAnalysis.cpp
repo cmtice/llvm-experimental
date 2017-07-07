@@ -326,7 +326,7 @@ class StructFieldCacheAnalysisAnnotatedWriter : public AssemblyAnnotationWriter 
     if (auto pair = StructManager->getFieldAccessOnInstruction(I)){
       OS.changeColor(raw_ostream::GREEN, false, false);
       auto* type = pair.getValue().first;
-      assert(isa<StructType>(type));
+      assert(type && isa<StructType>(type));
       if (dyn_cast<StructType>(type)->isLiteral())
         OS << "; [Instruction is memory access on field " << pair.getValue().second << " of a literal struct.] ";
       else
@@ -379,7 +379,7 @@ FieldNumType StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) cons
 {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: " << *U << "\n");
   //Operand 0 should be a pointer to the struct
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
+  assert(U && (isa<GetElementPtrInst>(U) || isa<GEPOperator>(U)));
   auto* Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of StructFieldAccessInfo
   assert(Op->getType()->isPointerTy() && Op->getType()->getPointerElementType()->isStructTy() && Op->getType()->getPointerElementType() == StructureType);
@@ -401,12 +401,14 @@ FieldNumType StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) cons
 
 void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
 {
+  assert(U);
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyze all users of GEP: " << *U << "\n");
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
+  assert(U && (isa<GetElementPtrInst>(U) || isa<GEPOperator>(U)));
   auto FieldLoc = calculateFieldNumFromGEP(U);
   if (FieldLoc == 0)
     return;
   for (auto *User : U->users()){
+    assert(User);
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Check user of " << *U << ": " << *User << "\n");
     if (isa<Instruction>(User)){
       auto* Inst = dyn_cast<Instruction>(User);
@@ -464,8 +466,9 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
 
 void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
 {
-  assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isStructTy());
+  assert(V && V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isStructTy());
   for (auto *U : V->users()){
+    assert(U);
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     //assert(isa<Instruction>(U) || isa<Operator>(U));
     if (isa<Instruction>(U)){
@@ -511,8 +514,9 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
 void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value* V)
 {
   // Analyze users of value defined as struct*
-  assert(V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isPointerTy() && V->getType()->getPointerElementType()->getPointerElementType()->isStructTy());
+  assert(V && V->getType()->isPointerTy() && V->getType()->getPointerElementType()->isPointerTy() && V->getType()->getPointerElementType()->getPointerElementType()->isStructTy());
   for (auto *U : V->users()){
+    assert(U);
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     if (isa<Instruction>(U)){
       auto *Inst = dyn_cast<Instruction>(U);
@@ -640,7 +644,7 @@ StructFieldAccessInfo* StructFieldAccessManager::createOrGetStructFieldAccessInf
   if (auto* def = getStructFieldAccessInfo(T))
     return def;
   else{
-    assert(T->isStructTy() && isa<StructType>(T));
+    assert(T && T->isStructTy() && isa<StructType>(T));
     //FIXME: retrieve debug info of the struct first: auto* debugInfo = retrieveDebugInfoForStruct(T);
     def = StructFieldAccessInfoMap[T] = new StructFieldAccessInfo(T, SType, CurrentModule, this, NULL);
     return def;
@@ -704,7 +708,7 @@ void StructFieldAccessManager::debugPrintAllStructAccesses()
   for (auto &it : StructFieldAccessInfoMap){
     dbgs().changeColor(raw_ostream::YELLOW);
     auto* type = it.first;
-    assert(isa<StructType>(type));
+    assert(type && isa<StructType>(type));
     if (dyn_cast<StructType>(type)->isLiteral()){
       dbgs() << "A literal struct has accesses: \n";
     }
@@ -741,7 +745,7 @@ void StructFieldAccessManager::printStats()
   FILE_OS << "Total," << StructFieldAccessInfoMap.size() << "\n";
   for (auto &it : StructFieldAccessInfoMap){
     auto* type = it.first;
-    assert(isa<StructType>(type));
+    assert(type && isa<StructType>(type));
     auto Result = it.second->getTotalNumFieldAccess();
     assert(Result);
     auto Hotness = it.second->calculateTotalHotness();
