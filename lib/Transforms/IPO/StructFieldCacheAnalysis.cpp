@@ -447,7 +447,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       }
     }
     else if (isa<Operator>(User)){
-      auto* Inst = dyn_cast<Operator>(U);
+      auto* Inst = dyn_cast<Operator>(User);
       assert (Inst->getOpcode() != Instruction::Load && Inst->getOpcode() != Instruction::Store
               && Inst->getOpcode() != Instruction::Call && Inst->getOpcode() != Instruction::Invoke);
       if (Inst->getOpcode() == Instruction::BitCast){
