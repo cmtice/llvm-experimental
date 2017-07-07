@@ -388,10 +388,10 @@ FieldNumType StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) cons
   //Operand 1 should be first index to the struct, usually 0; if not 0, it's like goto an element of an array of structs
   Op = U->getOperand(1);
   //TODO: ignore this index for now because it's the same for an array of structs
-  assert(Op->getType()->isIntegerTy());
+  assert(Op && Op->getType()->isIntegerTy());
   //Operand 2 should be the index to the field, and be a constant
   Op = U->getOperand(2);
-  assert(isa<Constant>(Op));
+  assert(Op && isa<Constant>(Op));
   auto* Index = dyn_cast<Constant>(Op);
   auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
   assert(Offset < NumElements);
@@ -418,6 +418,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
       }
       else{
         if (Inst->getOpcode() == Instruction::Call){
+          assert(Inst && isa<CallInst>(Inst));
           if (auto* Call = dyn_cast<CallInst>(Inst)){
             for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
               if (Call->getArgOperand(i) == U)
@@ -426,6 +427,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
           }
         }
         else if (Inst->getOpcode() == Instruction::Invoke){
+          assert(Inst && isa<InvokeInst>(Inst));
           if (auto* Call = dyn_cast<InvokeInst>(Inst)){
             for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
               if (Call->getArgOperand(i) == U)
@@ -444,8 +446,8 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
     }
     else if (isa<Operator>(User)){
       auto* Inst = dyn_cast<Operator>(U);
-      assert (Inst->getOpcode() != Instruction::Load || Inst->getOpcode() != Instruction::Store
-              || Inst->getOpcode() != Instruction::Call || Inst->getOpcode() != Instruction::Invoke);
+      assert (Inst->getOpcode() != Instruction::Load && Inst->getOpcode() != Instruction::Store
+              && Inst->getOpcode() != Instruction::Call && Inst->getOpcode() != Instruction::Invoke);
       if (Inst->getOpcode() == Instruction::BitCast){
         addStats(StructFieldAccessManager::Stats::GepPassedIntoBitcast);
       }
@@ -472,6 +474,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
         // Only support access struct through GEP for now
         if (Inst->getOpcode() == Instruction::Call){
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is a call instruction\n");
+          assert(Inst && isa<CallInst>(Inst));
           auto* F = dyn_cast<CallInst>(Inst)->getCalledFunction();
           if (!F || F->isDeclaration()){
             // If a struct is passed to a function not declared in the program, we can't analyze it...
@@ -480,6 +483,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
         }
         else if (Inst->getOpcode() == Instruction::Invoke){
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is an invoke instruction\n");
+          assert(Inst && isa<CallInst>(Inst));
           auto* F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
           if (!F || F->isDeclaration()){
             // If a struct is passed to a function not declared in the program, we can't analyze it...
