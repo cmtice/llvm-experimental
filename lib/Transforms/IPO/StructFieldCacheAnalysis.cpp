@@ -397,6 +397,10 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, const Functi
   if (F->isDeclaration())
     // Give up if the function only has declaration
     return;
+  if (Arg >= F->arg_size()){
+    errs() << *F << "\n" << I << "\n";
+    assert(0);
+  }
   if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()){
     CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
   }
