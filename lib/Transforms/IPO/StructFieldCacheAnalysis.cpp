@@ -331,7 +331,7 @@ FieldNumType StructFieldAccessInfo::calculateFieldNumFromGEP(const User* U) cons
   assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
   auto* Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of StructFieldAccessInfo
-  assert(Op->getType()->isPointerTy() && Op->getType()->getPointerElementType()->isStructTy() && Op->getType()->getPointerElementType() == StructureType);
+  assert(Op->getType()->getPointerElementType()->isStructTy() && Op->getType()->getPointerElementType() == StructureType);
   if (U->getNumOperands() < 3) // GEP to calculate struct field needs at least 2 indices (operand 1 and 2)
     return 0;
   //Operand 1 should be first index to the struct, usually 0; if not 0, it's like goto an element of an array of structs
@@ -404,7 +404,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
     //assert(isa<Instruction>(U) || isa<Operator>(U));
     if (isa<Instruction>(U)){
       auto *Inst = dyn_cast<Instruction>(U);
-      if (Inst->getOpcode() != Instruction::GetElementPtr){
+      if (!isa<GetElementPtrInst>(Inst)){
         // Only support access struct through GEP for now
         continue;
       }
@@ -412,7 +412,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value* V)
     }
     else if (isa<Operator>(U)){
       auto *Inst = dyn_cast<Operator>(U);
-      if (Inst->getOpcode() != Instruction::GetElementPtr){
+      if (!isa<GEPOperator>(Inst)){
         // Only support access struct through GEP for now
         continue;
       }
@@ -618,7 +618,6 @@ static void performIRAnalysis(Module &M,
     for (auto &BB : F){
       for (auto &I: BB){
         if (I.getOpcode() == Instruction::Alloca){
-          assert(I.getType()->isPointerTy());
           auto* type = I.getType()->getPointerElementType();
           if (type->isStructTy()){
             // Identified I is an alloca of a struct
