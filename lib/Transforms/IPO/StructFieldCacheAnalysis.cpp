@@ -178,7 +178,7 @@ class StructFieldAccessManager
     "Variable type is Struct**",
     "Function argument is a value",
     "Function argument is not defined in the program",
-    "GEP value passed into indirect function calls",
+    "GEP value passed into indirect function calls or function that has undetermined num args",
     "GEP value passed into bitcast",
     "GEP value passed into unexpected opcode",
     "User is not Instruction nor Operator",
@@ -397,10 +397,6 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, const Functi
   if (F->isDeclaration())
     // Give up if the function only has declaration
     return;
-  if (Arg >= F->arg_size()){
-    errs() << *F << "\n" << I << "\n";
-    assert(0);
-  }
   if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()){
     CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
   }
@@ -468,13 +464,14 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User* U)
         if (Inst->getOpcode() == Instruction::Call){
           auto* Call = dyn_cast<CallInst>(Inst);
           auto* Func = Call->getCalledFunction();
-          if (Func){
+          if (Func && Func->arg_size() == Call->getNumArgOperands()){
             for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
               if (Call->getArgOperand(i) == U)
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
             }
           }
           else{
+            // Bail out if Gep is used in an indirect function or a function that has undetermined args
             addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoIndirectFunc);
           }
         }
