@@ -28,6 +28,7 @@ add_llvm_library(LLVMipo
   SampleProfile.cpp
   StripDeadPrototypes.cpp
   StripSymbols.cpp
+  StructFieldAccessInfo.cpp
   StructFieldCacheAnalysis.cpp
   ThinLTOBitcodeWriter.cpp
   WholeProgramDevirt.cpp
