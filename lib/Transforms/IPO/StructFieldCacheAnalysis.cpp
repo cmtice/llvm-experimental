@@ -57,6 +57,7 @@ ModulePass *llvm::createStructFieldCacheAnalysisPass() { return new StructFieldC
 
 namespace llvm{
 typedef unsigned FieldNumType;
+typedef std::pair<const StructType*, FieldNumType> StructInfoMapPairType;
 
 class StructFieldAccessInfo;
 /// This class is used to keep track of all StructFieldAccessInfo objects
@@ -107,7 +108,7 @@ class StructFieldAccessManager
   }
 
   /// Retrive a pair of information if the instruction is accessing any struct type and field number
-  Optional<std::pair<const Type*, unsigned> > getFieldAccessOnInstruction(const Instruction* I) const;
+  Optional<StructInfoMapPairType> getFieldAccessOnInstruction(const Instruction* I) const;
 
   /// Print all accesses of all struct types defined in the program
   void debugPrintAllStructAccesses();
@@ -127,7 +128,7 @@ class StructFieldAccessManager
   function_ref<BlockFrequencyInfo *(Function &)> LookupBFI;
 
   /// A map storing access info of all structs
-  std::unordered_map<const Type*, StructFieldAccessInfo*> StructFieldAccessInfoMap;
+  std::unordered_map<const StructType*, StructFieldAccessInfo*> StructFieldAccessInfoMap;
 
   /// \name Data structure to get statistics of each DebugStats entry
   /// %{
@@ -167,20 +168,15 @@ class StructFieldAccessManager
 class StructFieldAccessInfo
 {
  public:
-  StructFieldAccessInfo(const Type* T, const StructFieldAccessManager::StructDefinitionType ST, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D):
+  StructFieldAccessInfo(const StructType* ST, const StructFieldAccessManager::StructDefinitionType SDT, const Module& MD, const StructFieldAccessManager* M, const DICompositeType* D):
       Eligiblity(true),
       CurrentModule(MD),
-      StructureType(NULL),
-      StructDefinition(ST),
+      StructureType(ST),
+      StructDefinition(SDT),
       DebugInfo(D),
-      NumElements(0),
+      NumElements(ST->getNumElements()),
       StructManager(M),
-      StatCounts(StructFieldAccessManager::DebugStats::DS_MaxNumStats)
-  {
-    assert(T && T->isStructTy());
-    StructureType = dyn_cast<StructType>(T);
-    NumElements = StructureType->getNumElements();
-  }
+      StatCounts(StructFieldAccessManager::DebugStats::DS_MaxNumStats) {}
 
   ~StructFieldAccessInfo() {}
 
@@ -470,28 +466,32 @@ void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream& OS)
 // Functions for StructFieldAccessManager
 StructFieldAccessInfo* StructFieldAccessManager::createOrGetStructFieldAccessInfo(const Type* T, const StructDefinitionType SType)
 {
-  if (auto* def = getStructFieldAccessInfo(T))
+  assert(isa<StructType>(T));
+  auto* ST = cast<StructType>(T);
+  if (auto* def = getStructFieldAccessInfo(ST))
     return def;
   else{
-    assert(T->isStructTy() && isa<StructType>(T));
     //FIXME: retrieve debug info of the struct first: auto* debugInfo = retrieveDebugInfoForStruct(T);
-    def = StructFieldAccessInfoMap[T] = new StructFieldAccessInfo(T, SType, CurrentModule, this, NULL);
+    def = StructFieldAccessInfoMap[ST] = new StructFieldAccessInfo(ST, SType, CurrentModule, this, NULL);
     return def;
   }
 }
 
 StructFieldAccessInfo* StructFieldAccessManager::getStructFieldAccessInfo(const Type* T) const
 {
-  auto ret = StructFieldAccessInfoMap.find(T);
+  if (!isa<StructType>(T))
+    return NULL;
+  auto* ST = cast<StructType>(T);
+  auto ret = StructFieldAccessInfoMap.find(ST);
   if (ret != StructFieldAccessInfoMap.end())
     return ret->second;
   else
     return NULL;
 }
 
-Optional<std::pair<const Type*, FieldNumType> > StructFieldAccessManager::getFieldAccessOnInstruction(const Instruction* I) const
+Optional<StructInfoMapPairType> StructFieldAccessManager::getFieldAccessOnInstruction(const Instruction* I) const
 {
-  Optional<std::pair<const Type*, FieldNumType> > ret;
+  Optional<StructInfoMapPairType> ret;
   for (auto &it : StructFieldAccessInfoMap){
     if (auto FieldNum = it.second->getAccessFieldNum(I)){
       return std::make_pair(it.first, FieldNum.getValue());
