@@ -573,6 +573,12 @@ void SelectionDAG::RemoveDeadNodes(SmallVectorImpl<SDNode *> &DeadNodes) {
   while (!DeadNodes.empty()) {
     SDNode *N = DeadNodes.pop_back_val();
 
+    // Skip to next node if we've already managed to delete the node. This could
+    // happen if replacing a node causes a node previously added to the node to
+    // be deleted.
+    if (N->getOpcode() == ISD::DELETED_NODE)
+      continue;
+
     for (DAGUpdateListener *DUL = UpdateListeners; DUL; DUL = DUL->Next)
       DUL->NodeDeleted(N, nullptr);
 

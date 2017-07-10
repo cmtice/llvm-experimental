@@ -911,6 +911,7 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
     //TODO: Need to make sure the profile-use pass has been executed
     PM.add(createStructFieldCacheAnalysisPass());
   }
+
 }
 
 inline PassManagerBuilder *unwrap(LLVMPassManagerBuilderRef P) {
