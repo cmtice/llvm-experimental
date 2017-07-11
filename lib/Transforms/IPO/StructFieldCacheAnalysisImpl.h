@@ -46,16 +46,15 @@ class StructFieldAccessInfo;
 class StructHotnessAnalyzer
 {
  public:
-  StructHotnessAnalyzer(): MaxHotness(0), HistogramSize(10) {}
+  StructHotnessAnalyzer(): MaxHotness(0) {}
   void addStruct(const StructFieldAccessInfo* SI);
-  void summarize();
+  void generateHistogram();
+  bool isHot(const StructFieldAccessInfo* SI) const;
+
  private:
   ExecutionCountType MaxHotness;
-  //std::unordered_map<const StructType*, ExecutionCountType> StructTotalAccess;
-  //std::unordered_map<const StructType*, ExecutionCountType> StructAverageAccess;
-  std::vector<ExecutionCountType> TotalHotnessToSort;
+  std::unordered_map<const StructType*, ExecutionCountType> StructHotness;
   std::vector<unsigned> Histogram;
-  const unsigned HistogramSize;
 };
 
 /// This class is used to keep track of all StructFieldAccessInfo objects
@@ -87,6 +86,7 @@ public:
     DS_PassedIntoOutsideFunction,
     DS_GepUsedOnStructPtr,
     DS_UnknownUsesOnStructPtr,
+    DS_FilterColdStructs,
     DS_MaxNumStats
   };
 
@@ -162,7 +162,8 @@ private:
     "Struct defined but no accesses",
     "Struct passed into functions defined out of scope",
     "GEP instruction directly used on struct*",
-    "Unknown instruction directly used on struct*"
+    "Unknown instruction directly used on struct*",
+    "Struct filtered out due to colder than a ratio of maximum hotness"
   };
   /// %}
 
@@ -217,6 +218,8 @@ class StructFieldAccessInfo
       StatCounts(StructFieldAccessManager::DebugStats::DS_MaxNumStats) {}
 
   ~StructFieldAccessInfo() {}
+
+  const StructType* getStructType() const { return StructureType; }
 
   StructFieldAccessManager::StructDefinitionType getStructDefinition() const {
     return StructDefinition;

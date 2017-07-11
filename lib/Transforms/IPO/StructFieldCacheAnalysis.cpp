@@ -100,7 +100,18 @@ void StructFieldAccessManager::applyFiltersToStructs()
       it++;
     }
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->summarize());
+  DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->generateHistogram());
+  for (auto it = StructFieldAccessInfoMap.begin(); it != StructFieldAccessInfoMap.end(); ){
+    if (!HotnessAnalyzer->isHot(it->second)){
+      delete it->second;
+      auto ToRemove = it++;
+      StructFieldAccessInfoMap.erase(ToRemove);
+      addStats(DebugStats::DS_FilterColdStructs);
+    }
+    else{
+      it++;
+    }
+  }
 }
 
 void StructFieldAccessManager::debugPrintAllStructAccesses() {
