@@ -1,4 +1,5 @@
-// lib/Tranforms/IPO/StructFieldAccessInfo.cpp - Implements class of StructFieldAccessInfo -*- C++ -*-===//
+// lib/Tranforms/IPO/StructFieldAccessInfo.cpp - Implements class of
+// StructFieldAccessInfo -*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,7 +8,8 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This file implements StructFieldAccessInfo that is used in StructFieldCacheAnalysis pass.
+// This file implements StructFieldAccessInfo that is used in
+// StructFieldCacheAnalysis pass.
 //
 //===------------------------------------------------------------------------===//
 
@@ -21,13 +23,14 @@ using namespace llvm;
 #define DEBUG_TYPE_IR "struct-analysis-IR"
 #define DEBUG_TYPE_STATS "struct-analysis-detailed-stats"
 
-static cl::opt<unsigned>
-HistogramSizeForStats("struct-analysis-number-buckets", cl::init(10), cl::Hidden,
-                      cl::desc("Number of buckets used to analyze struct hotness"));
+static cl::opt<unsigned> HistogramSizeForStats(
+    "struct-analysis-number-buckets", cl::init(10), cl::Hidden,
+    cl::desc("Number of buckets used to analyze struct hotness"));
 
-static cl::opt<unsigned>
-HotnessCutoffRatio("struct-analysis-hotness-cutoff", cl::init(0), cl::Hidden,
-                   cl::desc("Filter out structs that is colder than a ratio of maximum hotness, should be a percentage."));
+static cl::opt<unsigned> HotnessCutoffRatio(
+    "struct-analysis-hotness-cutoff", cl::init(0), cl::Hidden,
+    cl::desc("Filter out structs that is colder than a ratio of maximum "
+             "hotness, should be a percentage."));
 
 // Functions for StructFieldAccessInfo
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
@@ -38,17 +41,18 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   LoadStoreFieldAccessMap[I] = FieldNum;
 }
 
-void StructFieldAccessInfo::addFieldAccessNum(const Instruction* I, const Function* F, unsigned Arg, FieldNumType FieldNum)
-{
-  assert(I->getOpcode() == Instruction::Call || I->getOpcode() == Instruction::Invoke); // Only calls and invokes
+void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
+                                              const Function *F, unsigned Arg,
+                                              FieldNumType FieldNum) {
+  assert(I->getOpcode() == Instruction::Call ||
+         I->getOpcode() == Instruction::Invoke); // Only calls and invokes
   if (F->isDeclaration())
     // Give up if the function only has declaration
     return;
-  if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()){
+  if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()) {
     CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
-  }
-  else{
-    auto* CallSite = CallInstFieldAccessMap[I];
+  } else {
+    auto *CallSite = CallInstFieldAccessMap[I];
     assert(CallSite->FunctionDeclaration == F);
     CallSite->insertCallInfo(Arg, FieldNum);
   }
@@ -112,39 +116,37 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
       else if (Inst->getOpcode() == Instruction::Store) {
         if (U == Inst->getOperand(1))
           addFieldAccessNum(Inst, FieldLoc);
-      }
-      else{
-        if (Inst->getOpcode() == Instruction::Call){
-          auto* Call = dyn_cast<CallInst>(Inst);
-          auto* Func = Call->getCalledFunction();
-          if (Func && Func->arg_size() == Call->getNumArgOperands()){
-            for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
+      } else {
+        if (Inst->getOpcode() == Instruction::Call) {
+          auto *Call = dyn_cast<CallInst>(Inst);
+          auto *Func = Call->getCalledFunction();
+          if (Func && Func->arg_size() == Call->getNumArgOperands()) {
+            for (unsigned i = 0; i < Call->getNumArgOperands(); i++) {
               if (Call->getArgOperand(i) == U)
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
             }
+          } else {
+            // Bail out if Gep is used in an indirect function or a function
+            // that has undetermined args
+            addStats(StructFieldAccessManager::DebugStats::
+                         DS_GepPassedIntoIndirectFunc);
           }
-          else{
-            // Bail out if Gep is used in an indirect function or a function that has undetermined args
-            addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoIndirectFunc);
-          }
-        }
-        else if (Inst->getOpcode() == Instruction::Invoke){
-          auto* Call = dyn_cast<InvokeInst>(Inst);
-          auto* Func = Call->getCalledFunction();
-          if (Func){
-            for (unsigned i = 0; i < Call->getNumArgOperands(); i++){
+        } else if (Inst->getOpcode() == Instruction::Invoke) {
+          auto *Call = dyn_cast<InvokeInst>(Inst);
+          auto *Func = Call->getCalledFunction();
+          if (Func) {
+            for (unsigned i = 0; i < Call->getNumArgOperands(); i++) {
               if (Call->getArgOperand(i) == U)
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
             }
+          } else {
+            addStats(StructFieldAccessManager::DebugStats::
+                         DS_GepPassedIntoIndirectFunc);
           }
-          else{
-            addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoIndirectFunc);
-          }
-        }
-        else if (Inst->getOpcode() == Instruction::BitCast){
-          addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
-        }
-        else{
+        } else if (Inst->getOpcode() == Instruction::BitCast) {
+          addStats(
+              StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
+        } else {
           // TODO: Collect stats of this kind of access and add analysis later
           addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
                    Inst->getOpcode());
@@ -176,21 +178,24 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
       auto *Inst = dyn_cast<Instruction>(U);
       if (!isa<GetElementPtrInst>(Inst)) {
         // Only support access struct through GEP for now
-        if (Inst->getOpcode() == Instruction::Call){
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is a call instruction\n");
+        if (Inst->getOpcode() == Instruction::Call) {
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
+                                             << "User is a call instruction\n");
           assert(Inst && isa<CallInst>(Inst));
-          auto* F = dyn_cast<CallInst>(Inst)->getCalledFunction();
-          if (!F || F->isDeclaration()){
-            // If a struct is passed to an indirect or a function not declared in the program, we can't analyze it...
+          auto *F = dyn_cast<CallInst>(Inst)->getCalledFunction();
+          if (!F || F->isDeclaration()) {
+            // If a struct is passed to an indirect or a function not declared
+            // in the program, we can't analyze it...
             Eligiblity = false;
           }
-        }
-        else if (Inst->getOpcode() == Instruction::Invoke){
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "User is an invoke instruction\n");
+        } else if (Inst->getOpcode() == Instruction::Invoke) {
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                          dbgs() << "User is an invoke instruction\n");
           assert(Inst && isa<CallInst>(Inst));
-          auto* F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
-          if (!F || F->isDeclaration()){
-            // If a struct is passed to an indirect or a function not declared in the program, we can't analyze it...
+          auto *F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
+          if (!F || F->isDeclaration()) {
+            // If a struct is passed to an indirect or a function not declared
+            // in the program, we can't analyze it...
             Eligiblity = false;
           }
         }
@@ -249,42 +254,45 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
   }
 }
 
-void StructFieldAccessInfo::summarizeFunctionCalls()
-{
-  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Summarizes call/invokes instructions into function declarations\n");
-  for (auto& it : CallInstFieldAccessMap){
-    auto* CallSiteInfo = it.second;
+void StructFieldAccessInfo::summarizeFunctionCalls() {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Summarizes call/invokes "
+                                           "instructions into function "
+                                           "declarations\n");
+  for (auto &it : CallInstFieldAccessMap) {
+    auto *CallSiteInfo = it.second;
     assert(CallSiteInfo);
-    auto* F = CallSiteInfo->FunctionDeclaration;
+    auto *F = CallSiteInfo->FunctionDeclaration;
     assert(F);
-    if (FunctionAccessMap.find(F) == FunctionAccessMap.end()){
-      FunctionAccessMap[F] = new FunctionAccessPattern(&CallSiteInfo->Arguments);
-    }
-    else{
+    if (FunctionAccessMap.find(F) == FunctionAccessMap.end()) {
+      FunctionAccessMap[F] =
+          new FunctionAccessPattern(&CallSiteInfo->Arguments);
+    } else {
       FunctionAccessMap[F]->insertCallInfo(&CallSiteInfo->Arguments);
     }
   }
-  for (auto& it : FunctionAccessMap){
-    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Function " << it.first->getName() << " is called with fields as argument:\n");
-    for (auto* Args : it.second->CallSites){
-      for (unsigned i = 0; i < Args->size(); i++){
+  for (auto &it : FunctionAccessMap) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                    dbgs() << "Function " << it.first->getName()
+                           << " is called with fields as argument:\n");
+    for (auto *Args : it.second->CallSites) {
+      for (unsigned i = 0; i < Args->size(); i++) {
         if ((*Args)[i] > 0)
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Arg " << i << " is called as field " << (*Args)[i] << "\n");
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Arg " << i
+                                                << " is called as field "
+                                                << (*Args)[i] << "\n");
       }
     }
   }
-
 }
 
-ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const
-{
+ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const {
   ExecutionCountType Hotness = 0;
-  for (auto &it : LoadStoreFieldAccessMap){
+  for (auto &it : LoadStoreFieldAccessMap) {
     auto Count = getExecutionCount(it.first);
     if (Count.hasValue())
       Hotness += Count.getValue();
   }
-  for (auto &it : CallInstFieldAccessMap){
+  for (auto &it : CallInstFieldAccessMap) {
     auto Count = getExecutionCount(it.first);
     if (Count.hasValue())
       Hotness += Count.getValue();
@@ -297,39 +305,38 @@ void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream &OS) {
     OS << "\tInstruction [" << *it.first << "] accesses field number ["
        << it.second << "]\n";
   }
-  for (auto &it : CallInstFieldAccessMap){
-    OS << "\tInstruction [" << *it.first << "] calls function " << it.second->FunctionDeclaration->getName() << " access fields\n";
+  for (auto &it : CallInstFieldAccessMap) {
+    OS << "\tInstruction [" << *it.first << "] calls function "
+       << it.second->FunctionDeclaration->getName() << " access fields\n";
   }
 }
 
 // Functions for StructHotnessAnalyzer
-void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo* SI)
-{
+void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo *SI) {
   auto Hotness = SI->calculateTotalHotness();
   if (Hotness > MaxHotness)
     MaxHotness = Hotness;
   StructHotness[SI->getStructType()] = Hotness;
 }
 
-void StructHotnessAnalyzer::generateHistogram()
-{
+void StructHotnessAnalyzer::generateHistogram() {
   // TODO: vary the number of buckets
   Histogram.resize(HistogramSizeForStats);
   MaxHotness += 1; // To avoid the largest one out of bound
-  for (auto& it : StructHotness){
+  for (auto &it : StructHotness) {
     auto Index = it.second * HistogramSizeForStats / MaxHotness;
     Histogram[Index]++;
   }
   dbgs() << "Distribution of struct hotness: \n";
   for (unsigned i = 0; i < Histogram.size(); i++)
-    dbgs() << "Hotness >=" << MaxHotness * i / HistogramSizeForStats << ": " << Histogram[i] << "\n";
+    dbgs() << "Hotness >=" << MaxHotness * i / HistogramSizeForStats << ": "
+           << Histogram[i] << "\n";
 }
 
-bool StructHotnessAnalyzer::isHot(const StructFieldAccessInfo* SI) const
-{
+bool StructHotnessAnalyzer::isHot(const StructFieldAccessInfo *SI) const {
   if (HotnessCutoffRatio == 0)
     return true;
-  auto* T = SI->getStructType();
+  auto *T = SI->getStructType();
   auto it = StructHotness.find(T);
   assert(it != StructHotness.end());
   return (it->second > MaxHotness * HotnessCutoffRatio / 100);

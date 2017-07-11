@@ -26,9 +26,9 @@ using namespace llvm;
 #define DEBUG_TYPE_IR "struct-analysis-IR"
 #define DEBUG_TYPE_STATS "struct-analysis-detailed-stats"
 
-static cl::opt<unsigned>
-MinimalAccessCountForAnalysis("struct-analysis-minimal-count", cl::init(1), cl::Hidden,
-                              cl::desc("Minimal access count to make the struct eligible for analysis"));
+static cl::opt<unsigned> MinimalAccessCountForAnalysis(
+    "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
+    cl::desc("Minimal access count to make the struct eligible for analysis"));
 
 // Functions for StructFieldAccessManager
 StructFieldAccessInfo *
@@ -71,44 +71,43 @@ StructFieldAccessManager::getFieldAccessOnInstruction(
   return ret;
 }
 
-void StructFieldAccessManager::summarizeFunctionCalls()
-{
-  for (auto &it : StructFieldAccessInfoMap){
+void StructFieldAccessManager::summarizeFunctionCalls() {
+  for (auto &it : StructFieldAccessInfoMap) {
     it.second->summarizeFunctionCalls();
   }
 }
 
-void StructFieldAccessManager::applyFiltersToStructs()
-{
-  // TODO: This function needs more work to add more filters to reduce the number of structs for analysis
+void StructFieldAccessManager::applyFiltersToStructs() {
+  // TODO: This function needs more work to add more filters to reduce the
+  // number of structs for analysis
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "To apply filters to structs\n");
-  for (auto it = StructFieldAccessInfoMap.begin(); it != StructFieldAccessInfoMap.end(); ){
-    if (!it->second->isEligible()){
+  for (auto it = StructFieldAccessInfoMap.begin();
+       it != StructFieldAccessInfoMap.end();) {
+    if (!it->second->isEligible()) {
       delete it->second;
       auto ToRemove = it++;
       StructFieldAccessInfoMap.erase(ToRemove);
       addStats(DebugStats::DS_PassedIntoOutsideFunction);
-    }
-    else if (it->second->getTotalNumFieldAccess() < MinimalAccessCountForAnalysis){
+    } else if (it->second->getTotalNumFieldAccess() <
+               MinimalAccessCountForAnalysis) {
       delete it->second;
       auto ToRemove = it++;
       StructFieldAccessInfoMap.erase(ToRemove);
       addStats(DebugStats::DS_NoAccess);
-    }
-    else{
+    } else {
       HotnessAnalyzer->addStruct(it->second);
       it++;
     }
   }
   DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->generateHistogram());
-  for (auto it = StructFieldAccessInfoMap.begin(); it != StructFieldAccessInfoMap.end(); ){
-    if (!HotnessAnalyzer->isHot(it->second)){
+  for (auto it = StructFieldAccessInfoMap.begin();
+       it != StructFieldAccessInfoMap.end();) {
+    if (!HotnessAnalyzer->isHot(it->second)) {
       delete it->second;
       auto ToRemove = it++;
       StructFieldAccessInfoMap.erase(ToRemove);
       addStats(DebugStats::DS_FilterColdStructs);
-    }
-    else{
+    } else {
       it++;
     }
   }
@@ -159,11 +158,16 @@ void StructFieldAccessManager::printStats() {
     assert(Result);
     auto Hotness = it.second->calculateTotalHotness();
     if (type->isLiteral()) {
-      outs() << "A literal struct defined as " << StructDefinitionTypeNames[it.second->getStructDefinition()] << " has " << Result << " accesses and " << Hotness <<" execution count.\n";
+      outs() << "A literal struct defined as "
+             << StructDefinitionTypeNames[it.second->getStructDefinition()]
+             << " has " << Result << " accesses and " << Hotness
+             << " execution count.\n";
       FILE_OS << "Literal," << Result << "\n";
-    }
-    else{
-      outs() << "Struct [" << type->getStructName() << "] defined as " << StructDefinitionTypeNames[it.second->getStructDefinition()] << " has " << Result << " accesses and " << Hotness << " execution count.\n";
+    } else {
+      outs() << "Struct [" << type->getStructName() << "] defined as "
+             << StructDefinitionTypeNames[it.second->getStructDefinition()]
+             << " has " << Result << " accesses and " << Hotness
+             << " execution count.\n";
       FILE_OS << type->getStructName() << "," << Result << "\n";
     }
   }
