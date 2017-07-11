@@ -33,7 +33,7 @@ using namespace llvm;
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
 
 static cl::opt<bool> PerformCPGCheck(
-    "struct-field-cache-analysis-check-CPG", cl::init(false), cl::Hidden,
+    "struct-analysis-check-CPG", cl::init(false), cl::Hidden,
     cl::desc("Perform CPG checking algorithm that takes a long time"));
 
 // Utility functions
@@ -561,7 +561,9 @@ void CloseProximityBuilder::buildCloseProximityRelations()
   }
   if (PerformCPGCheck)
     compareCloseProximityRelations();
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, debugPrintCloseProximityGraph(dbgs()));
+  DEBUG(debugPrintCloseProximityGraph(dbgs()));
+  if (PerformCPGCheck)
+    DEBUG(debugPrintGoldCPT(dbgs()));
 }
 
 void CloseProximityBuilder::debugPrintFieldReferenceGraph(raw_ostream& OS) const
