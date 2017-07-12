@@ -18,6 +18,8 @@
 //===------------------------------------------------------------------------===//
 
 #include "StructFieldCacheAnalysisImpl.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/CFG.h"
 #include "llvm/Support/Format.h"
 
 #include <cmath>
@@ -25,16 +27,20 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "struct-analysis"
-#define DEBUG_TYPE_FRG "struct-analysis-FRG"
-#define DEBUG_TYPE_CPG "struct-analysis-CPG"
-
 #define DEBUG_PRINT_COUNT(x) (format("%.2f", (x)))
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
+
+static cl::opt<bool> PerformFRGOnly(
+    "struct-analysis-FRG-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the analysis after performing FRG generation"));
 
 static cl::opt<bool> PerformCPGCheck(
     "struct-analysis-check-CPG", cl::init(false), cl::Hidden,
     cl::desc("Perform CPG checking algorithm that takes a long time"));
+
+static cl::opt<bool> DisableIgnoreZeroCountNodes(
+    "struct-analysis-disable-ignore-zeros", cl::init(false), cl::Hidden,
+    cl::desc("Ignore zero-count nodes in FRG generation"));
 
 // Utility functions
 static void updatePairByMerging(ExecutionCountType& ResultCount, DataBytesType& ResultDistance, ExecutionCountType SourceCount, DataBytesType SourceDistance)
@@ -97,14 +103,16 @@ FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::createBasicBlock
   return ret;
 }
 
-FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::getBasicBlockHelperInfo(const BasicBlock* BB)
+FieldReferenceGraph::BasicBlockHelperInfo* FieldReferenceGraph::getBasicBlockHelperInfo(const BasicBlock* BB) const
 {
-  assert (BBInfoMap.find(BB) != BBInfoMap.end());
-  return BBInfoMap[BB];
+  auto it = BBInfoMap.find(BB);
+  assert (it != BBInfoMap.end());
+  return it->second;
 }
 
 FieldReferenceGraph::Node* FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S)
 {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size() << " for field " << FieldNum << "\n");
   auto* Node = new FieldReferenceGraph::Node(NodeList.size(), FieldNum, S);
   NodeList.push_back(Node);
   return Node;
@@ -160,7 +168,7 @@ void FieldReferenceGraph::debugPrint(raw_ostream& OS) const
     OS << "Node " << Node->Id << " accesses " << Node->FieldNum << " and has " << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and " << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
     OS << "connect with {";
     for (auto* Edge : Node->OutEdges){
-      OS << " Node " << Edge->ToNode->Id << " (" << DEBUG_PRINT_COUNT(Edge->ExecutionCount) << "," << DEBUG_PRINT_DIST(Edge->DataSize) << ")  ";
+      OS << " Node " << Edge->ToNode->Id << " (" << DEBUG_PRINT_COUNT(Edge->ExecutionCount) << "," << DEBUG_PRINT_DIST(Edge->DataSize) << ") " << (Edge->LoopArc ? "B" : "") << " ";
       ExamineList.push(Edge->ToNode);
     }
     OS << "}\n";
@@ -209,6 +217,37 @@ DataBytesType CloseProximityBuilder::getMemAccessDataSize(const Instruction* I) 
     type = I->getOperand(0)->getType();
   assert (type->isSized());
   return CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
+}
+
+void CloseProximityBuilder::markBackEdges(const FieldReferenceGraph* FRG, const BasicBlock* BB, BasicBlockSetType* VisitedBB){
+  auto* Term = BB->getTerminator();
+  for (const auto *SB : Term->successors()){
+    if (VisitedBB->find(SB) != VisitedBB->end()){
+      auto* BBI = FRG->getBasicBlockHelperInfo(BB);
+      BBI->BackEdgeSet.insert(SB);
+    }
+    else{
+      VisitedBB->insert(SB);
+      markBackEdges(FRG, SB, VisitedBB);
+    }
+  }
+  VisitedBB->erase(BB);
+}
+
+void CloseProximityBuilder::detectBackEdges(const FieldReferenceGraph* FRG, const Function* F)
+{
+  /*
+  auto& StartBB = F->getEntryBlock();
+  BasicBlockSetType VisitedBB;
+  VisitedBB.insert(&StartBB);
+  markBackEdges(FRG, &StartBB, &VisitedBB);
+  */
+  SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 32> BackEdges;
+  FindFunctionBackedges(*F, BackEdges);
+  for (auto it = BackEdges.begin(); it != BackEdges.end(); it++){
+    auto* BBI = FRG->getBasicBlockHelperInfo(it->first);
+    BBI->BackEdgeSet.insert(it->second);
+  }
 }
 
 FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Function* F)
@@ -262,7 +301,9 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
       DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a dummy node as BB does not have memory accesses\n");
       BBI->FirstNode = BBI->LastNode = FRG->createNewNode();
     }
-    }
+  }
+  // Before connect nodes, need to mark all back edges first
+  detectBackEdges(FRG, F);
   // Connect nodes between different basic blocks
   for (auto &BB : *F){
     auto* BBI = FRG->getBasicBlockHelperInfo(&BB);
@@ -277,10 +318,10 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
         assert(Prob.hasValue());
         C = BBCount.getValue() * Prob.getValue();
       }
-      if (C < 1e-3)
+      if (!DisableIgnoreZeroCountNodes && C < 1e-3)
         continue;
       auto D = BBI->RemainBytes; // Use size of remaining data in BB
-      if (StructManager->isBackEdgeInLoop(&BB, SB))
+      if (BBI->BackEdgeSet.find(SB) != BBI->BackEdgeSet.end())
         FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D, true);
       else
         FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D);
@@ -429,7 +470,7 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph* FRG, FieldReferenc
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check out edge: (" << E->FromNode->Id << "," << E->ToNode->Id << "): ");
       if (E->LoopArc){
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "It is a loop arc\n");
-       }
+      }
       else if (E->ToNode->InEdges.size() == 1 && !E->Collapsed){
         // if SUCC can be collapsed, i.e. only has one predecessor
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found a successor can be collapsed\n");
@@ -553,6 +594,8 @@ void CloseProximityBuilder::buildCloseProximityRelations()
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F.getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(&F);
     assert(FRG);
+    if (PerformFRGOnly)
+      continue;
     // Brutal force get CP relations, should perform first because it preserves FRG
     if (PerformCPGCheck)
       createGoldCloseProximityRelations(FRG);
@@ -561,9 +604,6 @@ void CloseProximityBuilder::buildCloseProximityRelations()
   }
   if (PerformCPGCheck)
     compareCloseProximityRelations();
-  DEBUG(debugPrintCloseProximityGraph(dbgs()));
-  if (PerformCPGCheck)
-    DEBUG(debugPrintGoldCPT(dbgs()));
 }
 
 void CloseProximityBuilder::debugPrintFieldReferenceGraph(raw_ostream& OS) const
@@ -575,6 +615,10 @@ void CloseProximityBuilder::debugPrintFieldReferenceGraph(raw_ostream& OS) const
 
 void CloseProximityBuilder::debugPrintCloseProximityGraph(raw_ostream& OS) const
 {
+  if (PerformFRGOnly){
+    debugPrintFieldReferenceGraph(OS);
+    return;
+  }
   for (unsigned i = 0; i < NumElements; i++){
     OS << "F" << i+1 << ": ";
     for (unsigned j = 0; j < NumElements; j++){
@@ -585,6 +629,8 @@ void CloseProximityBuilder::debugPrintCloseProximityGraph(raw_ostream& OS) const
     }
     OS << "\n";
   }
+  if (PerformCPGCheck)
+    debugPrintGoldCPT(OS);
 }
 
 void CloseProximityBuilder::debugPrintGoldCPT(raw_ostream& OS) const
@@ -599,27 +645,4 @@ void CloseProximityBuilder::debugPrintGoldCPT(raw_ostream& OS) const
     }
     OS << "\n";
   }
-}
-
-void StructFieldAccessManager::debugPrintAllCPGs() const
-{
-  dbgs() << "------------ Printing all CPGs: ------------------- \n";
-  for (auto &it : CloseProximityBuilderMap){
-    dbgs().changeColor(raw_ostream::YELLOW);
-    auto* type = it.first;
-    assert(isa<StructType>(type));
-    if (dyn_cast<StructType>(type)->isLiteral()){
-      dbgs() << "A literal struct has CPG: \n";
-    }
-    else{
-      dbgs() << "Struct [" << type->getStructName() << "] has FRG: \n";
-    }
-    dbgs().changeColor(raw_ostream::GREEN);
-    it.second->debugPrintCloseProximityGraph(dbgs());
-    if (PerformCPGCheck){
-      it.second->debugPrintGoldCPT(dbgs());
-    }
-    dbgs().resetColor();
-  }
-  dbgs() << "----------------------------------------------------------- \n";
 }

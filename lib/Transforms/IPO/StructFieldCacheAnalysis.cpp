@@ -129,25 +129,6 @@ void StructFieldAccessManager::applyFiltersToStructs() {
   }
 }
 
-bool StructFieldAccessManager::isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const
-{
-  assert(FromBB->getParent() == ToBB->getParent());
-  auto* LoopInfo = LookupLI(*const_cast<Function*>(FromBB->getParent()));
-  assert(LoopInfo);
-  auto* Loop1 = LoopInfo->getLoopFor(FromBB);
-  auto* Loop2 = LoopInfo->getLoopFor(ToBB);
-  // If FromBB and ToBB are not in the same loop, it can't be a backedge
-  if (Loop1 != Loop2)
-    return false;
-  if (Loop1 == NULL)
-    return false;
-  // If ToBB is not the header of the loop, it can't be a backedge
-  if (ToBB != Loop1->getHeader())
-    return false;
-
-  return true;
-}
-
 void StructFieldAccessManager::buildCloseProximityRelations()
 {
   for (auto& it : StructFieldAccessInfoMap){
@@ -169,6 +150,26 @@ void StructFieldAccessManager::debugPrintAllStructAccesses() {
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintAllStructAccesses(dbgs());
+    dbgs().resetColor();
+  }
+  dbgs() << "----------------------------------------------------------- \n";
+}
+
+void StructFieldAccessManager::debugPrintAllCPGs() const
+{
+  dbgs() << "------------ Printing all CPGs: ------------------- \n";
+  for (auto &it : CloseProximityBuilderMap){
+    dbgs().changeColor(raw_ostream::YELLOW);
+    auto* type = it.first;
+    assert(isa<StructType>(type));
+    if (dyn_cast<StructType>(type)->isLiteral()){
+      dbgs() << "A literal struct has CPG: \n";
+    }
+    else{
+      dbgs() << "Struct [" << type->getStructName() << "] has FRG: \n";
+    }
+    dbgs().changeColor(raw_ostream::GREEN);
+    it.second->debugPrintCloseProximityGraph(dbgs());
     dbgs().resetColor();
   }
   dbgs() << "----------------------------------------------------------- \n";
@@ -382,11 +383,10 @@ static void applyFilters(StructFieldAccessManager* StructManager)
 
 static bool performStructFieldCacheAnalysis(Module &M,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI,
-                                            function_ref<BranchProbabilityInfo *(Function &)> LookupBPI,
-                                            function_ref<LoopInfo *(Function &)> LookupLI)
+                                            function_ref<BranchProbabilityInfo *(Function &)> LookupBPI)
 {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
-  StructFieldAccessManager StructManager(M, LookupBFI, LookupBPI, LookupLI);
+  StructFieldAccessManager StructManager(M, LookupBFI, LookupBPI);
   // Step 0 - retrieve debug info for all struct TODO: disable for now because
   // it's not supporting annonymous structs
   // Step 1 - perform IR analysis to collect info of all structs
@@ -396,6 +396,7 @@ static bool performStructFieldCacheAnalysis(Module &M,
   // Step 3 - build and collapse Field Reference Graph and create Close Proximity Graph
   if (!PerformIROnly){
     StructManager.buildCloseProximityRelations();
+    DEBUG(StructManager.debugPrintAllCPGs());
   }
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
@@ -423,9 +424,8 @@ char StructFieldCacheAnalysisPass::ID = 0;
 INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass,
                       "struct-field-cache-analysis",
                       "Struct Field Cache Analysis", false, false)
-    INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
-    INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
 INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis",
                     "Struct Field Cache Analysis", false, false)
 ModulePass *llvm::createStructFieldCacheAnalysisPass() {
@@ -442,10 +442,7 @@ PreservedAnalyses StructFieldCacheAnalysis::run(Module &M,
   auto LookupBPI = [&FAM](Function& F) {
     return &FAM.getResult<BranchProbabilityAnalysis>(F);
   };
-  auto LookupLI = [&FAM](Function& F) {
-    return &FAM.getResult<LoopAnalysis>(F);
-  };
-  if (!performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI, LookupLI))
+  if (!performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI))
     return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
@@ -457,8 +454,5 @@ bool StructFieldCacheAnalysisPass::runOnModule(Module &M) {
   auto LookupBPI = [this](Function& F) {
     return &this->getAnalysis<BranchProbabilityInfoWrapperPass>(F).getBPI();
   };
-  auto LookupLI = [this](Function& F) {
-    return &this->getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
-  };
-  return performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI, LookupLI);
+  return performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI);
 }

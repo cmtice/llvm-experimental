@@ -22,7 +22,6 @@
 
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/FileSystem.h"
@@ -37,6 +36,12 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "struct-analysis"
+#define DEBUG_TYPE_IR "struct-analysis-IR"
+#define DEBUG_TYPE_STATS "struct-analysis-detailed-stats"
+#define DEBUG_TYPE_FRG "struct-analysis-FRG"
+#define DEBUG_TYPE_CPG "struct-analysis-CPG"
+
 namespace llvm {
 typedef unsigned FieldNumType;
 typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
@@ -44,6 +49,7 @@ typedef uint64_t ProfileCountType;
 typedef std::vector<FieldNumType> FieldNumArrayType;
 typedef double ExecutionCountType;
 typedef double DataBytesType;
+typedef std::unordered_set<const BasicBlock*> BasicBlockSetType;
 typedef std::pair<ExecutionCountType, DataBytesType> CloseProximityPairType;
 typedef std::vector< std::vector<CloseProximityPairType> > CloseProximityTableType;
 
@@ -99,9 +105,8 @@ class StructFieldAccessManager {
 
   StructFieldAccessManager(const Module &M,
                            function_ref<BlockFrequencyInfo *(Function &)> LBFI,
-                           function_ref<BranchProbabilityInfo *(Function &)> LBPI,
-                           function_ref<LoopInfo* (Function &)> LLI)
-      : CurrentModule(M), LookupBFI(LBFI), LookupBPI(LBPI), LookupLI(LLI),
+                           function_ref<BranchProbabilityInfo *(Function &)> LBPI)
+      : CurrentModule(M), LookupBFI(LBFI), LookupBPI(LBPI),
         StatCounts(DebugStats::DS_MaxNumStats) {
     HotnessAnalyzer = new StructHotnessAnalyzer;
   };
@@ -131,9 +136,6 @@ class StructFieldAccessManager {
     auto Prob = LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
     return 1.0 * Prob.getNumerator() / Prob.getDenominator();
   }
-
-  /// Check if an edge from FromBB to ToBB is a back edge in any loop
-  bool isBackEdgeInLoop(const BasicBlock* FromBB, const BasicBlock* ToBB) const;
 
   /// Retrive a pair of information if the instruction is accessing any struct
   /// type and field number
@@ -174,9 +176,6 @@ class StructFieldAccessManager {
 
   /// Function reference that is used to calculate branch probability
   function_ref<BranchProbabilityInfo *(Function &)> LookupBPI;
-
-  /// Function reference that is used to retrive loop information
-  function_ref<LoopInfo *(Function &)> LookupLI;
 
   /// A map storing access info of all structs
   std::unordered_map<const StructType *, StructFieldAccessInfo *>
@@ -469,6 +468,7 @@ class FieldReferenceGraph
     DataBytesType RemainBytes;
     Node* FirstNode;
     Node* LastNode;
+    BasicBlockSetType BackEdgeSet;
   };
 
   public:
@@ -502,7 +502,7 @@ class FieldReferenceGraph
   /// Creator and getter of helper info for the basic block, useful when connect nodes from different basic blocks
   /// %{
   BasicBlockHelperInfo* createBasicBlockHelperInfo(const BasicBlock* BB);
-  BasicBlockHelperInfo* getBasicBlockHelperInfo(const BasicBlock* BB);
+  BasicBlockHelperInfo* getBasicBlockHelperInfo(const BasicBlock* BB) const;
   /// %}
 
   /// The two functions are used to create a new node in the graph, unconnected with other nodes, and return the pointer to the Node
@@ -589,6 +589,12 @@ class CloseProximityBuilder {
  private:
   /// Calculate memory access data size in Bytes
   DataBytesType getMemAccessDataSize(const Instruction* I) const;
+
+  /// Depth-first search the CFG to mark all back edges and record in each BasicBlockHelperInfo
+  void markBackEdges(const FieldReferenceGraph* FRG, const BasicBlock* BB, BasicBlockSetType* VisitedBB);
+
+  /// Main function to detect and mark all backedges
+  void detectBackEdges(const FieldReferenceGraph* FRG, const Function* F);
 
   /// Update CPG with a CloseProximity pair
   /// %{
