@@ -191,7 +191,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
         } else if (Inst->getOpcode() == Instruction::Invoke) {
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                           dbgs() << "User is an invoke instruction\n");
-          assert(Inst && isa<CallInst>(Inst));
+          assert(Inst && isa<InvokeInst>(Inst));
           auto *F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
           if (!F || F->isDeclaration()) {
             // If a struct is passed to an indirect or a function not declared
