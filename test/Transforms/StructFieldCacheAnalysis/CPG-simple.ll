@@ -1,26 +1,10 @@
-; Test if FRG creation is correct or not.
-; Create a simple for loop in the IR, with an if-else in the loop body. The test covers following attributes:
-; Intra-BB creation:
-; 1. Create a dummy node when a basic block doesn't have a field access or a memory access, e.g. Node 5, Node 8
-; 2. Create a dummy node at the beginning of a BB if the first memory access is not a field access,
-; e.g. Node 1 before Node 2, Node 6 before Node 7
-; 3. Create only one node when a BB only has a field access, e.g. Node 4
-; Inter-BB connection:
-; 4. Record bytes accessed after the last field access in each basic block, e.g. Node 0 -> Node 1, Node 3 -> Node 4/5
-; 5. Test the ability to connect a BB and its successors with branch probability, e.g. Node 2 -> Node 3/8, Node 3 -> Node 4/5
+; Test if CPG collapsing algorithm is correct
+; This checking is simple. Turn on the golden CPG checker and the program will check correctness by itself
+; This test only needs to detect if there's error reported.
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -debug-only=struct-analysis-FRG -o %t2 %t1 2>&1 | FileCheck %s
-; CHECK: Field Reference Graph for function: main
-; CHECK: Node 0 accesses 0 and has 3.00 out sum and 0.00 in sum: connect with { Node 1 (3.00,16.000)  }
-; CHECK: Node 1 accesses 0 and has 303.00 out sum and 303.00 in sum: connect with { Node 2 (303.00,0.000)  }
-; CHECK: Node 2 accesses 1 and has 303.00 out sum and 303.00 in sum: connect with { Node 8 (3.00,0.000)   Node 3 (300.00,0.000)  }
-; CHECK: Node 8 accesses 0 and has 0.00 out sum and 3.00 in sum: connect with {}
-; CHECK: Node 3 accesses 2 and has 300.00 out sum and 300.00 in sum: connect with { Node 5 (170.00,4.000)   Node 4 (130.00,4.000)  }
-; CHECK: Node 5 accesses 0 and has 169.00 out sum and 170.00 in sum: connect with { Node 6 (169.00,0.000)  }
-; CHECK: Node 4 accesses 2 and has 129.00 out sum and 130.00 in sum: connect with { Node 6 (129.00,0.000)  }
-; CHECK: Node 6 accesses 0 and has 300.00 out sum and 298.00 in sum: connect with { Node 7 (300.00,4.000)  }
-; CHECK: Node 7 accesses 3 and has 300.00 out sum and 300.00 in sum: connect with { Node 1 (300.00,0.000)  }
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-check-CPG -o %t2 %t1 2>&1 | FileCheck %s
+; CHECK-NOT: Found error in CPG
 
 %struct.FooBar = type { i32, i8, double }
 
