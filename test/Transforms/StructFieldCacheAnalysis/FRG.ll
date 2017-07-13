@@ -10,7 +10,7 @@
 ; 5. Test the ability to connect a BB and its successors with branch probability, e.g. Node 2 -> Node 3/8, Node 3 -> Node 4/5
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -debug-only=struct-analysis -o %t2 %t1 2>&1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -o %t2 %t1 2>&1 | FileCheck %s
 ; CHECK: Field Reference Graph for function: main
 ; CHECK: Node 0 accesses 0 and has 3.00 out sum and 0.00 in sum: connect with { Node 1 (3.00,16.000)  }
 ; CHECK: Node 1 accesses 0 and has 303.00 out sum and 303.00 in sum: connect with { Node 2 (303.00,0.000)  }

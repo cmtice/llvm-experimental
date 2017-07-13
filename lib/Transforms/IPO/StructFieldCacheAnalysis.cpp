@@ -396,7 +396,8 @@ static bool performStructFieldCacheAnalysis(Module &M,
   // Step 3 - build and collapse Field Reference Graph and create Close Proximity Graph
   if (!PerformIROnly){
     StructManager.buildCloseProximityRelations();
-    DEBUG(StructManager.debugPrintAllCPGs());
+    //DEBUG(StructManager.debugPrintAllCPGs());
+    StructManager.debugPrintAllCPGs();
   }
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;

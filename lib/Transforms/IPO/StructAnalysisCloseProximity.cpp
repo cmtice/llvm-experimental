@@ -308,9 +308,9 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
   }
   auto* BBI = FRG->getBasicBlockHelperInfo(&F->getEntryBlock());
   FRG->setRootNode(BBI->FirstNode);
-  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "---------- FRG for function " << F->getName() << "----------------\n");
-  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, FRG->debugPrint(dbgs()));
-  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "------------------------------------------------------------------------\n");
+  DEBUG(dbgs() << "---------- FRG for function " << F->getName() << "----------------\n");
+  DEBUG(FRG->debugPrint(dbgs()));
+  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
   return FRG;
 }
 
