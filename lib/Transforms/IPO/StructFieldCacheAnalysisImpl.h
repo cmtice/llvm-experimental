@@ -590,9 +590,6 @@ class CloseProximityBuilder {
   /// Calculate memory access data size in Bytes
   DataBytesType getMemAccessDataSize(const Instruction* I) const;
 
-  /// Depth-first search the CFG to mark all back edges and record in each BasicBlockHelperInfo
-  void markBackEdges(const FieldReferenceGraph* FRG, const BasicBlock* BB, BasicBlockSetType* VisitedBB);
-
   /// Main function to detect and mark all backedges
   void detectBackEdges(const FieldReferenceGraph* FRG, const Function* F);
 
@@ -633,6 +630,9 @@ class CloseProximityBuilder {
 
   /// Recursively collapse the FRG until it becomes the root with a collapse edge
   bool collapseRoot(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
+
+  /// Recursively calculate CP relations on the remaining FRG that are no longer collapsable
+  void createCloseProximityRelations(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
 
   /// Main function to create CPG by collapsing FRG
   void collapseFieldReferenceGraph(FieldReferenceGraph* FRG);

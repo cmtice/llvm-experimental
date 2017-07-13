@@ -219,29 +219,8 @@ DataBytesType CloseProximityBuilder::getMemAccessDataSize(const Instruction* I) 
   return CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
 }
 
-void CloseProximityBuilder::markBackEdges(const FieldReferenceGraph* FRG, const BasicBlock* BB, BasicBlockSetType* VisitedBB){
-  auto* Term = BB->getTerminator();
-  for (const auto *SB : Term->successors()){
-    if (VisitedBB->find(SB) != VisitedBB->end()){
-      auto* BBI = FRG->getBasicBlockHelperInfo(BB);
-      BBI->BackEdgeSet.insert(SB);
-    }
-    else{
-      VisitedBB->insert(SB);
-      markBackEdges(FRG, SB, VisitedBB);
-    }
-  }
-  VisitedBB->erase(BB);
-}
-
 void CloseProximityBuilder::detectBackEdges(const FieldReferenceGraph* FRG, const Function* F)
 {
-  /*
-  auto& StartBB = F->getEntryBlock();
-  BasicBlockSetType VisitedBB;
-  VisitedBB.insert(&StartBB);
-  markBackEdges(FRG, &StartBB, &VisitedBB);
-  */
   SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 32> BackEdges;
   FindFunctionBackedges(*F, BackEdges);
   for (auto it = BackEdges.begin(); it != BackEdges.end(); it++){
@@ -489,10 +468,39 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph* FRG, FieldReferenc
   return SubtreeChange;
 }
 
+void CloseProximityBuilder::createCloseProximityRelations(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Finalize Node " << Root->Id << " as root\n");
+  // Traverse the remaining FRG and calculate CP relations from bottom of the FRG
+  for (auto *E : Root->OutEdges){
+    if (!E->LoopArc && !E->Collapsed && !E->ToNode->Visited)
+      createCloseProximityRelations(FRG, E->ToNode);
+  }
+  // Calculate CP relations between each node and its non-collapsed successors
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Calculate CP-relations with Node " << Root->Id << " as root\n");
+  for (auto *E : Root->OutEdges){
+    if (!E->Collapsed){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found a non-collapsed edge: (" << E->FromNode->Id << "," << E->ToNode->Id << ")\n");
+      updateCPGFromNodeToSubtree(E);
+    }
+  }
+  Root->Visited = true;
+}
+
 void CloseProximityBuilder::collapseFieldReferenceGraph(FieldReferenceGraph* FRG)
 {
   auto* Root = FRG->getRootNode();
   collapseRoot(FRG, Root);
+  // If the FRG is not collapsed to a single node, need calculate CP relations of remaining nodes with brutal force
+  auto AllCollapsed = true;
+  for (auto* E : Root->OutEdges){
+    if (!E->Collapsed)
+      AllCollapsed = false;
+  }
+  // FIXME: Use this assertion to detect if this happens.
+  if (AllCollapsed)
+    return;
+  createCloseProximityRelations(FRG, Root);
 }
 
 // Functions for building CPG with brutal force, used for debugging
