@@ -269,7 +269,7 @@ public:
   bool isEligible() const { return Eligiblity; }
 
   /// Check if the function has any field accesses of this struct. If not, skip analysis
-  bool isFunctionToAnalyze(const Function* F) { return FunctionsToAnalyze.find(F) != FunctionsToAnalyze.end(); }
+  bool isFunctionToAnalyze(const Function* F) const { return FunctionsToAnalyze.find(F) != FunctionsToAnalyze.end(); }
 
   /// Analyze a value pointing to a struct and collect struct access from it. It
   /// can be allocas/function args/globals

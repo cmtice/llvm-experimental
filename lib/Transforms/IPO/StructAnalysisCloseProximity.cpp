@@ -236,6 +236,8 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
   FRGArray.push_back(FRG);
   // Create and connect node inside each basic block
   for (auto &BB : *F){
+    if (!StructInfo->getExecutionCount(&BB))
+      continue;
     DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Build partial FRG for BB: " << BB << "\n");
     auto* BBI = FRG->createBasicBlockHelperInfo(&BB);
     for (auto &I : BB){
@@ -306,6 +308,7 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
         FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D);
     }
   }
+  assert(StructInfo->getExecutionCount(&F->getEntryBlock()));
   auto* BBI = FRG->getBasicBlockHelperInfo(&F->getEntryBlock());
   FRG->setRootNode(BBI->FirstNode);
   DEBUG(dbgs() << "---------- FRG for function " << F->getName() << "----------------\n");
