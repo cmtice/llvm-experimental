@@ -52,11 +52,11 @@ static void updatePairByMerging(ExecutionCountType& ResultCount, DataBytesType& 
   ResultCount += SourceCount;
 }
 
-static void updatePairByConnecting(ExecutionCountType& ResultCount, DataBytesType& ResultDistance, ExecutionCountType SourceCount, double Ratio, DataBytesType SourceDistance1, DataBytesType SourceDistance2)
+static void updatePairByConnecting(ExecutionCountType& ResultCount, double OutRatio, DataBytesType& ResultDistance, ExecutionCountType SourceCount, double InRatio, DataBytesType SourceDistance)
 {
-  assert(Ratio <= 1);
-  ResultCount = SourceCount * Ratio;
-  ResultDistance = SourceDistance1 + SourceDistance2;
+  assert(InRatio <= 1 && OutRatio <= 1);
+  ResultCount = std::min(ResultCount*OutRatio, SourceCount * InRatio);
+  ResultDistance += SourceDistance;
 }
 
 // Functions for FieldReferenceGraph
@@ -364,12 +364,14 @@ void CloseProximityBuilder::updateCPGBetweenNodes(FieldReferenceGraph::Node* Fro
     if (E->ToNode == From)
       continue;
     if (E->Collapsed){
-      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to collapsed subtree edge (" << E->FromNode->Id << "," << E->ToNode->Id << ") with ratio " << Arc->ExecutionCount/To->InSum << "\n");
+      //DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to collapsed subtree edge (" << E->FromNode->Id << "," << E->ToNode->Id << ") with ratio " << Arc->ExecutionCount/To->InSum << "\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id << " to collapsed subtree edge (" << E->FromNode->Id << "," << E->ToNode->Id << ") with ratio " << E->ExecutionCount/To->OutSum << "\n");
       for (auto* Entry : E->CollapsedEntries){
         auto ExCnt = C;
         auto Dist = D;
         assert(To->InSum > 0);
-        updatePairByConnecting(ExCnt, Dist, Entry->ExecutionCount, Arc->ExecutionCount/To->InSum, Dist, To->Size + Entry->DataSize);
+        //updatePairByConnecting(ExCnt, Dist, Entry->ExecutionCount, Arc->ExecutionCount/To->InSum, Dist, To->Size + Entry->DataSize);
+        updatePairByConnecting(ExCnt, E->ExecutionCount/To->OutSum, Dist, Entry->ExecutionCount, Arc->ExecutionCount/To->InSum, To->Size + Entry->DataSize);
         assert(!std::isnan(ExCnt));
         updateCPG(From->FieldNum, Entry->FieldNum, ExCnt, Dist);
       }
@@ -379,7 +381,7 @@ void CloseProximityBuilder::updateCPGBetweenNodes(FieldReferenceGraph::Node* Fro
       auto ExCnt = C;
       auto Dist = D;
       assert(To->OutSum > 0);
-      updatePairByConnecting(ExCnt, Dist, ExCnt, E->ExecutionCount/To->OutSum, Dist, To->Size + E->DataSize);
+      updatePairByConnecting(ExCnt, E->ExecutionCount/To->OutSum, Dist, ExCnt, 1.0, To->Size + E->DataSize);
       if (ExCnt > 1e-3)
         updateCPGBetweenNodes(From, E->ToNode, E, ExCnt, Dist, CheckList);
     }
@@ -516,7 +518,7 @@ void CloseProximityBuilder::calculateCPRelation(EdgeArrayType* Path)
   auto D = (*Path)[0]->DataSize;
   for (unsigned i = 1; i < Path->size(); i++){
     auto* E = (*Path)[i];
-    updatePairByConnecting(C, D, C, E->ExecutionCount/E->FromNode->OutSum, D, E->DataSize + E->FromNode->Size);
+    updatePairByConnecting(C, E->ExecutionCount/E->FromNode->OutSum, D, E->ExecutionCount, 1.0, E->DataSize + E->FromNode->Size);
   }
   updateGoldCPG((*Path)[0]->FromNode->FieldNum, (*Path)[Path->size()-1]->ToNode->FieldNum, C, D);
 }
