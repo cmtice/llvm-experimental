@@ -601,6 +601,8 @@ void CloseProximityBuilder::buildCloseProximityRelations()
       continue;
     if (!F.getEntryCount() || F.getEntryCount().getValue() == 0)
       continue;
+    if (!StructInfo->isFunctionToAnalyze(&F))
+      continue;
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F.getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(&F);
     assert(FRG);

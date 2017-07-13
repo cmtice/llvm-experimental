@@ -35,6 +35,7 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
          I->getOpcode() == Instruction::Store); // Only loads and stores
   assert(LoadStoreFieldAccessMap.find(I) == LoadStoreFieldAccessMap.end());
   LoadStoreFieldAccessMap[I] = FieldNum;
+  FunctionsToAnalyze.insert(I->getParent()->getParent());
 }
 
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
@@ -52,6 +53,7 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
     assert(CallSite->FunctionDeclaration == F);
     CallSite->insertCallInfo(Arg, FieldNum);
   }
+  //FIXME: add the function F to Functions to analyze
 }
 
 Optional<FieldNumType>

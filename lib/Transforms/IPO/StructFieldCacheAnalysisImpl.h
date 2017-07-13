@@ -268,6 +268,9 @@ public:
   }
   bool isEligible() const { return Eligiblity; }
 
+  /// Check if the function has any field accesses of this struct. If not, skip analysis
+  bool isFunctionToAnalyze(const Function* F) { return FunctionsToAnalyze.find(F) != FunctionsToAnalyze.end(); }
+
   /// Analyze a value pointing to a struct and collect struct access from it. It
   /// can be allocas/function args/globals
   void analyzeUsersOfStructValue(const Value *V);
@@ -340,14 +343,19 @@ private:
   /// A map records all load/store instructions accessing which field of the
   /// structure
   std::unordered_map<const Instruction *, unsigned> LoadStoreFieldAccessMap;
+
   // A map records all call/invoke instructions accessing which field of the
   // structure
   std::unordered_map<const Instruction *, FunctionCallInfo *>
       CallInstFieldAccessMap;
+
   // A map records all functions that has calls with field accesses and their
   // calling patterns
   std::unordered_map<const Function *, FunctionAccessPattern *>
       FunctionAccessMap;
+
+  /// A map records all functions that have at least one struct field accesses
+  std::unordered_set<const Function *> FunctionsToAnalyze;
   // For stat
   std::vector<unsigned> StatCounts;
   std::unordered_map<unsigned, unsigned> UnknownOpcodes;
