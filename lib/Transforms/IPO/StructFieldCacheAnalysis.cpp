@@ -35,6 +35,18 @@ static cl::opt<bool> PerformIROnly(
     "struct-analysis-IR-only", cl::init(false), cl::Hidden,
     cl::desc("Stop the analysis after performing IR analysis"));
 
+static cl::opt<bool> PerformCPGOnly(
+    "struct-analysis-CPG-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the analysis after performing CPG generation"));
+
+static cl::opt<bool> EnableFieldReorderingSuggestions(
+    "struct-analysis-suggest-reorder", cl::init(false), cl::Hidden,
+    cl::desc("Give suggestions on reordering struct fields"));
+
+static cl::opt<bool> EnableStructSplittingSuggestions(
+    "struct-analysis-suggest-split", cl::init(false), cl::Hidden,
+    cl::desc("Give suggestions on splitting structs into smaller ones"));
+
 // Functions for StructFieldAccessManager
 StructFieldAccessManager::~StructFieldAccessManager() {
   delete HotnessAnalyzer;
@@ -137,6 +149,41 @@ void StructFieldAccessManager::buildCloseProximityRelations()
     CloseProximityBuilderMap[it.first] = CPB;
   }
 }
+
+void StructFieldAccessManager::suggestFieldReordering()
+{
+  outs() << "------------- Suggestions on Reordering ------------------\n";
+  for (auto& it : CloseProximityBuilderMap){
+    auto* type = it.first;
+    if (type->isLiteral()){
+      outs() << "Recommendation on an anonymous struct:\n";
+    }
+    else{
+      outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
+    }
+    auto* FRA = new FieldReorderAnalyzer(CurrentModule, type, it.second, NULL);
+    FRA->makeSuggestions();
+  }
+  outs() << "----------------------------------------------------------\n";
+}
+
+void StructFieldAccessManager::suggestStructSplitting()
+{
+  outs() << "------------- Suggestions on Splitting ------------------\n";
+  for (auto& it : CloseProximityBuilderMap){
+    auto* type = it.first;
+    if (type->isLiteral()){
+      outs() << "Recommendation on an anonymous struct:\n";
+    }
+    else{
+      outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
+    }
+    auto* SSA = new StructSplitAnalyzer(CurrentModule, type, it.second, NULL);
+    SSA->makeSuggestions();
+  }
+  outs() << "----------------------------------------------------------\n";
+}
+
 
 void StructFieldAccessManager::debugPrintAllStructAccesses() {
   dbgs() << "------------ Printing all struct accesses: ---------------- \n";
@@ -381,6 +428,25 @@ static void applyFilters(StructFieldAccessManager* StructManager)
   StructManager->printStats();
 }
 
+static void buildCloseProximityRelations(StructFieldAccessManager* StructManager)
+{
+  if (!PerformIROnly){
+    StructManager->buildCloseProximityRelations();
+    if (PerformCPGOnly)
+      StructManager->debugPrintAllCPGs();
+    else
+      DEBUG(StructManager->debugPrintAllCPGs());
+  }
+}
+
+static void giveSuggestions(StructFieldAccessManager* StructManager)
+{
+  if (EnableFieldReorderingSuggestions)
+    StructManager->suggestFieldReordering();
+  if (EnableStructSplittingSuggestions)
+    StructManager->suggestStructSplitting();
+}
+
 static bool performStructFieldCacheAnalysis(Module &M,
                                             function_ref<BlockFrequencyInfo *(Function &)> LookupBFI,
                                             function_ref<BranchProbabilityInfo *(Function &)> LookupBPI)
@@ -394,11 +460,9 @@ static bool performStructFieldCacheAnalysis(Module &M,
   // Step 2 - summarize function calls and apply filters
   applyFilters(&StructManager);
   // Step 3 - build and collapse Field Reference Graph and create Close Proximity Graph
-  if (!PerformIROnly){
-    StructManager.buildCloseProximityRelations();
-    //DEBUG(StructManager.debugPrintAllCPGs());
-    StructManager.debugPrintAllCPGs();
-  }
+  buildCloseProximityRelations(&StructManager);
+  // Step 4 - make suggestions
+  giveSuggestions(&StructManager);
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }

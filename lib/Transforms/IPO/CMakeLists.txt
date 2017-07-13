@@ -29,6 +29,7 @@ add_llvm_library(LLVMipo
   StripDeadPrototypes.cpp
   StripSymbols.cpp
   StructAnalysisCloseProximity.cpp
+  StructAnalysisTransformAnalyzer.cpp
   StructFieldAccessInfo.cpp
   StructFieldCacheAnalysis.cpp
   ThinLTOBitcodeWriter.cpp

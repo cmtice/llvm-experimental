@@ -52,6 +52,7 @@ typedef double DataBytesType;
 typedef std::unordered_set<const BasicBlock*> BasicBlockSetType;
 typedef std::pair<ExecutionCountType, DataBytesType> CloseProximityPairType;
 typedef std::vector< std::vector<CloseProximityPairType> > CloseProximityTableType;
+typedef std::pair<FieldNumType, FieldNumType> FieldPairType;
 
 class StructFieldAccessInfo;
 class CloseProximityBuilder;
@@ -149,6 +150,12 @@ class StructFieldAccessManager {
 
   /// Build Close Proximity Graph for all structs in StructFieldAccessInfoMap
   void buildCloseProximityRelations();
+
+  /// Give suggestions on how to reorder struct fields for eligible structs
+  void suggestFieldReordering();
+
+  /// Give suggestions on how to split structs for eligible structs
+  void suggestStructSplitting();
 
   /// Print all accesses of all struct types defined in the program
   void debugPrintAllStructAccesses();
@@ -575,6 +582,14 @@ class CloseProximityBuilder {
   /// Collapse FRG to establish CPG
   void buildCloseProximityRelations();
 
+  /// Get CP relations of two fields
+  const CloseProximityPairType* getCloseProximityPair(FieldNumType F1, FieldNumType F2) const {
+    if (F1 < F2)
+      return &CloseProximityTable[F1][F2];
+    else
+      return &CloseProximityTable[F2][F1];
+  }
+
   /// Print all FRGs for this struct
   void debugPrintFieldReferenceGraph(raw_ostream& OS) const;
   /// Print the CPG of this struct
@@ -648,6 +663,88 @@ class CloseProximityBuilder {
 
   /// Compare CPG results after collapsing with golden CPG
   void compareCloseProximityRelations() const;
+};
+
+class StructTransformAnalyzer
+{
+ public:
+  struct FieldDebugInfo
+  {
+    FieldDebugInfo(FieldNumType F): FieldName(""), FieldType(""), FieldNum(F) {}
+    FieldDebugInfo(FieldNumType F, StringRef FN, StringRef FT): FieldName(FN), FieldType(FT), FieldNum(F) {}
+    StringRef FieldName;
+    StringRef FieldType;
+    FieldNumType FieldNum;
+  };
+  StructTransformAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI);
+  ~StructTransformAnalyzer() {
+    for (auto* FDI : FieldDI){
+      delete FDI;
+    }
+    FieldDI.clear();
+  }
+  virtual void makeSuggestions() = 0;
+ protected:
+  const StructType* StructureType;
+  const CloseProximityBuilder* CPBuilder;
+  FieldNumType NumElements;
+  const DICompositeType* DebugInfo;
+  std::vector<unsigned> FieldSizes;
+  std::vector<FieldDebugInfo*> FieldDI;
+  std::vector< std::vector<double> > CloseProximityRelations;
+  bool Eligibility; // If the struct is eligible for this kind of transformation
+
+  // Map fields to the debug info, useful to give recommendation and filter out padding
+  void mapFieldsToDefinition();
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) = 0;
+};
+
+class FieldReorderAnalyzer : public StructTransformAnalyzer
+{
+ public:
+  FieldReorderAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI);
+  ~FieldReorderAnalyzer() {}
+
+  virtual void makeSuggestions();
+ private:
+  std::list<FieldNumType> NewOrder;
+  std::unordered_set<FieldNumType> FieldsToReorder;
+
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2);
+  // Decide if two fields can fit within one cache block
+  bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
+  // Calculate WCP for every pair of fields that can fit within a cache block
+  double calculateWCPWithinCacheBlock(std::vector<FieldNumType>* CacheBlock) const;
+  // Calculate WCP for a sequence of fields
+  double getWCP() const;
+  // Calculate WCP for a sequence of fields adding a field to the end
+  double estimateWCPAtBack(FieldNumType FieldNum);
+  // Calculate WCP for a sequence of fields adding a field to the front
+  double estimateWCPAtFront(FieldNumType FieldNum);
+};
+
+class StructSplitAnalyzer : public StructTransformAnalyzer
+{
+ public:
+  StructSplitAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI);
+  ~StructSplitAnalyzer() {
+    for (auto* R : SubRecords)
+      delete R;
+    SubRecords.clear();
+  }
+
+  virtual void makeSuggestions();
+ private:
+  typedef std::vector<FieldNumType> SubRecordType;
+
+  struct Parameters{
+    unsigned ColdRatio, DistanceThreshold, MaxSize, SizePenalty;
+  };
+  Parameters Params;
+  std::vector<SubRecordType*> SubRecords;
+  std::unordered_set<FieldNumType> FieldsToRegroup;
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2);
+  FieldPairType findMaxRemainCP() const;
 };
 
 } // namespace llvm
