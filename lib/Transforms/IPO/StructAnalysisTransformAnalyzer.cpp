@@ -240,7 +240,7 @@ double FieldReorderAnalyzer::getWCP() const
       if (CurrentCacheBlockSize >= CacheBlockSize){
         DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current cache block cannot fit remaining field\n");
         WCP += calculateWCPWithinCacheBlock(&CurrentCacheBlock);
-        CurrentCacheBlockSize -= CacheBlockSize;
+        CurrentCacheBlockSize %= CacheBlockSize;
         CurrentCacheBlock.clear();
         if (CurrentCacheBlockSize > 0)
           CurrentCacheBlock.push_back(FieldNum);
