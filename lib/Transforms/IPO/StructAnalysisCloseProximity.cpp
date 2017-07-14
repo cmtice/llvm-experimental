@@ -291,11 +291,12 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
       auto* SBI = FRG->getBasicBlockHelperInfo(SB);
       ExecutionCountType C = 0;
       auto BBCount = StructInfo->getExecutionCount(&BB);
-      if (BBCount.hasValue()){
+      auto SBCount = StructInfo->getExecutionCount(SB);
+      if (BBCount.hasValue() && SBCount.hasValue()){
         // Take probability of the branch
         auto Prob = StructManager->getBranchProbability(&BB, SB);
         assert(Prob.hasValue());
-        C = BBCount.getValue() * Prob.getValue();
+        C = std::min(BBCount.getValue() * Prob.getValue(), SBCount.getValue() * 1.0);
       }
       if (!DisableIgnoreZeroCountNodes && C < 1e-3)
         continue;
