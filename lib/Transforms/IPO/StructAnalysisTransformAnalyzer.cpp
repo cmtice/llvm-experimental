@@ -99,20 +99,27 @@ void StructTransformAnalyzer::mapFieldsToDefinition()
         //ArrayTy is suspicious to be a padding
         if ((i < NumElements-1 && FieldSizes[i] > FieldSizes[i+1]) ||
             (i == NumElements-1 && FieldSizes[i] > FieldSizes[i-1]))
+          // Padding can't be larger than the field before or after
           FieldDI[i] = new FieldDebugInfo(FieldNum++);
         else if ((i < NumElements-1 && Address % FieldSizes[i+1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i+1] == 0) ||
                  (i == NumElements-1 && Address % FieldSizes[i-1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i-1] == 0)){
           // If remove this field, the next/previous field is not aligned and add this field, it is aligned, it's likely to be a padding
           unsigned MaxWCP = 0;
+          dbgs() << "Considering F" << i+1 << "\n";
           for (unsigned j = 0; j < NumElements; j++){
-            if (CloseProximityRelations[i][j] > MaxWCP)
-              MaxWCP = CloseProximityRelations[i][j];
+            auto* Pair = CPBuilder->getCloseProximityPair(i, j);
+            dbgs() << "(" << Pair->first << "," << Pair->second << ")\n";
+            if (Pair->first > MaxWCP)
+              MaxWCP = Pair->first;
           }
           if (MaxWCP != 0)
             FieldDI[i] = new FieldDebugInfo(FieldNum++);
           else
             // This is highly likely to be a padding because there's no WCP with other fields
             FieldDI[i] = NULL;
+        }
+        else{
+          FieldDI[i] = new FieldDebugInfo(FieldNum++);
         }
         Address += FieldSizes[i];
       }
@@ -354,8 +361,10 @@ StructSplitAnalyzer::StructSplitAnalyzer(const Module& CM, const StructType* ST,
   }
   mapFieldsToDefinition();
   for (unsigned i = 0; i < NumElements; i++){
-    if (FieldDI[i] == NULL)
+    if (FieldDI[i] == NULL){
+      DEBUG(dbgs() << "Remove F" << i+1 << " from fields to regroup.\n");
       FieldsToRegroup.erase(i);
+    }
   }
   DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Finish constructor\n");
 }
@@ -418,9 +427,12 @@ void StructSplitAnalyzer::makeSuggestions()
     double Threshold = CloseProximityRelations[BestPair.first][BestPair.second] / Params.ColdRatio;
     if (Threshold == 0){
       // All the remaining fields are cold with others, create record for each for them
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "All remaining fields are cold, create separate record for each\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Put F" << BestPair.first+1 << " into a new record\n");
       NewRecord->push_back(BestPair.first);
       FieldsToRegroup.erase(BestPair.first);
       for (auto& F : FieldsToRegroup){
+        DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Put F" << F+1 << " into a new record\n");
         NewRecord = new SubRecordType;
         SubRecords.push_back(NewRecord);
         NewRecord->push_back(F);
