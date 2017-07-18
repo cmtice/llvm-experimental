@@ -81,31 +81,34 @@ void StructFieldAccessManager::applyFiltersToStructs() {
   // TODO: This function needs more work to add more filters to reduce the
   // number of structs for analysis
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "To apply filters to structs\n");
+  auto RemoveEntry =
+      [](std::unordered_map<const StructType *,
+                            StructFieldAccessInfo *>::iterator &it) {
+        delete it->second;
+        auto ToRemove = it++;
+        StructFieldAccessInfoMap.erase(ToRemove);
+      }
+
   for (auto it = StructFieldAccessInfoMap.begin();
        it != StructFieldAccessInfoMap.end();) {
     if (!it->second->isEligible()) {
-      delete it->second;
-      auto ToRemove = it++;
-      StructFieldAccessInfoMap.erase(ToRemove);
+      RemoveEntry(it);
       addStats(DebugStats::DS_PassedIntoOutsideFunction);
     } else if (it->second->getTotalNumFieldAccess() <
                MinimalAccessCountForAnalysis) {
-      delete it->second;
-      auto ToRemove = it++;
-      StructFieldAccessInfoMap.erase(ToRemove);
+      RemoveEntry(it);
       addStats(DebugStats::DS_NoAccess);
     } else {
       HotnessAnalyzer->addStruct(it->second);
       it++;
     }
   }
+
   DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->generateHistogram());
   for (auto it = StructFieldAccessInfoMap.begin();
        it != StructFieldAccessInfoMap.end();) {
     if (!HotnessAnalyzer->isHot(it->second)) {
-      delete it->second;
-      auto ToRemove = it++;
-      StructFieldAccessInfoMap.erase(ToRemove);
+      RemoveEntry(it);
       addStats(DebugStats::DS_FilterColdStructs);
     } else {
       it++;

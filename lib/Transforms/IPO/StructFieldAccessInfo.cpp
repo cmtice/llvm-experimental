@@ -33,22 +33,26 @@ static cl::opt<unsigned> HotnessCutoffRatio(
              "hotness, should be a percentage."));
 
 // Functions for StructFieldAccessInfo
+// Add a record of load/store Instruction I accessing field FieldNum in the map
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
                                               FieldNumType FieldNum) {
-  assert(I->getOpcode() == Instruction::Load ||
-         I->getOpcode() == Instruction::Store); // Only loads and stores
+  assert(isa<LoadInst>(I) || isa<StoreInst>(I)); // Only loads and stores
   assert(LoadStoreFieldAccessMap.find(I) == LoadStoreFieldAccessMap.end());
   LoadStoreFieldAccessMap[I] = FieldNum;
 }
 
+// Add a record of call/invoke Instruction I using field FieldNum as its
+// argument Arg F is the defition of the callee function
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
                                               const Function *F, unsigned Arg,
                                               FieldNumType FieldNum) {
-  assert(I->getOpcode() == Instruction::Call ||
-         I->getOpcode() == Instruction::Invoke); // Only calls and invokes
+  assert(isa<CallInst>(I) || isa<InvokeInst>(I)); // Only calls and invokes
   if (F->isDeclaration())
     // Give up if the function only has declaration
     return;
+  // Create a new record FunctionCallInfo if this Arg->FieldNum pair of the
+  // Instruction is the first pair. Otherwise, insert a new pair of
+  // Arg->FieldNum to an existing FunctionCallInfo object
   if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()) {
     CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
   } else {
@@ -73,7 +77,8 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: "
                                         << *U << "\n");
   // Operand 0 should be a pointer to the struct
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
+  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
+         isa<GetElementPtrConstantExpr>(U));
   auto *Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of
   // StructFieldAccessInfo
@@ -91,7 +96,7 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   // Operand 2 should be the index to the field, and be a constant
   Op = U->getOperand(2);
   assert(isa<Constant>(Op));
-  auto *Index = dyn_cast<Constant>(Op);
+  auto *Index = cast<Constant>(Op);
   auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
   assert(Offset < NumElements);
   // TODO: ignore indices after this one. If there's indices, the field has to
@@ -102,7 +107,8 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
 void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                   dbgs() << "Analyze all users of GEP: " << *U << "\n");
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U));
+  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
+         isa<GetElementPtrConstantExpr>(U));
   auto FieldLoc = calculateFieldNumFromGEP(U);
   if (FieldLoc == 0)
     return;
@@ -110,15 +116,15 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Check user of " << *U << ": " << *User << "\n");
     if (isa<Instruction>(User)) {
-      auto *Inst = dyn_cast<Instruction>(User);
-      if (Inst->getOpcode() == Instruction::Load)
+      auto *Inst = cast<Instruction>(User);
+      if (isa<LoadInst>(Inst))
         addFieldAccessNum(Inst, FieldLoc);
-      else if (Inst->getOpcode() == Instruction::Store) {
+      else if (isa<StoreInst>(Inst)) {
         if (U == Inst->getOperand(1))
           addFieldAccessNum(Inst, FieldLoc);
       } else {
-        if (Inst->getOpcode() == Instruction::Call) {
-          auto *Call = dyn_cast<CallInst>(Inst);
+        if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
+          CallSite Call(Inst);
           auto *Func = Call->getCalledFunction();
           if (Func && Func->arg_size() == Call->getNumArgOperands()) {
             for (unsigned i = 0; i < Call->getNumArgOperands(); i++) {
@@ -131,19 +137,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
             addStats(StructFieldAccessManager::DebugStats::
                          DS_GepPassedIntoIndirectFunc);
           }
-        } else if (Inst->getOpcode() == Instruction::Invoke) {
-          auto *Call = dyn_cast<InvokeInst>(Inst);
-          auto *Func = Call->getCalledFunction();
-          if (Func) {
-            for (unsigned i = 0; i < Call->getNumArgOperands(); i++) {
-              if (Call->getArgOperand(i) == U)
-                addFieldAccessNum(Inst, Func, i, FieldLoc);
-            }
-          } else {
-            addStats(StructFieldAccessManager::DebugStats::
-                         DS_GepPassedIntoIndirectFunc);
-          }
-        } else if (Inst->getOpcode() == Instruction::BitCast) {
+        } else if (isa<BitCastInst>(Inst)) {
           addStats(
               StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
         } else {
@@ -153,13 +147,13 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
         }
       }
     } else if (isa<Operator>(User)) {
-      auto *Inst = dyn_cast<Operator>(User);
-      if (Inst->getOpcode() == Instruction::BitCast) {
+      auto *Oper = cast<Operator>(User);
+      if (isa<BitCastOperator>(Oper)) {
         addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
       } else {
         // TODO: Collect stats of this kind of access and add analysis later
         addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
-                 Inst->getOpcode());
+                 Oper->getOpcode());
       }
     } else {
       addStats(StructFieldAccessManager::DebugStats::
@@ -175,24 +169,14 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     if (isa<Instruction>(U)) {
-      auto *Inst = dyn_cast<Instruction>(U);
+      auto *Inst = cast<Instruction>(U);
       if (!isa<GetElementPtrInst>(Inst)) {
         // Only support access struct through GEP for now
-        if (Inst->getOpcode() == Instruction::Call) {
+        if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
+          CallSite Call(Inst);
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
                                              << "User is a call instruction\n");
-          assert(Inst && isa<CallInst>(Inst));
-          auto *F = dyn_cast<CallInst>(Inst)->getCalledFunction();
-          if (!F || F->isDeclaration()) {
-            // If a struct is passed to an indirect or a function not declared
-            // in the program, we can't analyze it...
-            Eligiblity = false;
-          }
-        } else if (Inst->getOpcode() == Instruction::Invoke) {
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                          dbgs() << "User is an invoke instruction\n");
-          assert(Inst && isa<InvokeInst>(Inst));
-          auto *F = dyn_cast<InvokeInst>(Inst)->getCalledFunction();
+          auto *F = Call->getCalledFunction();
           if (!F || F->isDeclaration()) {
             // If a struct is passed to an indirect or a function not declared
             // in the program, we can't analyze it...
@@ -203,12 +187,18 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
       }
       addFieldAccessFromGEP(Inst);
     } else if (isa<Operator>(U)) {
-      auto *Inst = dyn_cast<Operator>(U);
-      if (!isa<GEPOperator>(Inst)) {
+      auto *Oper = cast<Operator>(U);
+      if (!isa<GEPOperator>(Oper)) {
         // Only support access struct through GEP for now
         continue;
       }
-      addFieldAccessFromGEP(Inst);
+      addFieldAccessFromGEP(Oper);
+    } else if (isa<ConstantExpr>(User)) {
+      auto *Const = cast<ConstantExpr>(User);
+      if (!isa<GetElementPtrConstantExpr>(Const)) {
+        continue;
+      }
+      addFieldAccessFromGEP(Const);
     } else {
       addStats(StructFieldAccessManager::DebugStats::
                    DS_UserNotInstructionNorOperator);
@@ -228,20 +218,18 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     if (isa<Instruction>(U)) {
-      auto *Inst = dyn_cast<Instruction>(U);
-      if (Inst->getOpcode() == Instruction::Load) {
+      auto *Inst = cast<Instruction>(U);
+      if (isa<LoadInst>(Inst)) {
         analyzeUsersOfStructValue(Inst);
-      } else if (Inst->getOpcode() == Instruction::GetElementPtr) {
+      } else if (isa<GetElementPtrInst>(Inst)) {
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
       }
     } else if (isa<Operator>(U)) {
-      auto *Inst = dyn_cast<Operator>(U);
-      if (Inst->getOpcode() == Instruction::Load) {
-        analyzeUsersOfStructValue(Inst);
-      } else if (Inst->getOpcode() == Instruction::GetElementPtr) {
+      auto *Oper = cast<Operator>(U);
+      if (isa<GEPOperator>(Oper)) {
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
       } else {
         addStats(
@@ -287,15 +275,15 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
 
 ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const {
   ExecutionCountType Hotness = 0;
-  for (auto &it : LoadStoreFieldAccessMap) {
-    auto Count = getExecutionCount(it.first);
+  auto IncrementHotness = [](const StructType *ST) {
+    auto Count = getExecutionCount(ST);
     if (Count.hasValue())
       Hotness += Count.getValue();
+  } for (auto &it : LoadStoreFieldAccessMap) {
+    IncrementHotness(it->first);
   }
   for (auto &it : CallInstFieldAccessMap) {
-    auto Count = getExecutionCount(it.first);
-    if (Count.hasValue())
-      Hotness += Count.getValue();
+    IncrementHotness(it->first);
   }
   return Hotness;
 }
@@ -322,15 +310,16 @@ void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo *SI) {
 void StructHotnessAnalyzer::generateHistogram() {
   // TODO: vary the number of buckets
   Histogram.resize(HistogramSizeForStats);
-  MaxHotness += 1; // To avoid the largest one out of bound
+  MaxHotnessUpperBound =
+      MaxHotness + 1; // To avoid the largest one out of bound
   for (auto &it : StructHotness) {
-    auto Index = it.second * HistogramSizeForStats / MaxHotness;
+    auto Index = it.second * HistogramSizeForStats / MaxHotnessUpperBound;
     Histogram[Index]++;
   }
   dbgs() << "Distribution of struct hotness: \n";
   for (unsigned i = 0; i < Histogram.size(); i++)
-    dbgs() << "Hotness >=" << MaxHotness * i / HistogramSizeForStats << ": "
-           << Histogram[i] << "\n";
+    dbgs() << "Hotness >=" << MaxHotnessUpperBound * i / HistogramSizeForStats
+           << ": " << Histogram[i] << "\n";
 }
 
 bool StructHotnessAnalyzer::isHot(const StructFieldAccessInfo *SI) const {
