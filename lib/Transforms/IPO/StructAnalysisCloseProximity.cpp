@@ -124,6 +124,21 @@ void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node* From, FieldRef
     // Don't connect a node back to itself to avoid a node never be able to collapse
     return;
   }
+  // Try to find existing edge between From and To
+  Edge* ExistEdge = NULL;
+  for (auto *E : From->OutEdges){
+    if (E->ToNode == To)
+      ExistEdge = E;
+  }
+  if (ExistEdge){
+    // If there's already an edge between the two nodes, only increase count and distance but not create a new edge
+    DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Connect two nodes that already have a connection\n");
+    assert(BackEdge == ExistEdge->LoopArc);
+    updatePairByMerging(ExistEdge->ExecutionCount, ExistEdge->DataSize, C, D);
+    From->OutSum += C;
+    To->InSum += C;
+    return;
+  }
   auto* Edge = new FieldReferenceGraph::Edge(EdgeList.size(), C, D);
   EdgeList.push_back(Edge);
   Edge->connectNodes(From, To);
