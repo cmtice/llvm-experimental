@@ -280,8 +280,8 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
   }
 }
 
-ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const {
-  ExecutionCountType Hotness = 0;
+ProfileCountType StructFieldAccessInfo::calculateTotalHotness() const {
+  ProfileCountType Hotness = 0;
   auto IncrementHotness = [&](const Instruction *I) {
     auto Count = getExecutionCount(I);
     if (Count.hasValue())

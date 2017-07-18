@@ -331,7 +331,7 @@ FieldReferenceGraph* CloseProximityBuilder::buildFieldReferenceGraph(const Funct
   return FRG;
 }
 
-void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
+void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D, CloseProximityTableType& CPT)
 {
   assert(Src <= NumElements && Dest <= NumElements);
   if (Src == 0 || Dest == 0 || C < 1e-3 || Src == Dest)
@@ -342,31 +342,25 @@ void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest, Execu
     if (Src > Dest){
       std::swap(Src, Dest);
     }
-     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[Src-1][Dest-1].second) << ")\n");
-    assert(CloseProximityTable[Src-1][Dest-1].first + C != 0);
-    updatePairByMerging(CloseProximityTable[Src-1][Dest-1].first, CloseProximityTable[Src-1][Dest-1].second, C, D);
-    if (std::isnan(CloseProximityTable[Src-1][Dest-1].first) || std::isnan(CloseProximityTable[Src-1][Dest-1].second)){
+
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << DEBUG_PRINT_COUNT(CPT[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CPT[Src-1][Dest-1].second) << ")\n");
+    assert(CPT[Src-1][Dest-1].first + C != 0);
+    updatePairByMerging(CPT[Src-1][Dest-1].first, CPT[Src-1][Dest-1].second, C, D);
+    if (std::isnan(CPT[Src-1][Dest-1].first) || std::isnan(CPT[Src-1][Dest-1].second)){
       errs() << "Update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << "\n";
     }
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CloseProximityTable[Src-1][Dest-1].second) << ")\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(CPT[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(CPT[Src-1][Dest-1].second) << ")\n");
   }
 }
-
+void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
+  updateCPT(Src, Dest, C, D, CloseProximityTable);
+}
 void CloseProximityBuilder::updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D)
 {
-  assert(Src <= NumElements && Dest <= NumElements);
-  if (Src == 0 || Dest == 0 || C < 1e-3 || Src == Dest)
-    return;
-  if (Src != 0 && Dest != 0){
-    if (Src > Dest){
-      std::swap(Src, Dest);
-    }
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " Before update: " << "(" << DEBUG_PRINT_COUNT(GoldCPT[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(GoldCPT[Src-1][Dest-1].second) << ")\n");
-    updatePairByMerging(GoldCPT[Src-1][Dest-1].first, GoldCPT[Src-1][Dest-1].second, C, D);
-    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << " After update: " << "(" << DEBUG_PRINT_COUNT(GoldCPT[Src-1][Dest-1].first) << "," << DEBUG_PRINT_DIST(GoldCPT[Src-1][Dest-1].second) << ")\n");
-  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Gonna update Gold CPG between " << Src << " and " << Dest << " with count " << DEBUG_PRINT_COUNT(C) << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
+  updateCPT(Src, Dest, C, D, GoldCPT);
 }
 
 void CloseProximityBuilder::updateCPGBetweenNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, FieldReferenceGraph::Edge* Arc, ExecutionCountType C, DataBytesType D, NodeSetType* CheckList)
