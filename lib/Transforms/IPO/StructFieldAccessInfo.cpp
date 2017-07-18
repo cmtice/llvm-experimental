@@ -14,6 +14,8 @@
 //===------------------------------------------------------------------------===//
 
 #include "StructFieldCacheAnalysisImpl.h"
+#include "llvm/IR/CallSite.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
 
@@ -78,7 +80,10 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
                                         << *U << "\n");
   // Operand 0 should be a pointer to the struct
   assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
-         isa<GetElementPtrConstantExpr>(U));
+         (isa<ConstantExpr>(U) &&
+          cast<ConstantExpr>(U)->getOpcode() == Instruction::GetElementPtr));
+  // Have to use getOpcode to check
+  // opcode of GetElementPtrConstantExpr because it's private to lib/IR
   auto *Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of
   // StructFieldAccessInfo
@@ -108,7 +113,10 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                   dbgs() << "Analyze all users of GEP: " << *U << "\n");
   assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
-         isa<GetElementPtrConstantExpr>(U));
+         (isa<ConstantExpr>(U) &&
+          cast<ConstantExpr>(U)->getOpcode() == Instruction::GetElementPtr));
+  // Have to use getOpcode to check
+  // opcode of GetElementPtrConstantExpr because it's private to lib/IR
   auto FieldLoc = calculateFieldNumFromGEP(U);
   if (FieldLoc == 0)
     return;
@@ -124,11 +132,11 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
           addFieldAccessNum(Inst, FieldLoc);
       } else {
         if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
-          CallSite Call(Inst);
-          auto *Func = Call->getCalledFunction();
-          if (Func && Func->arg_size() == Call->getNumArgOperands()) {
-            for (unsigned i = 0; i < Call->getNumArgOperands(); i++) {
-              if (Call->getArgOperand(i) == U)
+          ImmutableCallSite Call(Inst);
+          auto *Func = Call.getCalledFunction();
+          if (Func && Func->arg_size() == Call.getNumArgOperands()) {
+            for (unsigned i = 0; i < Call.getNumArgOperands(); i++) {
+              if (Call.getArgOperand(i) == U)
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
             }
           } else {
@@ -173,10 +181,16 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
       if (!isa<GetElementPtrInst>(Inst)) {
         // Only support access struct through GEP for now
         if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
-          CallSite Call(Inst);
+          ImmutableCallSite Call(Inst);
+          /*
+          if (isa<CallInst>(Inst))
+            Call = new ImmutableCallSite(cast<CallInst>(Inst));
+          else
+            Call = new ImmutableCallSite(cast<InvokeInst>(Inst));
+          */
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
                                              << "User is a call instruction\n");
-          auto *F = Call->getCalledFunction();
+          auto *F = Call.getCalledFunction();
           if (!F || F->isDeclaration()) {
             // If a struct is passed to an indirect or a function not declared
             // in the program, we can't analyze it...
@@ -193,9 +207,10 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
         continue;
       }
       addFieldAccessFromGEP(Oper);
-    } else if (isa<ConstantExpr>(User)) {
-      auto *Const = cast<ConstantExpr>(User);
-      if (!isa<GetElementPtrConstantExpr>(Const)) {
+    } else if (isa<ConstantExpr>(U)) {
+      auto *Const = cast<ConstantExpr>(U);
+      if (Const->getOpcode() != Instruction::GetElementPtr) {
+        // if (!isa<GetElementPtrConstantExpr>(Const)) {
         continue;
       }
       addFieldAccessFromGEP(Const);
@@ -275,15 +290,17 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
 
 ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const {
   ExecutionCountType Hotness = 0;
-  auto IncrementHotness = [](const StructType *ST) {
-    auto Count = getExecutionCount(ST);
+  auto IncrementHotness = [&](const Instruction *I) {
+    auto Count = getExecutionCount(I);
     if (Count.hasValue())
       Hotness += Count.getValue();
-  } for (auto &it : LoadStoreFieldAccessMap) {
-    IncrementHotness(it->first);
+  };
+
+  for (auto &it : LoadStoreFieldAccessMap) {
+    IncrementHotness(it.first);
   }
   for (auto &it : CallInstFieldAccessMap) {
-    IncrementHotness(it->first);
+    IncrementHotness(it.first);
   }
   return Hotness;
 }
@@ -310,7 +327,7 @@ void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo *SI) {
 void StructHotnessAnalyzer::generateHistogram() {
   // TODO: vary the number of buckets
   Histogram.resize(HistogramSizeForStats);
-  MaxHotnessUpperBound =
+  auto MaxHotnessUpperBound =
       MaxHotness + 1; // To avoid the largest one out of bound
   for (auto &it : StructHotness) {
     auto Index = it.second * HistogramSizeForStats / MaxHotnessUpperBound;

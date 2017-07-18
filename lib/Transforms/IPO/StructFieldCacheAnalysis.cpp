@@ -82,12 +82,12 @@ void StructFieldAccessManager::applyFiltersToStructs() {
   // number of structs for analysis
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "To apply filters to structs\n");
   auto RemoveEntry =
-      [](std::unordered_map<const StructType *,
-                            StructFieldAccessInfo *>::iterator &it) {
+      [&](std::unordered_map<const StructType *,
+                             StructFieldAccessInfo *>::iterator &it) {
         delete it->second;
         auto ToRemove = it++;
         StructFieldAccessInfoMap.erase(ToRemove);
-      }
+      };
 
   for (auto it = StructFieldAccessInfoMap.begin();
        it != StructFieldAccessInfoMap.end();) {
