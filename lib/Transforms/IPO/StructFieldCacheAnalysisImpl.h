@@ -618,7 +618,13 @@ class CloseProximityBuilder {
 
   /// Update CPG with a CloseProximity pair
   /// %{
+  /// Update a specified CPT with given CP pair
+  void updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D, CloseProximityTableType& CPT);
+
+  /// Update CloseProximityTable by calling updateCPT function
   void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
+
+  /// Update GoldCPT by calling updateCPT function
   void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
   /// %}
 
