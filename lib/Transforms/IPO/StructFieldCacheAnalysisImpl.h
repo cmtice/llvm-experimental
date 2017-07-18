@@ -690,6 +690,7 @@ class StructTransformAnalyzer
     FieldDI.clear();
   }
   virtual void makeSuggestions() = 0;
+
  protected:
   const StructType* StructureType;
   const CloseProximityBuilder* CPBuilder;
@@ -699,10 +700,12 @@ class StructTransformAnalyzer
   std::vector<FieldDebugInfo*> FieldDI;
   std::vector< std::vector<double> > CloseProximityRelations;
   bool Eligibility; // If the struct is eligible for this kind of transformation
+  std::unordered_set<FieldNumType> FieldsToTransform;
 
+ protected:
   // Map fields to the debug info, useful to give recommendation and filter out padding
   void mapFieldsToDefinition();
-  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) = 0;
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const = 0;
 };
 
 class FieldReorderAnalyzer : public StructTransformAnalyzer
@@ -712,11 +715,12 @@ class FieldReorderAnalyzer : public StructTransformAnalyzer
   ~FieldReorderAnalyzer() {}
 
   virtual void makeSuggestions();
+
  private:
   std::list<FieldNumType> NewOrder;
-  std::unordered_set<FieldNumType> FieldsToReorder;
 
-  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2);
+ private:
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const;
   // Decide if two fields can fit within one cache block
   bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
   // Calculate WCP for every pair of fields that can fit within a cache block
@@ -740,16 +744,17 @@ class StructSplitAnalyzer : public StructTransformAnalyzer
   }
 
   virtual void makeSuggestions();
+
  private:
   typedef std::vector<FieldNumType> SubRecordType;
-
   struct Parameters{
     unsigned ColdRatio, DistanceThreshold, MaxSize, SizePenalty;
   };
   Parameters Params;
   std::vector<SubRecordType*> SubRecords;
-  std::unordered_set<FieldNumType> FieldsToRegroup;
-  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2);
+
+ private:
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const;
   FieldPairType findMaxRemainCP() const;
 };
 
