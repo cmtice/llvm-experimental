@@ -748,7 +748,7 @@ class StructSplitAnalyzer : public StructTransformAnalyzer
  private:
   typedef std::vector<FieldNumType> SubRecordType;
   struct Parameters{
-    unsigned ColdRatio, DistanceThreshold, MaxSize, SizePenalty;
+    unsigned ColdRatio, DistanceThreshold, MaxSize, SizePenalty, MaxNumThresholdUpdates;
   };
   Parameters Params;
   std::vector<SubRecordType*> SubRecords;

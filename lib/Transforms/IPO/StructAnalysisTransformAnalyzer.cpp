@@ -30,11 +30,11 @@ static cl::opt<unsigned> CacheBlockSize(
 
 // Parameter tuning for struct split
 static cl::opt<unsigned> StructSplitColdRatio(
-    "struct-analysis-split-cold-ratio", cl::init(4), cl::Hidden,
+    "struct-analysis-split-cold-ratio", cl::init(5), cl::Hidden,
     cl::desc("Set COLD_RATIO in struct split algorithm"));
 
 static cl::opt<unsigned> StructSplitDistanceThreshold(
-    "struct-analysis-split-distance-threshold", cl::init(8), cl::Hidden,
+    "struct-analysis-split-distance-threshold", cl::init(120), cl::Hidden,
     cl::desc("Set DISTANCE_THRESHOLD in struct split algorithm"));
 
 static cl::opt<unsigned> StructSplitMaxSize(
@@ -42,8 +42,12 @@ static cl::opt<unsigned> StructSplitMaxSize(
     cl::desc("Set MAX_SIZE in struct split algorithm"));
 
 static cl::opt<unsigned> StructSplitSizePenalty(
-    "struct-analysis-split-size-penalty", cl::init(2), cl::Hidden,
+    "struct-analysis-split-size-penalty", cl::init(20), cl::Hidden,
     cl::desc("Set SIZE_PENALTY in struct split algorithm"));
+
+static cl::opt<unsigned> StructSplitMaxThresholdUpdates(
+    "struct-analysis-split-max-threshold-updates", cl::init(3), cl::Hidden,
+    cl::desc("Max number of lowering threshold allowed when making suggestions"));
 
 // Functions for StructTransformAnalyzer
 StructTransformAnalyzer::StructTransformAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI) : StructureType(ST), CPBuilder(CPB), NumElements(StructureType->getNumElements()), DebugInfo(DI), Eligibility(true)
@@ -410,38 +414,38 @@ void StructSplitAnalyzer::makeSuggestions()
     outs() << "Struct has too few fields or cold in profiling for splitting\n";
     return;
   }
+  unsigned dynamicThresholdUpdates = 0;
   DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Making suggestions for struct splitting\n");
+  auto BestPair = findMaxRemainCP();
+  double Threshold = CloseProximityRelations[BestPair.first][BestPair.second] / Params.ColdRatio;
+
   while (FieldsToTransform.size()){
-    auto* NewRecord = new SubRecordType;
-    SubRecords.push_back(NewRecord);
-    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Create a new empty record\n");
     if (FieldsToTransform.size() == 1){
+      // Only has one field left, break the loop and create a subrecord for it
       DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Only have one remaining field...\n");
-      NewRecord->push_back(*FieldsToTransform.begin());
-      FieldsToTransform.clear();
       break;
     }
     auto BestPair = findMaxRemainCP();
-    double Threshold = CloseProximityRelations[BestPair.first][BestPair.second] / Params.ColdRatio;
-    if (Threshold == 0){
-      // All the remaining fields are cold with others, create record for each for them
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "All remaining fields are cold, create separate record for each\n");
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Put F" << BestPair.first+1 << " into a new record\n");
-      NewRecord->push_back(BestPair.first);
-      FieldsToTransform.erase(BestPair.first);
-      for (auto& F : FieldsToTransform){
-        DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Put F" << F+1 << " into a new record\n");
-        NewRecord = new SubRecordType;
-        SubRecords.push_back(NewRecord);
-        NewRecord->push_back(F);
-      }
-      FieldsToTransform.clear();
+    auto MaxCP = CloseProximityRelations[BestPair.first][BestPair.second];
+    if (MaxCP == 0)
       break;
+    // If MaxCP is colder than the current threshold, adjust the threhold for several times
+    // until the current pair is hotter than threshold or reach the limit of lowering the bar
+    while (MaxCP < Threshold){
+      if (dynamicThresholdUpdates++ > Params.MaxNumThresholdUpdates)
+        break;
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Lowering threshold by a factor of " << Params.ColdRatio << "\n");
+      Threshold /= Params.ColdRatio;
     }
-    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "CP value is: " << DEBUG_PRINT_COUNT(CloseProximityRelations[BestPair.first][BestPair.second]) << " and threshold is: " << DEBUG_PRINT_COUNT(Threshold) << "\n");
+    if (MaxCP < Threshold)
+      break;
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "CP value is: " << DEBUG_PRINT_COUNT(MaxCP) << " and threshold is: " << DEBUG_PRINT_COUNT(Threshold) << "\n");
+    auto* NewRecord = new SubRecordType;
+    SubRecords.push_back(NewRecord);
     // Add the pair into the new sub record and remove from remaining fields
     NewRecord->push_back(BestPair.first);
     NewRecord->push_back(BestPair.second);
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Create a new record with F" << BestPair.first+1 << " and F" << BestPair.second+1 << "\n");
     auto NewRecordSize = FieldSizes[BestPair.first] + FieldSizes[BestPair.second];
     FieldsToTransform.erase(BestPair.first);
     FieldsToTransform.erase(BestPair.second);
@@ -467,14 +471,27 @@ void StructSplitAnalyzer::makeSuggestions()
       // Take average
       MaxSum /= NewRecord->size();
       DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "F" << MaxF+1 << " has the best CP relations with new record: " << DEBUG_PRINT_COUNT(MaxSum) << "\n");
-      if (MaxSum < Threshold)
+      if (MaxSum < Threshold){
         // None of the remaining fields is suitable to put into this sub record
         break;
+      }
       DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "F" << MaxF+1 << " is added to the new record\n");
       NewRecord->push_back(MaxF);
       NewRecordSize += FieldSizes[MaxF];
       FieldsToTransform.erase(MaxF);
     }
+  }
+
+  // All the remaining fields are cold with others, create one record for all of them
+  if (FieldsToTransform.size()){
+    auto* NewRecord = new SubRecordType;
+    SubRecords.push_back(NewRecord);
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "All remaining fields are cold, create one record for all of them\n");
+    for (auto& F : FieldsToTransform){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Put F" << F+1 << " into the cold record\n");
+      NewRecord->push_back(F);
+    }
+    FieldsToTransform.clear();
   }
   assert(FieldsToTransform.size() == 0);
   for (unsigned i = 0; i < SubRecords.size(); i++){
