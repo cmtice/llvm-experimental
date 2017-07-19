@@ -30,6 +30,59 @@ static cl::opt<unsigned> MinimalAccessCountForAnalysis(
     "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
     cl::desc("Minimal access count to make the struct eligible for analysis"));
 
+namespace llvm {
+/// This class is inherited from AssemblyAnnotationWriter and used
+/// to print annotated information on IR. This class is private to
+class StructFieldCacheAnalysisAnnotatedWriter
+    : public AssemblyAnnotationWriter {
+public:
+  StructFieldCacheAnalysisAnnotatedWriter(
+      const StructFieldAccessManager *S = NULL)
+      : StructManager(S) {}
+
+  /// Override the base class function to print an annotate message after each
+  /// basic block
+  virtual void emitBasicBlockEndAnnot(const BasicBlock *BB,
+                                      formatted_raw_ostream &OS) {
+    OS.resetColor();
+    auto count = StructManager->getExecutionCount(BB);
+    if (count.hasValue()) {
+      OS.changeColor(raw_ostream::YELLOW, false, false);
+      OS << "; [prof count = " << count.getValue() << "]\n";
+      OS.resetColor();
+    } else {
+      OS.changeColor(raw_ostream::YELLOW, false, false);
+      OS << "; [prof count not found "
+         << "]\n";
+      OS.resetColor();
+    }
+  }
+
+  /// Override the base class function to print an annotate message after each
+  /// Instruction
+  virtual void emitInstructionAnnot(const Instruction *I,
+                                    formatted_raw_ostream &OS) {
+    if (StructManager == NULL)
+      return;
+    if (auto pair = StructManager->getFieldAccessOnInstruction(I)) {
+      OS.changeColor(raw_ostream::GREEN, false, false);
+      auto *type = pair.getValue().first;
+      if (type->isLiteral())
+        OS << "; [Field " << pair.getValue().second
+           << " of a literal struct.] ";
+      else
+        OS << "; [Field " << pair.getValue().second << " of struct "
+           << type->getStructName() << "] ";
+    } else {
+      OS.resetColor();
+    }
+  }
+
+private:
+  const StructFieldAccessManager *StructManager;
+};
+} // namespace llvm
+
 // Functions for StructFieldAccessManager
 StructFieldAccessInfo *
 StructFieldAccessManager::createOrGetStructFieldAccessInfo(

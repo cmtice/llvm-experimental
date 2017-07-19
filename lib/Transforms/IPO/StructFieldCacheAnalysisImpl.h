@@ -40,9 +40,14 @@ typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
 typedef uint64_t ExecutionCountType;
 typedef std::vector<FieldNumType> FieldNumArrayType;
 
+
+/// The classes defined in this file are only private to the cpp files
+/// that are used to perform cache-aware structure layout analysis
 class StructFieldAccessInfo;
 
 /// This class is used to analyze the hotness of each struct
+/// This class is private to StructFieldCacheAnalysis.cpp and
+/// StructFieldAccessInfo.cpp
 class StructHotnessAnalyzer {
 public:
   StructHotnessAnalyzer() : MaxHotness(0) {}
@@ -59,6 +64,7 @@ private:
 /// This class is used to keep track of all StructFieldAccessInfo objects
 /// in the program and make sure only one StructFieldAccessInfo object for
 /// each type of struct declared in the program.
+/// This class is private to StructFieldCacheAnalysis.cpp
 class StructFieldAccessManager {
 public:
   /// enum used to represent different type of struct definitions
@@ -177,7 +183,8 @@ private:
 /// This class is used to store all access information for each struct
 /// declared in the program. It records all loads and stores to all fields
 /// of the struct to provide essential information for cache-aware struct
-/// field analysis.
+/// field analysis. This class is private to StructFieldCacheAnalysis.cpp
+/// and StructFieldAccessInfo.cpp
 class StructFieldAccessInfo {
 private:
   /// This struct organizes a call on a function with each argument access which
@@ -333,57 +340,6 @@ private:
   /// Record an access pattern in the data structure for a call/invoke
   void addFieldAccessNum(const Instruction *I, const Function *F, unsigned Arg,
                          FieldNumType FieldNum);
-};
-
-/// This class is inherited from AssemblyAnnotationWriter and used
-/// to print annotated information on IR
-class StructFieldCacheAnalysisAnnotatedWriter
-    : public AssemblyAnnotationWriter {
-public:
-  StructFieldCacheAnalysisAnnotatedWriter(
-      const StructFieldAccessManager *S = NULL)
-      : StructManager(S) {}
-
-  /// Override the base class function to print an annotate message after each
-  /// basic block
-  virtual void emitBasicBlockEndAnnot(const BasicBlock *BB,
-                                      formatted_raw_ostream &OS) {
-    OS.resetColor();
-    auto count = StructManager->getExecutionCount(BB);
-    if (count.hasValue()) {
-      OS.changeColor(raw_ostream::YELLOW, false, false);
-      OS << "; [prof count = " << count.getValue() << "]\n";
-      OS.resetColor();
-    } else {
-      OS.changeColor(raw_ostream::YELLOW, false, false);
-      OS << "; [prof count not found "
-         << "]\n";
-      OS.resetColor();
-    }
-  }
-
-  /// Override the base class function to print an annotate message after each
-  /// Instruction
-  virtual void emitInstructionAnnot(const Instruction *I,
-                                    formatted_raw_ostream &OS) {
-    if (StructManager == NULL)
-      return;
-    if (auto pair = StructManager->getFieldAccessOnInstruction(I)) {
-      OS.changeColor(raw_ostream::GREEN, false, false);
-      auto *type = pair.getValue().first;
-      if (type->isLiteral())
-        OS << "; [Field " << pair.getValue().second
-           << " of a literal struct.] ";
-      else
-        OS << "; [Field " << pair.getValue().second << " of struct "
-           << type->getStructName() << "] ";
-    } else {
-      OS.resetColor();
-    }
-  }
-
-private:
-  const StructFieldAccessManager *StructManager;
 };
 } // namespace llvm
 
