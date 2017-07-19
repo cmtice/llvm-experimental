@@ -53,10 +53,15 @@ typedef std::unordered_set<const BasicBlock*> BasicBlockSetType;
 typedef std::pair<ExecutionCountType, DataBytesType> CloseProximityPairType;
 typedef std::vector< std::vector<CloseProximityPairType> > CloseProximityTableType;
 
+
+/// The classes defined in this file are only private to the cpp files
+/// that are used to perform cache-aware structure layout analysis
 class StructFieldAccessInfo;
 class CloseProximityBuilder;
 
 /// This class is used to analyze the hotness of each struct
+/// This class is private to StructFieldCacheAnalysis.cpp and
+/// StructFieldAccessInfo.cpp
 class StructHotnessAnalyzer {
  public:
   StructHotnessAnalyzer() : MaxHotness(0) {}
@@ -73,6 +78,7 @@ class StructHotnessAnalyzer {
 /// This class is used to keep track of all StructFieldAccessInfo objects
 /// in the program and make sure only one StructFieldAccessInfo object for
 /// each type of struct declared in the program.
+/// This class is private to StructFieldCacheAnalysis.cpp
 class StructFieldAccessManager {
  public:
   /// enum used to represent different type of struct definitions
@@ -144,6 +150,7 @@ class StructFieldAccessManager {
 
   /// Summarizes all CallInst and InvokeInst into function declarations
   void summarizeFunctionCalls();
+
   /// Apply some filters to reduce the number of struct in analysis
   void applyFiltersToStructs();
 
@@ -214,11 +221,12 @@ class StructFieldAccessManager {
 /// This class is used to store all access information for each struct
 /// declared in the program. It records all loads and stores to all fields
 /// of the struct to provide essential information for cache-aware struct
-/// field analysis.
+/// field analysis. This class is private to StructFieldCacheAnalysis.cpp
+/// and StructFieldAccessInfo.cpp
 class StructFieldAccessInfo {
- private:
-  // This struct organizes a call on a function with each argument access which
-  // struct field
+private:
+  /// This struct organizes a call on a function with each argument access which
+  /// struct field
   struct FunctionCallInfo {
     FunctionCallInfo(const Function *F, unsigned ArgNum, FieldNumType FieldNum)
         : FunctionDeclaration(F) {
@@ -233,8 +241,8 @@ class StructFieldAccessInfo {
     const Function *FunctionDeclaration;
     FieldNumArrayType Arguments;
   };
-  // This struct organizes all calls on a function definition with all mappings
-  // of arguments and struct field number
+  /// This struct organizes all calls on a function definition with all mappings
+  /// of arguments and struct field number
   struct FunctionAccessPattern {
     FunctionAccessPattern(FieldNumArrayType *CallSite) {
       CallSites.clear();
@@ -299,10 +307,11 @@ public:
   }
   /// %}
 
-  /// Summarize call/invoke uses of structs into function definitions
+  /// Iterate through all Call/Invoke instructions that accesses a field and
+  /// summarize them into the function definitions
   void summarizeFunctionCalls();
 
-  /// Calculate total hotness of all struct uses
+  /// Calculate total hotness of all load/store field accesses
   ProfileCountType calculateTotalHotness() const;
 
   /// Print all instructions that access any struct field
@@ -319,6 +328,7 @@ public:
         UnknownOpcodes[Opcode]++;
     }
   }
+
   unsigned getStats(unsigned Category) const { return StatCounts[Category]; }
   /// %}
 
@@ -339,26 +349,26 @@ private:
   const DICompositeType *DebugInfo;
   unsigned NumElements;
   const StructFieldAccessManager *StructManager;
+  /// For stats
+  std::vector<unsigned> StatCounts;
+  std::unordered_map<unsigned, unsigned> UnknownOpcodes;
 
   /// A map records all load/store instructions accessing which field of the
   /// structure
   std::unordered_map<const Instruction *, unsigned> LoadStoreFieldAccessMap;
 
-  // A map records all call/invoke instructions accessing which field of the
-  // structure
+  /// A map records all call/invoke instructions accessing which field of the
+  /// structure
   std::unordered_map<const Instruction *, FunctionCallInfo *>
       CallInstFieldAccessMap;
 
-  // A map records all functions that has calls with field accesses and their
-  // calling patterns
+  /// A map records all functions that has calls with field accesses and their
+  /// calling patterns
   std::unordered_map<const Function *, FunctionAccessPattern *>
       FunctionAccessMap;
 
   /// A map records all functions that have at least one struct field accesses
   std::unordered_set<const Function *> FunctionsToAnalyze;
-  // For stat
-  std::vector<unsigned> StatCounts;
-  std::unordered_map<unsigned, unsigned> UnknownOpcodes;
 
 private:
   /// Calculate which field of the struct is the GEP pointing to, from
@@ -371,58 +381,10 @@ private:
 
   /// Record an access pattern in the data structure for a load/store
   void addFieldAccessNum(const Instruction *I, FieldNumType FieldNum);
-  // Record an access pattern in the data structure for a call/invoke
+
+  /// Record an access pattern in the data structure for a call/invoke
   void addFieldAccessNum(const Instruction *I, const Function *F, unsigned Arg,
                          FieldNumType FieldNum);
-};
-
-/// This class is inherited from AssemblyAnnotationWriter and used
-/// to print annotated information on IR
-class StructFieldCacheAnalysisAnnotatedWriter
-    : public AssemblyAnnotationWriter {
-public:
-  StructFieldCacheAnalysisAnnotatedWriter(
-      const StructFieldAccessManager *S = NULL)
-      : StructManager(S) {}
-
-  // Override the base class function to print an annotate message after each
-  // basic block
-  virtual void emitBasicBlockEndAnnot(const BasicBlock *BB,
-                                      formatted_raw_ostream &OS) {
-    OS.resetColor();
-    auto count = StructManager->getExecutionCount(BB);
-    if (count.hasValue()) {
-      OS.changeColor(raw_ostream::YELLOW, false, false);
-      OS << "; [prof count = " << count.getValue() << "]\n";
-      OS.resetColor();
-    } else {
-      OS.changeColor(raw_ostream::YELLOW, false, false);
-      OS << "; [prof count not found "
-         << "]\n";
-      OS.resetColor();
-    }
-  }
-
-  virtual void emitInstructionAnnot(const Instruction *I,
-                                    formatted_raw_ostream &OS) {
-    if (StructManager == NULL)
-      return;
-    if (auto pair = StructManager->getFieldAccessOnInstruction(I)) {
-      OS.changeColor(raw_ostream::GREEN, false, false);
-      auto *type = pair.getValue().first;
-      if (type->isLiteral())
-        OS << "; [Field " << pair.getValue().second
-           << " of a literal struct.] ";
-      else
-        OS << "; [Field " << pair.getValue().second << " of struct "
-           << type->getStructName() << "] ";
-    } else {
-      OS.resetColor();
-    }
-  }
-
- private:
-  const StructFieldAccessManager *StructManager;
 };
 
 /// This class implements creation and organization of FieldReferenceGraph
@@ -655,7 +617,6 @@ class CloseProximityBuilder {
   /// Compare CPG results after collapsing with golden CPG
   void compareCloseProximityRelations() const;
 };
-
 } // namespace llvm
 
 #endif
