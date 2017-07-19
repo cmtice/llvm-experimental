@@ -1,14 +1,13 @@
 ; Test IR analysis coverage on types of accesses. 
 ; There are a load and a store on a GEP inst and a load and a store on GEP operator. All four instructions
-; should be detected. The GEP result also passed to a function, which should be ignored and reported. It is
-; also used in bitcast instruction, which should also be ignored and reported.
+; should be detected. The GEP result also passed to a function, which will be detected as counted as the number
+; of call/invoke instructions. GEP is also used in bitcast instruction, which should also be ignored and reported.
 ;
 ; RUN: llvm-as < %s > %t1
 ; RUN: llvm-lto -O0 -struct-field-cache-analysis -o %t2 %t1 | FileCheck %s
 
 ; CHECK: There are 1 struct types are accessed in the program
-; CHECK: Struct [struct.FooBar] defined as global struct has 4 accesses.
-; CHECK: Case GEP value passed into function calls was found 1 times
+; CHECK: Struct [struct.FooBar] defined as global struct has 5 accesses and 0 execution count.
 ; CHECK: Case GEP value passed into bitcast was found 1 times
 
 

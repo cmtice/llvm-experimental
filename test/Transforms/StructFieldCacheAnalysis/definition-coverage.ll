@@ -6,10 +6,10 @@
 ; RUN: llvm-as < %s > %t1
 ; RUN: llvm-lto -O0 -struct-field-cache-analysis -o %t2 %t1 | FileCheck %s
 ; CHECK: There are 4 struct types are accessed in the program
-; CHECK: Struct [struct.FooBar4] defined as local struct has 1 accesses.
-; CHECK: Struct [struct.FooBar5] defined as local struct* has 2 accesses.
-; CHECK: Struct [struct.FooBar2] defined as global struct* has 2 accesses.
-; CHECK: Struct [struct.FooBar1] defined as global struct has 1 accesses.
+; CHECK: Struct [struct.FooBar4] defined as local struct has 1 accesses and 0 execution count.
+; CHECK: Struct [struct.FooBar5] defined as local struct* has 2 accesses and 0 execution count.
+; CHECK: Struct [struct.FooBar2] defined as global struct* has 2 accesses and 0 execution count.
+; CHECK: Struct [struct.FooBar1] defined as global struct has 1 accesses and 0 execution count.
 
 %struct.FooBar1 = type { i32 }
 %struct.FooBar2 = type { float }
