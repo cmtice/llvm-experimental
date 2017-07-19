@@ -159,7 +159,7 @@ class StructFieldAccessManager {
   void buildCloseProximityRelations();
 
   /// Give suggestions on how to reorder struct fields for eligible structs
-  void suggestFieldReordering();
+  void suggestFieldReordering(bool UseOld);
 
   /// Give suggestions on how to split structs for eligible structs
   void suggestStructSplitting();
@@ -678,7 +678,12 @@ class FieldReorderAnalyzer : public StructTransformAnalyzer
 
   virtual void makeSuggestions();
 
- private:
+ protected:
+  // Protected constructor that is used to initialize derived class and override the public version of constructor of this class
+  FieldReorderAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI, bool OldType)
+      : StructTransformAnalyzer(CM, ST, CPB, DI)
+  {}
+
   std::list<FieldNumType> NewOrder;
 
  private:
@@ -718,6 +723,33 @@ class StructSplitAnalyzer : public StructTransformAnalyzer
  private:
   virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const;
   FieldPairType findMaxRemainCP() const;
+};
+
+class OldFieldReorderAnalyzer : public FieldReorderAnalyzer
+{
+ public:
+  OldFieldReorderAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI);
+
+  virtual void makeSuggestions();
+
+ private:
+  unsigned DistanceThreshold;
+
+ private:
+  virtual double calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const;
+
+  /// Calculate the maximum FanOut value of a field. FanOut means the total CP relations between the field
+  /// and all the other fields in FieldsToTransform. Used to estimate potential benefit to bring into NewOrder
+  double calculateFanOut(FieldNumType FieldNum) const;
+
+  /// Find the maximum FanOut value of all the fields in FieldsToTransform, by calling calculateFanOut()
+  FieldNumType findMaxFanOut() const;
+
+  // Calculate WCP for a sequence of fields adding a field to the end
+  double estimateWCPAtBack(FieldNumType FieldNum);
+
+  // Calculate WCP for a sequence of fields adding a field to the front
+  double estimateWCPAtFront(FieldNumType FieldNum);
 };
 
 } // namespace llvm

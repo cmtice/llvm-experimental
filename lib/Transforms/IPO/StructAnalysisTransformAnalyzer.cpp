@@ -319,10 +319,12 @@ void FieldReorderAnalyzer::makeSuggestions()
   }
   auto OldWCP = getWCP();
   DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "New WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << " vs Old WCP: " << DEBUG_PRINT_COUNT(OldWCP) << "\n");
-  assert(MaxWCP >= OldWCP || std::abs(OldWCP-MaxWCP)/OldWCP < 1e-3);
+  //assert(MaxWCP >= OldWCP || std::abs(OldWCP-MaxWCP)/OldWCP < 1e-3);
   auto Confidence = 100.0 * (MaxWCP - OldWCP) / OldWCP;
   if (Confidence > 100.0)
     Confidence = 100.0;
+
+  // Print suggestions
   if (Confidence < 1.0){
     outs() << "Suggest to keep the current order: \n";
     for (auto& FieldNum : NewOrder){
@@ -494,6 +496,8 @@ void StructSplitAnalyzer::makeSuggestions()
     FieldsToTransform.clear();
   }
   assert(FieldsToTransform.size() == 0);
+
+  // Print suggestions
   for (unsigned i = 0; i < SubRecords.size(); i++){
     outs() << "Group #" << i+1 << ":{ ";
     for (auto& F : *SubRecords[i]){
@@ -501,4 +505,151 @@ void StructSplitAnalyzer::makeSuggestions()
     }
     outs() << "}\n";
   }
+}
+
+OldFieldReorderAnalyzer::OldFieldReorderAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI) : FieldReorderAnalyzer(CM, ST, CPB, DI, true), DistanceThreshold(StructSplitDistanceThreshold)
+{
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing OldFieldReorderAnalyzer of size: " << NumElements << "\n");
+  // Calculate every CP relations and save it to an array to avoid repeated calculation
+  CloseProximityRelations.resize(NumElements);
+  double MaxWCP = 0;
+  for (unsigned i = 0; i < NumElements; i++){
+    CloseProximityRelations[i].resize(NumElements);
+    for (unsigned j = 0; j < NumElements; j++){
+      CloseProximityRelations[i][j] = calculateCloseProximity(i, j);
+      if (CloseProximityRelations[i][j] > MaxWCP)
+        MaxWCP = CloseProximityRelations[i][j];
+    }
+  }
+  if (MaxWCP < 1e-3){
+    Eligibility = false;
+    return;
+  }
+  DEBUG(dbgs() << "CPG for field reordering recommendation\n");
+  for (unsigned i = 0; i < NumElements; i++){
+    DEBUG(dbgs() << "F" << i+1 << "\t");
+    for (unsigned j = 0; j < NumElements; j++)
+      DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
+    DEBUG(dbgs() << "\n");
+  }
+}
+
+double OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const
+{
+  if (Field1 == Field2)
+    // In old implementation, actually it's good to have a self-related field
+    // But we ignore this
+    return 0;
+  auto* Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
+  if (Pair->first < 1e-3)
+    return 0;
+  if (Pair->second > DistanceThreshold)
+    return 0;
+  return Pair->first;
+}
+
+double OldFieldReorderAnalyzer::calculateFanOut(FieldNumType FieldNum) const
+{
+  double CPSum = 0;
+  for (auto& F : FieldsToTransform){
+    if (F != FieldNum){
+      CPSum += CloseProximityRelations[FieldNum][F];
+    }
+  }
+  return CPSum;
+}
+
+FieldNumType OldFieldReorderAnalyzer::findMaxFanOut() const
+{
+  assert(FieldsToTransform.size());
+  double MaxFanOut = 0;
+  FieldNumType MaxI = *FieldsToTransform.begin();
+  for (auto& F : FieldsToTransform){
+    auto FanOut = calculateFanOut(F);
+    if (FanOut > MaxFanOut){
+      MaxFanOut = FanOut;
+      MaxI = F;
+    }
+  }
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current Max FanOut: " << DEBUG_PRINT_COUNT(MaxFanOut) << "\n");
+  return MaxI;
+}
+
+double OldFieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum)
+{
+  // FIXME: This code is inefficient because of reverse() is called twice on the list
+  // It's written like this to reuse the other function but can write better code
+  // with higher code efficiency later
+  NewOrder.reverse();
+  auto WCP = estimateWCPAtFront(FieldNum);
+  NewOrder.reverse();
+  return WCP;
+}
+
+double OldFieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum)
+{
+  double WCP = 0;
+  unsigned TotalSizes = 1;
+  for (auto& F : NewOrder){
+    TotalSizes *= FieldSizes[F];
+    WCP += CloseProximityRelations[FieldNum][F] / TotalSizes;
+  }
+  return WCP;
+}
+void OldFieldReorderAnalyzer::makeSuggestions()
+{
+  if (!Eligibility){
+    outs() << "Struct has too few fields or cold in profiling for reordering\n";
+    return;
+  }
+  auto BestField = findMaxFanOut();
+  NewOrder.push_back(BestField);
+  FieldsToTransform.erase(BestField);
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << BestField+1 << " as the seed in reordering\n");
+
+  while (FieldsToTransform.size()){
+    double MaxWCP = 0;
+    FieldNumType MaxField;
+    bool InFront = false;
+    for (auto& F : FieldsToTransform){
+      auto WCP = estimateWCPAtBack(F);
+      if (WCP > MaxWCP){
+        MaxWCP = WCP;
+        MaxField = F;
+        InFront = false;
+      }
+      WCP = estimateWCPAtFront(F);
+      if (WCP > MaxWCP){
+        MaxWCP = WCP;
+        MaxField = F;
+        InFront = true;
+      }
+    }
+
+    if (MaxWCP < 1e-3){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "No Field contributes to existing order\n");
+      // If none of the remaining field can contribute to existing order, start with maximum fanout again
+      MaxField = findMaxFanOut();
+      InFront = true; // Either side is fine, old code always put on front
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxField+1 << " as the seed in reordering\n");
+    }
+
+    if (InFront){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Insert F" << MaxField+1 << " to front\n");
+      NewOrder.push_front(MaxField);
+    }
+    else{
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Insert F" << MaxField+1 << " to back\n");
+      NewOrder.push_back(MaxField);
+    }
+    FieldsToTransform.erase(MaxField);
+  }
+
+  // Print suggestions
+  outs() << "Suggest to reorder the fields according to: ";
+  for (auto& FieldNum : NewOrder){
+    assert(FieldDI[FieldNum]);
+    outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
+  }
+  outs() << "\n";
 }

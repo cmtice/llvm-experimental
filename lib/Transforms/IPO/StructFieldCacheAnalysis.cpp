@@ -43,6 +43,10 @@ static cl::opt<bool> EnableFieldReorderingSuggestions(
     "struct-analysis-suggest-reorder", cl::init(false), cl::Hidden,
     cl::desc("Give suggestions on reordering struct fields"));
 
+static cl::opt<bool> EnableOldFieldReorderingSuggestions(
+    "struct-analysis-suggest-reorder-old", cl::init(false), cl::Hidden,
+    cl::desc("Give suggestions on reordering struct fields"));
+
 static cl::opt<bool> EnableStructSplittingSuggestions(
     "struct-analysis-suggest-split", cl::init(false), cl::Hidden,
     cl::desc("Give suggestions on splitting structs into smaller ones"));
@@ -206,7 +210,7 @@ void StructFieldAccessManager::buildCloseProximityRelations()
   }
 }
 
-void StructFieldAccessManager::suggestFieldReordering()
+void StructFieldAccessManager::suggestFieldReordering(bool UseOld)
 {
   outs() << "------------- Suggestions on Reordering ------------------\n";
   for (auto& it : CloseProximityBuilderMap){
@@ -217,7 +221,9 @@ void StructFieldAccessManager::suggestFieldReordering()
     else{
       outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
     }
-    auto* FRA = new FieldReorderAnalyzer(CurrentModule, type, it.second, NULL);
+    auto* FRA = UseOld ?
+        new OldFieldReorderAnalyzer(CurrentModule, type, it.second, NULL) :
+        new FieldReorderAnalyzer(CurrentModule, type, it.second, NULL);
     FRA->makeSuggestions();
   }
   outs() << "----------------------------------------------------------\n";
@@ -498,7 +504,9 @@ static void buildCloseProximityRelations(StructFieldAccessManager* StructManager
 static void giveSuggestions(StructFieldAccessManager* StructManager)
 {
   if (EnableFieldReorderingSuggestions)
-    StructManager->suggestFieldReordering();
+    StructManager->suggestFieldReordering(false);
+  if (EnableOldFieldReorderingSuggestions)
+    StructManager->suggestFieldReordering(true);
   if (EnableStructSplittingSuggestions)
     StructManager->suggestStructSplitting();
 }
