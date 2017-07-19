@@ -119,9 +119,10 @@ public:
   Optional<StructInfoMapPairType>
   getFieldAccessOnInstruction(const Instruction *I) const;
 
-  // Summarizes all CallInst and InvokeInst into function declarations
+  /// Summarizes all CallInst and InvokeInst into function declarations
   void summarizeFunctionCalls();
-  // Apply some filters to reduce the number of struct in analysis
+
+  /// Apply some filters to reduce the number of struct in analysis
   void applyFiltersToStructs();
 
   /// Print all accesses of all struct types defined in the program
@@ -132,6 +133,7 @@ public:
 
   /// Increment stats for one category
   void addStats(unsigned Category) { StatCounts[Category]++; }
+
   /// Print a brief stats of struct access
   void printStats();
 
@@ -178,8 +180,8 @@ private:
 /// field analysis.
 class StructFieldAccessInfo {
 private:
-  // This struct organizes a call on a function with each argument access which
-  // struct field
+  /// This struct organizes a call on a function with each argument access which
+  /// struct field
   struct FunctionCallInfo {
     FunctionCallInfo(const Function *F, unsigned ArgNum, FieldNumType FieldNum)
         : FunctionDeclaration(F) {
@@ -194,8 +196,8 @@ private:
     const Function *FunctionDeclaration;
     FieldNumArrayType Arguments;
   };
-  // This struct organizes all calls on a function definition with all mappings
-  // of arguments and struct field number
+  /// This struct organizes all calls on a function definition with all mappings
+  /// of arguments and struct field number
   struct FunctionAccessPattern {
     FunctionAccessPattern(FieldNumArrayType *CallSite) {
       CallSites.clear();
@@ -250,12 +252,17 @@ public:
   Optional<ExecutionCountType> getExecutionCount(const BasicBlock *BB) const {
     return StructManager->getExecutionCount(BB);
   }
+
   Optional<ExecutionCountType> getExecutionCount(const Instruction *I) const {
     return StructManager->getExecutionCount(I->getParent());
   }
   /// %}
 
+  /// Iterate through all Call/Invoke instructions that accesses a field and
+  /// summarize them into the function definitions
   void summarizeFunctionCalls();
+
+  /// Calculate total hotness of all load/store field accesses
   ExecutionCountType calculateTotalHotness() const;
 
   /// Print all instructions that access any struct field
@@ -272,6 +279,7 @@ public:
         UnknownOpcodes[Opcode]++;
     }
   }
+
   unsigned getStats(unsigned Category) const { return StatCounts[Category]; }
   /// %}
 
@@ -292,21 +300,23 @@ private:
   const DICompositeType *DebugInfo;
   unsigned NumElements;
   const StructFieldAccessManager *StructManager;
+  /// For stats
+  std::vector<unsigned> StatCounts;
+  std::unordered_map<unsigned, unsigned> UnknownOpcodes;
 
   /// A map records all load/store instructions accessing which field of the
   /// structure
   std::unordered_map<const Instruction *, unsigned> LoadStoreFieldAccessMap;
-  // A map records all call/invoke instructions accessing which field of the
-  // structure
+
+  /// A map records all call/invoke instructions accessing which field of the
+  /// structure
   std::unordered_map<const Instruction *, FunctionCallInfo *>
       CallInstFieldAccessMap;
-  // A map records all functions that has calls with field accesses and their
-  // calling patterns
+
+  /// A map records all functions that has calls with field accesses and their
+  /// calling patterns
   std::unordered_map<const Function *, FunctionAccessPattern *>
       FunctionAccessMap;
-  // For stat
-  std::vector<unsigned> StatCounts;
-  std::unordered_map<unsigned, unsigned> UnknownOpcodes;
 
 private:
   /// Calculate which field of the struct is the GEP pointing to, from
@@ -319,7 +329,8 @@ private:
 
   /// Record an access pattern in the data structure for a load/store
   void addFieldAccessNum(const Instruction *I, FieldNumType FieldNum);
-  // Record an access pattern in the data structure for a call/invoke
+
+  /// Record an access pattern in the data structure for a call/invoke
   void addFieldAccessNum(const Instruction *I, const Function *F, unsigned Arg,
                          FieldNumType FieldNum);
 };
@@ -333,8 +344,8 @@ public:
       const StructFieldAccessManager *S = NULL)
       : StructManager(S) {}
 
-  // Override the base class function to print an annotate message after each
-  // basic block
+  /// Override the base class function to print an annotate message after each
+  /// basic block
   virtual void emitBasicBlockEndAnnot(const BasicBlock *BB,
                                       formatted_raw_ostream &OS) {
     OS.resetColor();
@@ -351,6 +362,8 @@ public:
     }
   }
 
+  /// Override the base class function to print an annotate message after each
+  /// Instruction
   virtual void emitInstructionAnnot(const Instruction *I,
                                     formatted_raw_ostream &OS) {
     if (StructManager == NULL)
