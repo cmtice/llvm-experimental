@@ -116,7 +116,7 @@ class StructFieldAccessManager {
       : CurrentModule(M), LookupBFI(LBFI), LookupBPI(LBPI),
         StatCounts(DebugStats::DS_MaxNumStats) {
     HotnessAnalyzer = new StructHotnessAnalyzer;
-  };
+  }
 
   ~StructFieldAccessManager();
 
@@ -272,7 +272,16 @@ public:
         StructManager(M),
         StatCounts(StructFieldAccessManager::DebugStats::DS_MaxNumStats) {}
 
-  ~StructFieldAccessInfo() {}
+  ~StructFieldAccessInfo() {
+    for (auto& it : CallInstFieldAccessMap){
+      delete it.second;
+    }
+    for (auto& it : FunctionAccessMap){
+      delete it.second;
+    }
+    CallInstFieldAccessMap.clear();
+    FunctionAccessMap.clear();
+  }
 
   const StructType *getStructType() const { return StructureType; }
 
