@@ -69,6 +69,17 @@ class StructHotnessAnalyzer {
   void addStruct(const StructFieldAccessInfo *SI);
   void generateHistogram();
   bool isHot(const StructFieldAccessInfo *SI) const;
+  ProfileCountType getMaxHotness() const { return MaxHotness; }
+  Optional<ProfileCountType> getHotness(const StructType* ST) const {
+    Optional<ProfileCountType> Ret;
+    auto it = StructHotness.find(ST);
+    if (it == StructHotness.end())
+      return Ret;
+    else{
+      Ret = it->second;
+      return Ret;
+    }
+  };
 
  private:
   ProfileCountType MaxHotness;

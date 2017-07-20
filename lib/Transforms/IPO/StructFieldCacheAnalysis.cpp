@@ -216,11 +216,14 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld)
   for (auto& it : CloseProximityBuilderMap){
     auto* type = it.first;
     if (type->isLiteral()){
-      outs() << "Recommendation on an anonymous struct:\n";
+      outs() << "Recommendation on an anonymous struct ";
     }
     else{
-      outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
+      outs() << "Recommendation on struct [" << type->getStructName() << "] ";
     }
+    auto Hotness = HotnessAnalyzer->getHotness(type);
+    assert(Hotness);
+    outs() << " (Hotness " << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness() << "% of hottest struct):\n";
     auto* FRA = UseOld ?
         new OldFieldReorderAnalyzer(CurrentModule, type, it.second, NULL) :
         new FieldReorderAnalyzer(CurrentModule, type, it.second, NULL);

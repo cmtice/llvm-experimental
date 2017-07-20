@@ -325,6 +325,7 @@ void FieldReorderAnalyzer::makeSuggestions()
     Confidence = 100.0;
 
   // Print suggestions
+  outs() << "Struct definition: " << *StructureType << "\n";
   if (Confidence < 1.0){
     outs() << "Suggest to keep the current order: \n";
     for (auto& FieldNum : NewOrder){
@@ -339,7 +340,7 @@ void FieldReorderAnalyzer::makeSuggestions()
       assert(FieldDI[FieldNum]);
       outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
     }
-    outs() << " might improve performance with " << format("%.0f", Confidence) << " % confident\n";
+    outs() << " might improve performance with " << format("%.0f", Confidence) << " % confidence\n";
   }
 }
 
@@ -498,6 +499,7 @@ void StructSplitAnalyzer::makeSuggestions()
   assert(FieldsToTransform.size() == 0);
 
   // Print suggestions
+  outs() << "Struct definition: " << *StructureType << "\n";
   for (unsigned i = 0; i < SubRecords.size(); i++){
     outs() << "Group #" << i+1 << ":{ ";
     for (auto& F : *SubRecords[i]){
@@ -646,6 +648,7 @@ void OldFieldReorderAnalyzer::makeSuggestions()
   }
 
   // Print suggestions
+  outs() << "Struct definition: " << *StructureType << "\n";
   outs() << "Suggest to reorder the fields according to: ";
   for (auto& FieldNum : NewOrder){
     assert(FieldDI[FieldNum]);
