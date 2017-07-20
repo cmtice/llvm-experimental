@@ -37,7 +37,7 @@ static cl::opt<bool> PerformIROnly(
 
 namespace llvm {
 /// This class is inherited from AssemblyAnnotationWriter and used
-/// to print annotated information on IR. This class is private to
+/// to print annotated information on IR.
 class StructFieldCacheAnalysisAnnotatedWriter
     : public AssemblyAnnotationWriter {
 public:

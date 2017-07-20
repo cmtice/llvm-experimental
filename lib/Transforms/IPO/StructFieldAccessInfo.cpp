@@ -77,11 +77,6 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: "
                                         << *U << "\n");
   // Operand 0 should be a pointer to the struct
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
-         (isa<ConstantExpr>(U) &&
-          cast<ConstantExpr>(U)->getOpcode() == Instruction::GetElementPtr));
-  // Have to use getOpcode to check
-  // opcode of GetElementPtrConstantExpr because it's private to lib/IR
   auto *Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of
   // StructFieldAccessInfo
