@@ -138,9 +138,8 @@ static void combineWeight(Weight &W, const Weight &OtherW) {
 static void combineWeightsBySorting(WeightList &Weights) {
   // Sort so edges to the same node are adjacent.
   std::sort(Weights.begin(), Weights.end(),
-            [](const Weight &L, const Weight &R) {
-              return L.TargetNode < R.TargetNode;
-            });
+            [](const Weight &L,
+               const Weight &R) { return L.TargetNode < R.TargetNode; });
 
   // Combine adjacent edges.
   WeightList::iterator O = Weights.begin();
@@ -225,8 +224,8 @@ void Distribution::normalize() {
     // sum of the weights, but let's double-check.
     assert(Total == std::accumulate(Weights.begin(), Weights.end(), UINT64_C(0),
                                     [](uint64_t Sum, const Weight &W) {
-                                      return Sum + W.Amount;
-                                    }) &&
+                      return Sum + W.Amount;
+                    }) &&
            "Expected total to be correct");
     return;
   }
@@ -548,10 +547,10 @@ BlockFrequencyInfoImplBase::getProfileCountFromFreq(const Function &F,
   // Use 128 bit APInt to do the arithmetic to avoid overflow.
   APInt BlockCount(128, EntryCount.getValue());
   APInt BlockFreq(128, Freq);
-  APInt EntryFreq(128, getEntryFreq());
+  auto EntryFreqTemp = getEntryFreq();
+  APInt EntryFreq(128, EntryFreqTemp);
   BlockCount *= BlockFreq;
-  BlockCount +=
-      EntryFreq.ashr(1); // Use right-shift to implement divided by two
+  BlockCount += EntryFreqTemp / 2;
   BlockCount = BlockCount.udiv(EntryFreq);
   return BlockCount.getLimitedValue();
 }
@@ -647,7 +646,8 @@ template <> struct GraphTraits<IrreducibleGraph> {
 /// Find entry blocks and other blocks with backedges, which exist when \c G
 /// contains irreducible sub-SCCs.
 static void findIrreducibleHeaders(
-    const BlockFrequencyInfoImplBase &BFI, const IrreducibleGraph &G,
+    const BlockFrequencyInfoImplBase &BFI,
+    const IrreducibleGraph &G,
     const std::vector<const IrreducibleGraph::IrrNode *> &SCC,
     LoopData::NodeList &Headers, LoopData::NodeList &Others) {
   // Map from nodes in the SCC to whether it's an entry block.
@@ -754,8 +754,8 @@ BlockFrequencyInfoImplBase::analyzeIrreducible(
   return make_range(Loops.begin(), Insert);
 }
 
-void BlockFrequencyInfoImplBase::updateLoopWithIrreducible(
-    LoopData &OuterLoop) {
+void
+BlockFrequencyInfoImplBase::updateLoopWithIrreducible(LoopData &OuterLoop) {
   OuterLoop.Exits.clear();
   for (auto &Mass : OuterLoop.BackedgeMass)
     Mass = BlockMass::getEmpty();
