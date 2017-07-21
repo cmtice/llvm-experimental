@@ -402,6 +402,10 @@ private:
   /// GetElementPtrInst or GEPOperator
   FieldNumType calculateFieldNumFromGEP(const User *U) const;
 
+  /// Record all users of a GEP instruction/operator OR a bitcast of a GEP
+  /// with given FieldNum calculated by GEP
+  void addFieldAccessFromGEPOrBitcast(const User *U, FieldNumType FieldLoc);
+
   /// Record all users of a GEP instruction/operator that calculates the address
   /// of a field.
   void addFieldAccessFromGEP(const User *U);

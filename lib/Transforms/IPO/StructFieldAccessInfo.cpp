@@ -118,6 +118,10 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   auto FieldLoc = calculateFieldNumFromGEP(U);
   if (FieldLoc == 0)
     return;
+  addFieldAccessFromGEPOrBitcast(U, FieldLoc);
+}
+
+void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(const User *U, FieldNumType FieldLoc) {
   for (auto *User : U->users()) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Check user of " << *U << ": " << *User << "\n");
@@ -144,8 +148,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
                          DS_GepPassedIntoIndirectFunc);
           }
         } else if (isa<BitCastInst>(Inst)) {
-          addStats(
-              StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
+          addFieldAccessFromGEPOrBitcast(Inst, FieldLoc);
         } else {
           // TODO: Collect stats of this kind of access and add analysis later
           addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
@@ -155,7 +158,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
     } else if (isa<Operator>(User)) {
       auto *Oper = cast<Operator>(User);
       if (isa<BitCastOperator>(Oper)) {
-        addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
+        addFieldAccessFromGEPOrBitcast(Oper, FieldLoc);
       } else {
         // TODO: Collect stats of this kind of access and add analysis later
         addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
@@ -221,6 +224,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
              ->getPointerElementType()
              ->getPointerElementType()
              ->isStructTy());
+
   for (auto *U : V->users()) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
@@ -229,7 +233,8 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
       if (isa<LoadInst>(Inst)) {
         analyzeUsersOfStructValue(Inst);
       } else if (isa<GetElementPtrInst>(Inst)) {
-        addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
+        addStats(
+            StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
@@ -237,7 +242,8 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
     } else if (isa<Operator>(U)) {
       auto *Oper = cast<Operator>(U);
       if (isa<GEPOperator>(Oper)) {
-        addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
+        addStats(
+            StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);

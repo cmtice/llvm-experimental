@@ -4,11 +4,10 @@
 ; of call/invoke instructions. GEP is also used in bitcast instruction, which should also be ignored and reported.
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -o %t2 %t1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-IR-only -o %t2 %t1 | FileCheck %s
 
 ; CHECK: There are 1 struct types are accessed in the program
-; CHECK: Struct [struct.FooBar] defined as global struct has 5 accesses and 0 execution count.
-; CHECK: Case GEP value passed into bitcast was found 1 times
+; CHECK: Struct [struct.FooBar] defined as global struct has 7 accesses and 0 execution count.
 
 
 %struct.FooBar = type { i32, i8, double }
@@ -40,6 +39,8 @@ entry:
   store i8 65, i8* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 1), align 4
   %2 = load i8, i8* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 1), align 4
   %3 = bitcast i32* %0 to i64*
+  store i64 10, i64* %3, align 8
+  %4 = load i64, i64* %3, align 8
   call void @_Z4funcPd(double* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 2))
   ret i32 0
 }
