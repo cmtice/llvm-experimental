@@ -84,26 +84,51 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   auto *Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of
   // StructFieldAccessInfo
-  assert(Op->getType()->getPointerElementType()->isStructTy() &&
-         Op->getType()->getPointerElementType() == StructureType);
-  if (U->getNumOperands() < 3) // GEP to calculate struct field needs at least 2
-                               // indices (operand 1 and 2)
-    return 0;
-  // Operand 1 should be first index to the struct, usually 0; if not 0, it's
-  // like goto an element of an array of structs
-  Op = U->getOperand(1);
-  // TODO: ignore this index for now because it's the same for an array of
-  // structs
-  assert(Op->getType()->isIntegerTy());
-  // Operand 2 should be the index to the field, and be a constant
-  Op = U->getOperand(2);
-  assert(isa<Constant>(Op));
-  auto *Index = cast<Constant>(Op);
-  auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
-  assert(Offset < NumElements);
-  // TODO: ignore indices after this one. If there's indices, the field has to
-  // be an array or struct
-  return Offset + 1; // return field number starting from 1
+  if (Op->getType()->getPointerElementType()->isStructTy() &&
+      Op->getType()->getPointerElementType() == StructureType) {
+    if (U->getNumOperands() < 3) // GEP to calculate struct field needs at least 2
+                                 // indices (operand 1 and 2)
+      return 0;
+    // Operand 1 should be first index to the struct, usually 0; if not 0, it's
+    // like goto an element of an array of structs
+    Op = U->getOperand(1);
+    // TODO: ignore this index for now because it's the same for an array of
+    // structs
+    assert(Op->getType()->isIntegerTy());
+    // Operand 2 should be the index to the field, and be a constant
+    Op = U->getOperand(2);
+    assert(isa<Constant>(Op));
+    auto *Index = cast<Constant>(Op);
+    auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
+    assert(Offset < NumElements);
+    // TODO: ignore indices after this one. If there's indices, the field has to
+    // be an array or struct
+    return Offset + 1; // return field number starting from 1
+  }
+  else if (Op->getType()->getPointerElementType()->isArrayTy() &&
+           Op->getType()->getPointerElementType()->getArrayElementType()->isStructTy() &&
+           Op->getType()->getPointerElementType()->getArrayElementType() == StructureType) {
+    if (U->getNumOperands() < 4) // GEP to calculate struct field needs at least 3
+                                 // indices (operand 1, 2, 3)
+      return 0;
+    // Operand 1 should be first index to the struct, usually 0; if not 0, it's
+    // like goto an element of an array of structs
+    Op = U->getOperand(1);
+    assert(Op->getType()->isIntegerTy());
+    // Operand 2 should be the index to the array of struct
+    Op = U->getOperand(2);
+    assert(Op->getType()->isIntegerTy());
+    // Operand 3 should be the index to the field and be a contant
+    Op = U->getOperand(3);
+    assert(isa<Constant>(Op));
+    auto *Index = cast<Constant>(Op);
+    auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
+    assert(Offset < NumElements);
+    return Offset+1;
+  }
+  else{
+    assert(0 && "GEP instruction to analyze is neither from a struct or an array of struct");
+  }
 }
 
 void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
@@ -280,9 +305,17 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
       auto *Inst = cast<Instruction>(U);
       // Only GEP instruction is valid on a struct array
       if (isa<GetElementPtrInst>(Inst)) {
-        // Result of the GEP value is the address of a struct, which
-        // is the same as the result of an alloc of a struct definition
-        analyzeUsersOfStructValue(Inst);
+        if (Inst->getType()->isPointerTy() &&
+            Inst->getType()->getPointerElementType()->isStructTy()){
+          // If result of the GEP value is the address of a struct, which
+          // is the same as the result of an alloc of a struct definition
+          analyzeUsersOfStructValue(Inst);
+        }
+        else{
+          // If the result of GEP is not a struct, then the GEP is directly used
+          // to calculate a field of this struct, directly send it to add field access
+          addFieldAccessFromGEP(Inst);
+        }
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructArray);
@@ -291,7 +324,13 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
       auto *Oper = cast<Operator>(U);
       if (isa<GEPOperator>(Oper)) {
         // Same as GEP instruction above
-        analyzeUsersOfStructValue(Oper);
+        if (Oper->getType()->isPointerTy() &&
+            Oper->getType()->getPointerElementType()->isStructTy()){
+          analyzeUsersOfStructValue(Oper);
+        }
+        else{
+          addFieldAccessFromGEP(Oper);
+        }
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructArray);
