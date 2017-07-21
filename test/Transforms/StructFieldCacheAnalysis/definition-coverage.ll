@@ -2,14 +2,14 @@
 ; global struct[], local struct, local struct* and local struct* but assigned an array
 ; Each of them are accessed once in main() and the two pointer kinds are also passed to a function
 ; and accessed onces more
-; All of the array type should be detected. So all six structs will be printed out.
+; All of the array types should be detected. So all six structs will be printed out.
 ;
 ; RUN: llvm-as < %s > %t1
 ; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-IR-only -o %t2 %t1 | FileCheck %s
 ; CHECK: There are 6 struct types are accessed in the program
 ; CHECK: Struct [struct.FooBar4] defined as local struct has 1 accesses and 0 execution count.
 ; CHECK: Struct [struct.FooBar5] defined as local struct* has 2 accesses and 0 execution count.
-; CHECK: Struct [struct.FooBar3] defined as global struct[] has 1 accesses and 0 execution count.
+; CHECK: Struct [struct.FooBar3] defined as global struct[] has 2 accesses and 0 execution count.
 ; CHECK: Struct [struct.FooBar2] defined as global struct* has 2 accesses and 0 execution count.
 ; CHECK: Struct [struct.FooBar6] defined as local struct* has 1 accesses and 0 execution count.
 ; CHECK: Struct [struct.FooBar1] defined as global struct has 1 accesses and 0 execution count.
@@ -92,6 +92,8 @@ for.body:                                         ; preds = %for.cond
   %arrayidx = getelementptr inbounds [5 x %struct.FooBar3], [5 x %struct.FooBar3]* @global_foo_array, i64 0, i64 %idxprom
   %A4 = getelementptr inbounds %struct.FooBar3, %struct.FooBar3* %arrayidx, i32 0, i32 0
   store i64 65, i64* %A4, align 8
+  %A5 = getelementptr inbounds [5 x %struct.FooBar3], [5 x %struct.FooBar3]* @global_foo_array, i64 0, i64 %idxprom, i32 0
+  store i64 70, i64* %A5, align 8
   store i64 65, i64* %tmp3, align 8
   %6 = load i64, i64* %tmp3, align 8
   br label %for.inc
