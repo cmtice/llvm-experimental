@@ -13,7 +13,7 @@
 ; CHECK: Hotness >=33: 0
 ; CHECK: Hotness >=67: 2
 ; CHECK: There are 2 struct types are accessed in the program
-; CHECK: Struct [struct.FooBar4] defined as global struct has 1 accesses and 69 execution count.
+; CHECK: Struct [struct.FooBar4] defined as global struct has 1 accesses and 70 execution count.
 ; CHECK: Struct [struct.FooBar2] defined as global struct has 1 accesses and 100 execution count.
 ; CHECK: Case Struct filtered out due to colder than a ratio of maximum hotness was found 1 times
 
