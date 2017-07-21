@@ -23,6 +23,7 @@
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormattedStream.h"
@@ -97,9 +98,11 @@ class StructFieldAccessManager {
   enum StructDefinitionType {
     SDT_GlobalStruct,
     SDT_GlobalStructPtr,
+    SDT_GlobalStructArray,
     SDT_GlobalStructPtrPtr,
     SDT_LocalStruct,
     SDT_LocalStructPtr,
+    SDT_LocalStructArray,
     SDT_LocalStructPtrPtr
   };
 
@@ -117,6 +120,7 @@ class StructFieldAccessManager {
     DS_PassedIntoOutsideFunction,
     DS_GepUsedOnStructPtr,
     DS_UnknownUsesOnStructPtr,
+    DS_UnknownUsesOnStructArray,
     DS_FilterColdStructs,
     DS_MaxNumStats
   };
@@ -227,13 +231,14 @@ class StructFieldAccessManager {
       "Struct passed into functions defined out of scope",
       "GEP instruction directly used on struct*",
       "Unknown instruction directly used on struct*",
+      "Unknown instruction directly used on struct[]",
       "Struct filtered out due to colder than a ratio of maximum hotness"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
   const std::vector<std::string> StructDefinitionTypeNames = {
-      "global struct", "global struct*", "global struct**",
-      "local struct",  "local struct*",  "local struct**"};
+    "global struct", "global struct*", "global struct[]", "global struct**",
+    "local struct",  "local struct*",  "local struct[]", "local struct**"};
 };
 
 /// This class is used to store all access information for each struct
@@ -313,6 +318,10 @@ public:
   /// Analyze a value pointing to a struct* and collect struct access from it.
   /// It can be allocas/function args/globals
   void analyzeUsersOfStructPointerValue(const Value *V);
+
+  /// Analyze a value pointing to a struct[] and collect struct access from it.
+  /// It can be allocas/globals and only value use is GEP instructions/operators
+  void analyzeUsersOfStructArrayValue(const Value *V);
 
   /// Obtain which field the instruction is accessing and return no val if not
   /// accessing any struct field

@@ -355,6 +355,78 @@ void StructFieldAccessManager::printStats() {
   FILE_OS.close();
 }
 
+static void analyzeStructDefinitions(StructFieldAccessManager *StructManager, Value* Definition)
+{
+  assert(isa<GlobalValue>(Definition) || isa<AllocaInst>(Definition));
+  const StructFieldAccessManager::StructDefinitionType GlobalDefinitionTypes[] =
+      {StructFieldAccessManager::StructDefinitionType::SDT_GlobalStruct,
+       StructFieldAccessManager::StructDefinitionType::SDT_GlobalStructPtr,
+       StructFieldAccessManager::StructDefinitionType::SDT_GlobalStructArray};
+  const StructFieldAccessManager::StructDefinitionType LocalDefinitionTypes[] =
+      {StructFieldAccessManager::StructDefinitionType::SDT_LocalStruct,
+       StructFieldAccessManager::StructDefinitionType::SDT_LocalStructPtr,
+       StructFieldAccessManager::StructDefinitionType::SDT_LocalStructArray};
+
+  Type* DefType;
+  const StructFieldAccessManager::StructDefinitionType* DefinitionTypes;
+  StringRef TypeName;
+  if (isa<GlobalValue>(Definition)){
+    DefType = cast<GlobalValue>(Definition)->getValueType();
+    DefinitionTypes = GlobalDefinitionTypes;
+    TypeName = "global";
+  }
+  else{
+    DefType = cast<AllocaInst>(Definition)->getAllocatedType();
+    DefinitionTypes = LocalDefinitionTypes;
+    TypeName = "local";
+  }
+  if (DefType->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                    dbgs()
+                    << "Found a " << TypeName
+                    << " defined as struct: " << *DefType << "\n");
+    auto *StructInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
+        DefType,
+        DefinitionTypes[0]);
+    StructInfoPtr->analyzeUsersOfStructValue(Definition);
+  }
+  // Case for struct*
+  else if (DefType->isPointerTy() &&
+           DefType->getPointerElementType()->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                    dbgs()
+                    << "Found a " << TypeName
+                    << " has struct* type: " << *DefType << "\n");
+    auto *StructInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
+        DefType->getPointerElementType(),
+        DefinitionTypes[1]);
+    StructInfoPtr->analyzeUsersOfStructPointerValue(Definition);
+  }
+  // Case for struct []
+  else if (DefType->isArrayTy() &&
+           DefType->getArrayElementType()->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                    dbgs()
+                    << "Found a " << TypeName
+                    << " has struct[] type: " << *DefType << "\n");
+    auto *StructInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
+        DefType->getArrayElementType(),
+        DefinitionTypes[2]);
+    StructInfoPtr->analyzeUsersOfStructArrayValue(Definition);
+  }
+  // Case for struct**
+  else if (DefType->isPointerTy() &&
+           DefType->getPointerElementType()->isPointerTy() &&
+           DefType->getPointerElementType()->getPointerElementType()->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                    dbgs()
+                    << "Found a " << TypeName
+                    << " has struct** type: " << *DefType
+                    << " but we ignored this\n");
+    StructManager->addStats(StructFieldAccessManager::DebugStats::DS_StructPtrPtr);
+  }
+}
+
 static void performIRAnalysis(Module &M,
                               StructFieldAccessManager *StructManager) {
   // Find all global structs
@@ -364,40 +436,7 @@ static void performIRAnalysis(Module &M,
     if (G.isDeclaration())
       continue;
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().changeColor(raw_ostream::YELLOW));
-    // G is always a pointer
-    if (G.getValueType()->isStructTy()) {
-      DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                      dbgs()
-                          << "Found a global defined as struct: " << G << "\n");
-      auto *structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
-          G.getValueType(),
-          StructFieldAccessManager::StructDefinitionType::SDT_GlobalStruct);
-      structInfoPtr->analyzeUsersOfStructValue(&G);
-    }
-    // Case for struct*
-    else if (G.getValueType()->isPointerTy() &&
-             G.getValueType()->getPointerElementType()->isStructTy()) {
-      DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                      dbgs()
-                          << "Found a global has struct* type: " << G << "\n");
-      auto *structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
-          G.getValueType()->getPointerElementType(),
-          StructFieldAccessManager::StructDefinitionType::SDT_GlobalStructPtr);
-      structInfoPtr->analyzeUsersOfStructPointerValue(&G);
-    }
-    // Case for struct**
-    else if (G.getType()->isPointerTy() &&
-             G.getType()->getPointerElementType()->isPointerTy() &&
-             G.getType()
-                 ->getPointerElementType()
-                 ->getPointerElementType()
-                 ->isStructTy()) {
-      DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                      dbgs() << "Found a global has struct** type: " << G
-                             << " but we ignored this\n");
-      StructManager->addStats(
-          StructFieldAccessManager::DebugStats::DS_StructPtrPtr);
-    }
+    analyzeStructDefinitions(StructManager, &G);
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().resetColor());
   }
 
@@ -408,40 +447,8 @@ static void performIRAnalysis(Module &M,
     // Find all alloca of structs inside the function body
     for (auto &BB : F) {
       for (auto &I : BB) {
-        if (I.getOpcode() == Instruction::Alloca) {
-          auto *type = I.getType()->getPointerElementType();
-          if (type->isStructTy()) {
-            // Identified I is an alloca of a struct
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Found an alloca of a struct: " << I
-                                   << "\n");
-            auto *structInfoPtr =
-                StructManager->createOrGetStructFieldAccessInfo(
-                    type, StructFieldAccessManager::StructDefinitionType::
-                              SDT_LocalStruct);
-            structInfoPtr->analyzeUsersOfStructValue(&I);
-          } else if (type->isPointerTy() &&
-                     type->getPointerElementType()->isStructTy()) {
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Found an alloca of a struct*: " << I
-                                   << "\n");
-            auto *structInfoPtr =
-                StructManager->createOrGetStructFieldAccessInfo(
-                    type->getPointerElementType(),
-                    StructFieldAccessManager::StructDefinitionType::
-                        SDT_LocalStructPtr);
-            structInfoPtr->analyzeUsersOfStructPointerValue(&I);
-          } else if (type->isPointerTy() &&
-                     type->getPointerElementType()->isPointerTy() &&
-                     type->getPointerElementType()
-                         ->getPointerElementType()
-                         ->isStructTy()) {
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Found an alloca of a struct**: " << I
-                                   << " but we ignore this\n");
-            StructManager->addStats(
-                StructFieldAccessManager::DebugStats::DS_StructPtrPtr);
-          }
+        if (isa<AllocaInst>(I)){
+          analyzeStructDefinitions(StructManager, &I);
         }
       }
     }

@@ -16,7 +16,6 @@
 #include "StructFieldCacheAnalysisImpl.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
 
 using namespace llvm;
@@ -194,7 +193,17 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
         }
         continue;
       }
-      addFieldAccessFromGEP(Inst);
+      else{
+        assert(cast<GetElementPtrInst>(Inst)->getPointerOperand() == V);
+        if (Inst->getType()->getPointerElementType() == V->getType()->getPointerElementType()){
+          // If an GEP is used to calculate a struct type from a struct type, it should be
+          // an array index of a struct array
+          analyzeUsersOfStructValue(Inst);
+        }
+        else{
+          addFieldAccessFromGEP(Inst);
+        }
+      }
     } else if (isa<Operator>(U)) {
       auto *Oper = cast<Operator>(U);
       if (!isa<GEPOperator>(Oper)) {
@@ -231,11 +240,12 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
     if (isa<Instruction>(U)) {
       auto *Inst = cast<Instruction>(U);
       if (isa<LoadInst>(Inst)) {
-        analyzeUsersOfStructValue(Inst);
+        if (Inst->getType()->getPointerElementType()->isStructTy())
+          analyzeUsersOfStructValue(Inst);
       } else if (isa<GetElementPtrInst>(Inst)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else {
+      } else if (!isa<StoreInst>(Inst)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
       }
@@ -247,6 +257,44 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
+      }
+    } else {
+      addStats(StructFieldAccessManager::DebugStats::
+                   DS_UserNotInstructionNorOperator);
+    }
+  }
+}
+
+void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
+  // Analyze users of value defined as struct[]
+  assert(V->getType()->isPointerTy() &&
+         V->getType()->getPointerElementType()->isArrayTy() &&
+         V->getType()
+             ->getPointerElementType()
+             ->getArrayElementType()
+             ->isStructTy());
+  for (auto *U : V->users()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                    dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
+    if (isa<Instruction>(U)) {
+      auto *Inst = cast<Instruction>(U);
+      // Only GEP instruction is valid on a struct array
+      if (isa<GetElementPtrInst>(Inst)) {
+        // Result of the GEP value is the address of a struct, which
+        // is the same as the result of an alloc of a struct definition
+        analyzeUsersOfStructValue(Inst);
+      } else {
+        addStats(
+            StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructArray);
+      }
+    } else if (isa<Operator>(U)) {
+      auto *Oper = cast<Operator>(U);
+      if (isa<GEPOperator>(Oper)) {
+        // Same as GEP instruction above
+        analyzeUsersOfStructValue(Oper);
+      } else {
+        addStats(
+            StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructArray);
       }
     } else {
       addStats(StructFieldAccessManager::DebugStats::
