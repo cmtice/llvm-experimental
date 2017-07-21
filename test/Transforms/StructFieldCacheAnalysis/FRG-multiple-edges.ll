@@ -4,9 +4,9 @@
 ; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -struct-analysis-CPG-only -o %t2 %t1 2>&1 | FileCheck %s
 ; CHECK: Field Reference Graph for function: main
 ; CHECK: Node 0 accesses 1 and has 1000.00 out sum and 0.00 in sum: connect with { Node 1 (1000.00,0.000)  }
-; CHECK: Node 1 accesses 2 and has 2332.00 out sum and 1000.00 in sum: connect with { Node 3 (2229.00,0.000)   Node 2 (103.00,0.000)  }
-; CHECK: Node 3 accesses 4 and has 0.00 out sum and 2332.00 in sum: connect with {}
-; CHECK: Node 2 accesses 3 and has 103.00 out sum and 103.00 in sum: connect with { Node 3 (103.00,0.000)  }
+; CHECK: Node 1 accesses 2 and has 2333.00 out sum and 1000.00 in sum: connect with { Node 3 (2229.00,0.000)   Node 2 (104.00,0.000)  }
+; CHECK: Node 3 accesses 4 and has 0.00 out sum and 2333.00 in sum: connect with {}
+; CHECK: Node 2 accesses 3 and has 104.00 out sum and 104.00 in sum: connect with { Node 3 (104.00,0.000)  }
 
 %struct.FooBar = type { i32, i32, i32, i32 }
 
