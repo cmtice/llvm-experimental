@@ -8,12 +8,12 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This pass performs analysis on cache-aware structure field accesses based on
-// the following paper and reports recommendations on changes to make on the
-// source code to improve performance.
-//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
-//  in GCC”, Proceedings
-//      of the GCC Developers’ Summit,  Ottawa, 2005.
+// This file includes all the definitions of variables, types and classes used
+// in lib/Tranforms/IPO/StructFieldCacheAnalysis.cpp,
+// lib/Transforms/IPO/StructFieldAccessInfo.cpp,
+// and lib/Transforms/IPO/StructAnalysisCloseProximity.cpp. The header file is
+// used to share definitions among different C++ files of the pass, not intended
+// to share with other passes
 //
 //===------------------------------------------------------------------------===//
 
@@ -49,10 +49,10 @@ typedef uint64_t ProfileCountType;
 typedef std::vector<FieldNumType> FieldNumArrayType;
 typedef double ExecutionCountType;
 typedef double DataBytesType;
-typedef std::unordered_set<const BasicBlock*> BasicBlockSetType;
+typedef std::unordered_set<const BasicBlock *> BasicBlockSetType;
 typedef std::pair<ExecutionCountType, DataBytesType> CloseProximityPairType;
-typedef std::vector< std::vector<CloseProximityPairType> > CloseProximityTableType;
-
+typedef std::vector<std::vector<CloseProximityPairType>>
+    CloseProximityTableType;
 
 /// The classes defined in this file are only private to the cpp files
 /// that are used to perform cache-aware structure layout analysis
@@ -63,24 +63,24 @@ class CloseProximityBuilder;
 /// This class is private to StructFieldCacheAnalysis.cpp and
 /// StructFieldAccessInfo.cpp
 class StructHotnessAnalyzer {
- public:
+public:
   StructHotnessAnalyzer() : MaxHotness(0) {}
   void addStruct(const StructFieldAccessInfo *SI);
   void generateHistogram();
   bool isHot(const StructFieldAccessInfo *SI) const;
 
- private:
+private:
   ProfileCountType MaxHotness;
   std::unordered_map<const StructType *, ProfileCountType> StructHotness;
   std::vector<unsigned> Histogram;
-};
+}; // end of class StructHotnessAnalyzer
 
 /// This class is used to keep track of all StructFieldAccessInfo objects
 /// in the program and make sure only one StructFieldAccessInfo object for
 /// each type of struct declared in the program.
 /// This class is private to StructFieldCacheAnalysis.cpp
 class StructFieldAccessManager {
- public:
+public:
   /// enum used to represent different type of struct definitions
   enum StructDefinitionType {
     SDT_GlobalStruct,
@@ -109,9 +109,9 @@ class StructFieldAccessManager {
     DS_MaxNumStats
   };
 
-  StructFieldAccessManager(const Module &M,
-                           function_ref<BlockFrequencyInfo *(Function &)> LBFI,
-                           function_ref<BranchProbabilityInfo *(Function &)> LBPI)
+  StructFieldAccessManager(
+      const Module &M, function_ref<BlockFrequencyInfo *(Function &)> LBFI,
+      function_ref<BranchProbabilityInfo *(Function &)> LBPI)
       : CurrentModule(M), LookupBFI(LBFI), LookupBPI(LBPI),
         StatCounts(DebugStats::DS_MaxNumStats) {
     HotnessAnalyzer = new StructHotnessAnalyzer;
@@ -136,17 +136,13 @@ class StructFieldAccessManager {
   }
 
   /// Retrieve branch probability information of a branch
-  Optional<double> getBranchProbability(const BasicBlock* FromBB, const BasicBlock* ToBB) const{
+  Optional<double> getBranchProbability(const BasicBlock *FromBB,
+                                        const BasicBlock *ToBB) const {
     assert(FromBB->getParent() == ToBB->getParent());
-    Function* func = const_cast<Function*>(FromBB->getParent());
+    Function *func = const_cast<Function *>(FromBB->getParent());
     auto Prob = LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
     return 1.0 * Prob.getNumerator() / Prob.getDenominator();
   }
-
-  /// Retrive a pair of information if the instruction is accessing any struct
-  /// type and field number
-  Optional<StructInfoMapPairType>
-  getFieldAccessOnInstruction(const Instruction *I) const;
 
   /// Summarizes all CallInst and InvokeInst into function declarations
   void summarizeFunctionCalls();
@@ -156,6 +152,13 @@ class StructFieldAccessManager {
 
   /// Build Close Proximity Graph for all structs in StructFieldAccessInfoMap
   void buildCloseProximityRelations();
+
+  /// Functions that are used for debugging only
+  /// %{
+  /// Retrive a pair of information if the instruction is accessing any struct
+  /// type and field number
+  Optional<StructInfoMapPairType>
+  getFieldAccessOnInstruction(const Instruction *I) const;
 
   /// Print all accesses of all struct types defined in the program
   void debugPrintAllStructAccesses();
@@ -174,8 +177,9 @@ class StructFieldAccessManager {
 
   /// Print a brief stats of struct access
   void printStats();
+  /// %}
 
- private:
+private:
   const Module &CurrentModule;
 
   /// Function reference that is used to retrive execution count for basic block
@@ -190,7 +194,7 @@ class StructFieldAccessManager {
 
   /// A map storing Close Proximity relations of all structs
   std::unordered_map<const StructType *, CloseProximityBuilder *>
-  CloseProximityBuilderMap;
+      CloseProximityBuilderMap;
   StructHotnessAnalyzer *HotnessAnalyzer;
 
   /// \name Data structure to get statistics of each DebugStats entry
@@ -216,7 +220,7 @@ class StructFieldAccessManager {
   const std::vector<std::string> StructDefinitionTypeNames = {
       "global struct", "global struct*", "global struct**",
       "local struct",  "local struct*",  "local struct**"};
-};
+}; // end of class StructFieldAccessManager
 
 /// This class is used to store all access information for each struct
 /// declared in the program. It records all loads and stores to all fields
@@ -266,16 +270,18 @@ public:
         StatCounts(StructFieldAccessManager::DebugStats::DS_MaxNumStats) {}
 
   ~StructFieldAccessInfo() {
-    for (auto& it : CallInstFieldAccessMap){
+    for (auto &it : CallInstFieldAccessMap) {
       delete it.second;
     }
-    for (auto& it : FunctionAccessMap){
+    for (auto &it : FunctionAccessMap) {
       delete it.second;
     }
     CallInstFieldAccessMap.clear();
     FunctionAccessMap.clear();
   }
 
+  /// Functions that used to check or get some attribute of the struct
+  /// %{
   const StructType *getStructType() const { return StructureType; }
 
   FieldNumType getNumElements() const { return NumElements; }
@@ -285,8 +291,15 @@ public:
   }
   bool isEligible() const { return Eligiblity; }
 
-  /// Check if the function has any field accesses of this struct. If not, skip analysis
-  bool isFunctionToAnalyze(const Function* F) const { return FunctionsToAnalyze.find(F) != FunctionsToAnalyze.end(); }
+  /// Check if the function has any field accesses of this struct. If not, skip
+  /// analysis
+  bool isFunctionToAnalyze(const Function *F) const {
+    return FunctionsToAnalyze.find(F) != FunctionsToAnalyze.end();
+  }
+
+  /// Calculate total hotness of all load/store field accesses
+  ProfileCountType calculateTotalHotness() const;
+  /// %}
 
   /// Analyze a value pointing to a struct and collect struct access from it. It
   /// can be allocas/function args/globals
@@ -320,10 +333,7 @@ public:
   /// summarize them into the function definitions
   void summarizeFunctionCalls();
 
-  /// Calculate total hotness of all load/store field accesses
-  ProfileCountType calculateTotalHotness() const;
-
-  /// Print all instructions that access any struct field
+  /// Print all instructions that access any struct field. Use in debug only
   void debugPrintAllStructAccesses(raw_ostream &OS);
 
   /// For stats
@@ -394,17 +404,17 @@ private:
   /// Record an access pattern in the data structure for a call/invoke
   void addFieldAccessNum(const Instruction *I, const Function *F, unsigned Arg,
                          FieldNumType FieldNum);
-};
+}; // end of class StructFieldAccessInfo
 
 /// This class implements creation and organization of FieldReferenceGraph
-class FieldReferenceGraph
-{
- public:
+class FieldReferenceGraph {
+public:
   struct Edge;
 
   /// This structure represents a collapsed entry in collapsed FRG
-  struct Entry{
-    Entry(unsigned I, FieldNumType N, ExecutionCountType C, DataBytesType D) : Id(I), FieldNum(N), ExecutionCount(C), DataSize(D) {}
+  struct Entry {
+    Entry(unsigned I, FieldNumType N, ExecutionCountType C, DataBytesType D)
+        : Id(I), FieldNum(N), ExecutionCount(C), DataSize(D) {}
     unsigned Id;
     FieldNumType FieldNum;
     ExecutionCountType ExecutionCount;
@@ -412,46 +422,53 @@ class FieldReferenceGraph
   };
 
   /// This structure represents a general node in FRG
-  struct Node{
-    Node(unsigned I, FieldNumType N, DataBytesType S): Id(I), FieldNum(N), Size(S), Visited(false), InSum(0), OutSum(0) {}
+  struct Node {
+    Node(unsigned I, FieldNumType N, DataBytesType S)
+        : Id(I), FieldNum(N), Size(S), Visited(false), InSum(0), OutSum(0) {}
     unsigned Id;
     FieldNumType FieldNum;
     DataBytesType Size;
     bool Visited;
     ExecutionCountType InSum;
     ExecutionCountType OutSum;
-    std::unordered_set<Edge*> InEdges;
-    std::unordered_set<Edge*> OutEdges;
+    std::unordered_set<Edge *> InEdges;
+    std::unordered_set<Edge *> OutEdges;
   };
 
   /// This structure represents an edge in FRG, before or after collapsing
-   struct Edge{
-   public:
-    Edge(unsigned I, ExecutionCountType C, DataBytesType D): Id(I), ExecutionCount(C), DataSize(D), Collapsed(false), LoopArc(false) {}
-    void connectNodes(Node* From, Node* To) { FromNode = From; ToNode = To; }
-    void reconnect(Node* From, Node* To);
+  struct Edge {
+  public:
+    Edge(unsigned I, ExecutionCountType C, DataBytesType D)
+        : Id(I), ExecutionCount(C), DataSize(D), Collapsed(false),
+          LoopArc(false) {}
+    void connectNodes(Node *From, Node *To) {
+      FromNode = From;
+      ToNode = To;
+    }
+    void reconnect(Node *From, Node *To);
     unsigned Id;
     ExecutionCountType ExecutionCount;
     DataBytesType DataSize;
     bool Collapsed;
     bool LoopArc;
-    Node* FromNode;
-    Node* ToNode;
+    Node *FromNode;
+    Node *ToNode;
     // For Collpased Nodes
-    std::unordered_set<Entry*> CollapsedEntries;
+    std::unordered_set<Entry *> CollapsedEntries;
   };
 
-  /// This structure stores nodes in each basic block and is used to help building FRG
-  struct BasicBlockHelperInfo{
-    BasicBlockHelperInfo(): RemainBytes(0), FirstNode(NULL), LastNode(NULL) {}
+  /// This structure stores nodes in each basic block and is used to help
+  /// building FRG
+  struct BasicBlockHelperInfo {
+    BasicBlockHelperInfo() : RemainBytes(0), FirstNode(NULL), LastNode(NULL) {}
     DataBytesType RemainBytes;
-    Node* FirstNode;
-    Node* LastNode;
+    Node *FirstNode;
+    Node *LastNode;
     BasicBlockSetType BackEdgeSet;
   };
 
-  public:
-  FieldReferenceGraph(const Function* F) : Func(F), RootNode(NULL) {
+public:
+  FieldReferenceGraph(const Function *F) : Func(F), RootNode(NULL) {
     NodeList.clear();
     EdgeList.clear();
     EntryList.clear();
@@ -475,88 +492,98 @@ class FieldReferenceGraph
 
   unsigned getNumNodes() const { return NodeList.size(); }
 
-  Node* getNodeById(unsigned Id) const { assert(Id < NodeList.size()); return NodeList[Id]; }
+  Node *getNodeById(unsigned Id) const {
+    assert(Id < NodeList.size());
+    return NodeList[Id];
+  }
 
   /// Functions for building FRG
-  /// Creator and getter of helper info for the basic block, useful when connect nodes from different basic blocks
+  /// Creator and getter of helper info for the basic block, useful when connect
+  /// nodes from different basic blocks
   /// %{
-  BasicBlockHelperInfo* createBasicBlockHelperInfo(const BasicBlock* BB);
-  BasicBlockHelperInfo* getBasicBlockHelperInfo(const BasicBlock* BB) const;
+  BasicBlockHelperInfo *createBasicBlockHelperInfo(const BasicBlock *BB);
+  BasicBlockHelperInfo *getBasicBlockHelperInfo(const BasicBlock *BB) const;
   /// %}
 
-  /// The two functions are used to create a new node in the graph, unconnected with other nodes, and return the pointer to the Node
+  /// The two functions are used to create a new node in the graph, unconnected
+  /// with other nodes, and return the pointer to the Node
   /// %{
-  Node* createNewNode(FieldNumType FieldNum, DataBytesType S);
-  Node* createNewNode() { return createNewNode(0, 0); }
+  Node *createNewNode(FieldNumType FieldNum, DataBytesType S);
+  Node *createNewNode() { return createNewNode(0, 0); }
   /// %}
 
-  /// The two functions are used to connect two nodes in FRG with or without given weight
+  /// The two functions are used to connect two nodes in FRG with or without
+  /// given weight
   /// %{
-  void connectNodes(Node* From, Node* To, ExecutionCountType C, DataBytesType D, bool BackEdge = false);
-  void connectNodes(Node* From, Node* To) { connectNodes(From, To, 0, 0); }
+  void connectNodes(Node *From, Node *To, ExecutionCountType C, DataBytesType D,
+                    bool BackEdge = false);
+  void connectNodes(Node *From, Node *To) { connectNodes(From, To, 0, 0); }
   /// %}
 
   /// The getter and setter of entry node in the FRG
   /// %{
-  Node* getRootNode() const { return RootNode; }
-  void setRootNode(Node* N) { RootNode = N; }
+  Node *getRootNode() const { return RootNode; }
+  void setRootNode(Node *N) { RootNode = N; }
   /// %}
 
   /// Functions for collapsing FRG
   /// Convert a node to a collapsed entry and add it to Edge
-  void collapseNodeToEdge(Node* N, Edge* E);
+  void collapseNodeToEdge(Node *N, Edge *E);
 
   /// Copy a collapsed entry to a new edge
-  void moveCollapsedEntryToEdge(Entry* Entry, Edge* FromEdge, Edge* ToEdge);
+  void moveCollapsedEntryToEdge(Entry *Entry, Edge *FromEdge, Edge *ToEdge);
 
   /// For debug
-  void debugPrint(raw_ostream& OS) const;
-  void debugPrintCollapsedEntries(raw_ostream& OS, FieldReferenceGraph::Edge* E) const;
+  void debugPrint(raw_ostream &OS) const;
+  void debugPrintCollapsedEntries(raw_ostream &OS,
+                                  FieldReferenceGraph::Edge *E) const;
 
- private:
-  const Function* Func;
-  Node* RootNode;
-  std::vector<Node*> NodeList;
-  std::vector<Edge*> EdgeList;
-  std::vector<Entry*> EntryList;
-  std::unordered_map<const BasicBlock*, BasicBlockHelperInfo*> BBInfoMap;
-};
+private:
+  const Function *Func;
+  Node *RootNode;
+  std::vector<Node *> NodeList;
+  std::vector<Edge *> EdgeList;
+  std::vector<Entry *> EntryList;
+  std::unordered_map<const BasicBlock *, BasicBlockHelperInfo *> BBInfoMap;
+}; // end of class FieldReferenceGraph
 
-typedef std::vector<FieldReferenceGraph::Edge*> EdgeArrayType;
-typedef std::unordered_set<FieldReferenceGraph::Node*> NodeSetType;
-typedef std::vector<FieldReferenceGraph*> FRGArrayType;
+typedef std::vector<FieldReferenceGraph::Edge *> EdgeArrayType;
+typedef std::unordered_set<FieldReferenceGraph::Node *> NodeSetType;
+typedef std::vector<FieldReferenceGraph *> FRGArrayType;
 
-/// This class takes StructFieldAccessInfo and builds FieldReferenceGraph for each function of the struct.
-/// It then collapses all FRGs to establish Close Proximity between each pair of fields of the struct.
+/// This class takes StructFieldAccessInfo and builds FieldReferenceGraph for
+/// each function of the struct. It then collapses all FRGs to establish Close
+/// Proximity between each pair of fields of the struct.
 class CloseProximityBuilder {
 
- public:
-  CloseProximityBuilder(const Module& M, const StructFieldAccessManager* SM, const StructFieldAccessInfo* SI);
+public:
+  CloseProximityBuilder(const Module &M, const StructFieldAccessManager *SM,
+                        const StructFieldAccessInfo *SI);
 
   ~CloseProximityBuilder() {
-    for (auto* FRG : FRGArray){
+    for (auto *FRG : FRGArray) {
       delete FRG;
     }
     FRGArray.clear();
   }
 
   /// Build FRG for a specified function by reading information from StructInfo
-  FieldReferenceGraph* buildFieldReferenceGraph(const Function* F);
+  FieldReferenceGraph *buildFieldReferenceGraph(const Function *F);
 
   /// Collapse FRG to establish CPG
   void buildCloseProximityRelations();
 
   /// Print all FRGs for this struct
-  void debugPrintFieldReferenceGraph(raw_ostream& OS) const;
+  void debugPrintFieldReferenceGraph(raw_ostream &OS) const;
   /// Print the CPG of this struct
-  void debugPrintCloseProximityGraph(raw_ostream& OS) const;
+  void debugPrintCloseProximityGraph(raw_ostream &OS) const;
   /// Print the Gold CPG of this struct
-  void debugPrintGoldCPT(raw_ostream& OS) const;
+  void debugPrintGoldCPT(raw_ostream &OS) const;
 
- private:
-  const Module& CurrentModule;
-  const StructFieldAccessManager* StructManager;
-  const StructFieldAccessInfo* StructInfo;
+private:
+  const Module &CurrentModule;
+  const StructFieldAccessManager *StructManager;
+  const StructFieldAccessInfo *StructInfo;
   FieldNumType NumElements;
   /// A array of established FRG, used to organize memory
   FRGArrayType FRGArray;
@@ -565,67 +592,87 @@ class CloseProximityBuilder {
   /// Golden Close Proximity relation table for verifying CPT correctness
   CloseProximityTableType GoldCPT;
 
- private:
+private:
   /// Calculate memory access data size in Bytes
-  DataBytesType getMemAccessDataSize(const Instruction* I) const;
+  DataBytesType getMemAccessDataSize(const Instruction *I) const;
 
   /// Main function to detect and mark all backedges
-  void detectBackEdges(const FieldReferenceGraph* FRG, const Function* F);
+  void detectBackEdges(const FieldReferenceGraph *FRG, const Function *F);
 
   /// Update CPG with a CloseProximity pair
   /// %{
   /// Update a specified CPT with given CP pair
-  void updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D, CloseProximityTableType& CPT);
+  void updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
+                 DataBytesType D, CloseProximityTableType &CPT);
 
   /// Update CloseProximityTable by calling updateCPT function
-  void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
+  void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
+                 DataBytesType D);
 
   /// Update GoldCPT by calling updateCPT function
-  void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C, DataBytesType D);
+  void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
+                     DataBytesType D);
   /// %}
 
-  /// Functions used for building CP relations with brutal force, only used for debugging
+  /// Functions used for building CP relations with brutal force, only used for
+  /// debugging
   /// %{
   /// Calculate CP relations between two nodes with edges along a path
-  void calculateCPRelation(EdgeArrayType* Path);
+  void calculateCPRelation(EdgeArrayType *Path);
 
   /// Find all paths between two nodes in CPG
-  void findPathInFRG(FieldReferenceGraph::Node* Start, FieldReferenceGraph::Node* End, EdgeArrayType* Path, NodeSetType* VisitedNodes);
+  void findPathInFRG(FieldReferenceGraph::Node *Start,
+                     FieldReferenceGraph::Node *End, EdgeArrayType *Path,
+                     NodeSetType *VisitedNodes);
 
   /// Calculate CP relations between two nodes
-  void calculatePathBetween(FieldReferenceGraph::Node* FromNode, FieldReferenceGraph::Node* ToNode);
+  void calculatePathBetween(FieldReferenceGraph::Node *FromNode,
+                            FieldReferenceGraph::Node *ToNode);
 
-  /// Create pairs of all fields in the structs to calculate CP relations with brutal force
-  void createFRGPairs(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root, EdgeArrayType* Path);
+  /// Create pairs of all fields in the structs to calculate CP relations with
+  /// brutal force
+  void createFRGPairs(FieldReferenceGraph *FRG, FieldReferenceGraph::Node *Root,
+                      EdgeArrayType *Path);
 
   /// Main function to create golden CPG with brutal force
-  void createGoldCloseProximityRelations(FieldReferenceGraph* FRG);
+  void createGoldCloseProximityRelations(FieldReferenceGraph *FRG);
   /// %}
 
   /// Functions used for building CP relations with collapsing
   /// %{
   /// Recursively update CPG between node From to the subtree of node To
-  void updateCPGBetweenNodes(FieldReferenceGraph::Node* From, FieldReferenceGraph::Node* To, FieldReferenceGraph::Edge* Edge, ExecutionCountType C, DataBytesType D, NodeSetType* CheckList);
+  void updateCPGBetweenNodes(FieldReferenceGraph::Node *From,
+                             FieldReferenceGraph::Node *To,
+                             FieldReferenceGraph::Edge *Edge,
+                             ExecutionCountType C, DataBytesType D,
+                             NodeSetType *CheckList);
 
-  /// Call the recursive function updateCPGBetweenNodes() to update CPG between Edge E starting node to subtree of Edge E
-  void updateCPGFromNodeToSubtree(FieldReferenceGraph::Edge* E);
+  /// Call the recursive function updateCPGBetweenNodes() to update CPG between
+  /// Edge E starting node to subtree of Edge E
+  void updateCPGFromNodeToSubtree(FieldReferenceGraph::Edge *E);
 
-  /// Collapse the subtree of Edge Arc into the edge to store the CP relations between the Edge starting node and all the successors of the edge
-  bool collapseSuccessor(FieldReferenceGraph* FRG, FieldReferenceGraph::Edge* Arc);
+  /// Collapse the subtree of Edge Arc into the edge to store the CP relations
+  /// between the Edge starting node and all the successors of the edge
+  bool collapseSuccessor(FieldReferenceGraph *FRG,
+                         FieldReferenceGraph::Edge *Arc);
 
-  /// Recursively collapse the FRG until it becomes the root with a collapse edge
-  bool collapseRoot(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
+  /// Recursively collapse the FRG until it becomes the root with a collapse
+  /// edge
+  bool collapseRoot(FieldReferenceGraph *FRG, FieldReferenceGraph::Node *Root);
 
-  /// Recursively calculate CP relations on the remaining FRG that are no longer collapsable
-  void createCloseProximityRelations(FieldReferenceGraph* FRG, FieldReferenceGraph::Node* Root);
+  /// Recursively calculate CP relations on the remaining FRG that are no longer
+  /// collapsable
+  void createCloseProximityRelations(FieldReferenceGraph *FRG,
+                                     FieldReferenceGraph::Node *Root);
 
   /// Main function to create CPG by collapsing FRG
-  void collapseFieldReferenceGraph(FieldReferenceGraph* FRG);
+  void collapseFieldReferenceGraph(FieldReferenceGraph *FRG);
   /// %}
 
   /// Compare CPG results after collapsing with golden CPG
   void compareCloseProximityRelations() const;
-};
+}; // end of class CloseProximityBuilder
+
 } // namespace llvm
 
 #endif
