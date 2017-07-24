@@ -610,10 +610,14 @@ void CloseProximityBuilder::buildCloseProximityRelations()
   for (auto& F : CurrentModule){
     if (F.isDeclaration())
       continue;
-    if (!F.getEntryCount() || F.getEntryCount().getValue() == 0)
+    if (!F.getEntryCount() || F.getEntryCount().getValue() == 0){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Function " << F << " is never executed in profiling\n");
       continue;
-    if (!StructInfo->isFunctionToAnalyze(&F))
+    }
+    if (!StructInfo->isFunctionToAnalyze(&F)){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Function " << F << " is not in function to analyze\n");
       continue;
+    }
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Analyzing function " << F.getName() << "\n");
     auto* FRG = buildFieldReferenceGraph(&F);
     assert(FRG);

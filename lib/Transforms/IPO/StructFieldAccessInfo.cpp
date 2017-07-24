@@ -29,6 +29,11 @@ static cl::opt<unsigned> HotnessCutoffRatio(
     cl::desc("Filter out structs that is colder than a ratio of maximum "
              "hotness, should be a percentage."));
 
+static cl::opt<bool> EnableOneFieldMaxPerFunction(
+    "struct-analysis-enable-one-field", cl::init(true), cl::Hidden,
+    cl::desc("If enabled, only one field can be passed to a function "
+             "Otherwise, the function is ineligible to analyze."));
+
 // Functions for StructFieldAccessInfo
 // Add a record of load/store Instruction I accessing field FieldNum in the map
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
@@ -52,21 +57,62 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   // Instruction is the first pair. Otherwise, insert a new pair of
   // Arg->FieldNum to an existing FunctionCallInfo object
   if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()) {
-    CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
+    auto Hotness = getExecutionCount(I);
+    if (Hotness.hasValue())
+      CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum, Hotness.getValue());
   } else {
-    auto *CallSite = CallInstFieldAccessMap[I];
-    assert(CallSite->FunctionDeclaration == F);
-    CallSite->insertCallInfo(Arg, FieldNum);
+    auto *CallInfo = CallInstFieldAccessMap[I];
+    assert(CallInfo->FunctionDeclaration == F);
+    auto Hotness = getExecutionCount(I);
+    if (Hotness.hasValue())
+      CallInfo->insertArgFieldMapping(Arg, FieldNum, Hotness.getValue());
   }
-  //FIXME: add the function F to Functions to analyze
+  FunctionsToAnalyze.insert(F);
+}
+
+Optional<FieldNumType>
+StructFieldAccessInfo::getHottestArgFieldMapping(FunctionCallInfoSummary* FuncSummary, ArgNumType ArgNum) const {
+  ProfileCountType MaxHotness = 0;
+  FieldNumType FieldWithMaxHotess;
+  for (auto* ArgFieldMapping : FuncSummary->AllArgFieldMappings){
+    assert(ArgNum < ArgFieldMapping->size());
+    auto& FieldAccessPair = (*ArgFieldMapping)[ArgNum];
+    // Only check the hotness info if FieldNum of this ArgNum is none-zero
+    if (FieldAccessPair.first > 0){
+      if (FieldAccessPair.second > MaxHotness){
+        // Update max hotness
+        FieldWithMaxHotess = FieldAccessPair.first;
+        MaxHotness = FieldAccessPair.second;
+      }
+    }
+  }
+  Optional<FieldNumType> ret;
+  if (MaxHotness > 0){
+    ret = FieldWithMaxHotess;
+  }
+  return ret;
 }
 
 Optional<FieldNumType>
 StructFieldAccessInfo::getAccessFieldNum(const Instruction *I) const {
   Optional<FieldNumType> ret;
-  auto it = LoadStoreFieldAccessMap.find(I);
-  if (it != LoadStoreFieldAccessMap.end()) {
-    ret = it->second;
+  // Check if I directly access loads/stores
+  auto FieldAccessIter = LoadStoreFieldAccessMap.find(I);
+  if (FieldAccessIter != LoadStoreFieldAccessMap.end()) {
+    ret = FieldAccessIter->second;
+    return ret;
+  }
+  // Check if I accesses a function argument that can be a field address
+  auto ArgNum = StructManager->getLoadStoreArgAccess(I);
+  if (ArgNum.hasValue()){
+    // If I is accessing a function argument, check if the arg can be a field address
+    auto FuncIter = FunctionCallInfoMap.find(I->getParent()->getParent());
+    if (FuncIter == FunctionCallInfoMap.end())
+      return ret;
+    if (auto FieldNum = getHottestArgFieldMapping(FuncIter->second, ArgNum.getValue())){
+      ret = FieldNum;
+      return ret;
+    }
   }
   return ret;
 }
@@ -158,12 +204,16 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(const User *U, FieldN
           addFieldAccessNum(Inst, FieldLoc);
       } else {
         if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a call inst\n");
           ImmutableCallSite Call(Inst);
           auto *Func = Call.getCalledFunction();
           if (Func && Func->arg_size() == Call.getNumArgOperands()) {
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Call on function: " << *Func << "\n");
             for (unsigned i = 0; i < Call.getNumArgOperands(); i++) {
-              if (Call.getArgOperand(i) == U)
+              if (Call.getArgOperand(i) == U){
+                DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a call/invoke on field F" << FieldLoc << "\n");
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
+              }
             }
           } else {
             // Bail out if Gep is used in an indirect function or a function
@@ -347,28 +397,47 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
                                            "instructions into function "
                                            "declarations\n");
   for (auto &it : CallInstFieldAccessMap) {
-    auto *CallSiteInfo = it.second;
-    assert(CallSiteInfo);
-    auto *F = CallSiteInfo->FunctionDeclaration;
+    auto *CallInfo = it.second;
+    assert(CallInfo);
+    auto *F = CallInfo->FunctionDeclaration;
     assert(F);
-    if (FunctionAccessMap.find(F) == FunctionAccessMap.end()) {
-      FunctionAccessMap[F] =
-          new FunctionAccessPattern(&CallSiteInfo->Arguments);
+    if (FunctionCallInfoMap.find(F) == FunctionCallInfoMap.end()) {
+      FunctionCallInfoMap[F] =
+          new FunctionCallInfoSummary(&CallInfo->ArgFieldMappingArray);
     } else {
-      FunctionAccessMap[F]->insertCallInfo(&CallSiteInfo->Arguments);
+      FunctionCallInfoMap[F]->insertCallInfo(&CallInfo->ArgFieldMappingArray);
     }
   }
-  for (auto &it : FunctionAccessMap) {
+  for (auto it = FunctionCallInfoMap.begin(); it != FunctionCallInfoMap.end(); ) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                    dbgs() << "Function " << it.first->getName()
+                    dbgs() << "Function " << it->first->getName()
                            << " is called with fields as argument:\n");
-    for (auto *Args : it.second->CallSites) {
-      for (unsigned i = 0; i < Args->size(); i++) {
-        if ((*Args)[i] > 0)
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Arg " << i
-                                                << " is called as field "
-                                                << (*Args)[i] << "\n");
+    // FIXME: add stats to check how often can a function passed into two
+    // or more fields as argument
+    if (EnableOneFieldMaxPerFunction) {
+      if (it->second->AllArgFieldMappings.size() > 1){
+        addStats(StructFieldAccessManager::DebugStats::DS_DifferentFieldsPassedIntoArg);
+        auto ToRemove = it++;
+        FunctionCallInfoMap.erase(ToRemove);
       }
+      else{
+        it++;
+      }
+    }
+    else{
+      for (auto *Args : it->second->AllArgFieldMappings) {
+        for (unsigned i = 0; i < Args->size(); i++) {
+          auto& FieldAccessPair = (*Args)[i];
+          if (FieldAccessPair.first > 0)
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Arg " << i
+                            << " is called as field "
+                            << FieldAccessPair.first
+                            << " with hotness "
+                            << FieldAccessPair.second
+                            << "\n");
+        }
+      }
+      it++;
     }
   }
 }

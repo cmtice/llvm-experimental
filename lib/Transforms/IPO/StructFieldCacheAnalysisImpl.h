@@ -45,9 +45,11 @@ using namespace llvm;
 
 namespace llvm {
 typedef unsigned FieldNumType;
+typedef unsigned ArgNumType;
 typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
 typedef uint64_t ProfileCountType;
-typedef std::vector<FieldNumType> FieldNumArrayType;
+typedef std::pair<FieldNumType, ProfileCountType> FieldAccessInfoPairType;
+typedef std::vector<FieldAccessInfoPairType> ArgFieldMappingArrayType;
 typedef double ExecutionCountType;
 typedef double DataBytesType;
 typedef std::unordered_set<const BasicBlock*> BasicBlockSetType;
@@ -122,6 +124,7 @@ class StructFieldAccessManager {
     DS_UnknownUsesOnStructPtr,
     DS_UnknownUsesOnStructArray,
     DS_FilterColdStructs,
+    DS_DifferentFieldsPassedIntoArg,
     DS_MaxNumStats
   };
 
@@ -157,6 +160,19 @@ class StructFieldAccessManager {
     Function* func = const_cast<Function*>(FromBB->getParent());
     auto Prob = LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
     return 1.0 * Prob.getNumerator() / Prob.getDenominator();
+  }
+
+  /// Insert Instruction I into a map showing I accesses ArgNum of its function
+  void addLoadStoreArgAccess(const Instruction* I, ArgNumType ArgNum) {
+    LoadStoreArgAccessMap[I] = ArgNum;
+  }
+
+  Optional<ArgNumType> getLoadStoreArgAccess(const Instruction* I) const {
+    Optional<ArgNumType> ret;
+    auto it = LoadStoreArgAccessMap.find(I);
+    if (it != LoadStoreArgAccessMap.end())
+      ret = it->second;
+    return ret;
   }
 
   /// Retrive a pair of information if the instruction is accessing any struct
@@ -206,6 +222,10 @@ class StructFieldAccessManager {
   /// Function reference that is used to calculate branch probability
   function_ref<BranchProbabilityInfo *(Function &)> LookupBPI;
 
+  /// A map records all load/store instructions accessing which argument of
+  /// its function
+  std::unordered_map<const Instruction *, ArgNumType> LoadStoreArgAccessMap;
+
   /// A map storing access info of all structs
   std::unordered_map<const StructType *, StructFieldAccessInfo *>
       StructFieldAccessInfoMap;
@@ -232,7 +252,8 @@ class StructFieldAccessManager {
       "GEP instruction directly used on struct*",
       "Unknown instruction directly used on struct*",
       "Unknown instruction directly used on struct[]",
-      "Struct filtered out due to colder than a ratio of maximum hotness"};
+      "Struct filtered out due to colder than a ratio of maximum hotness",
+      "Different function calls taking different arguments found"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
@@ -248,33 +269,34 @@ class StructFieldAccessManager {
 /// and StructFieldAccessInfo.cpp
 class StructFieldAccessInfo {
 private:
-  /// This struct organizes a call on a function with each argument access which
-  /// struct field
+  /// This struct organizes a call/invoke on a function with a mapping
+  /// between each argument access and a struct field with its hotness
   struct FunctionCallInfo {
-    FunctionCallInfo(const Function *F, unsigned ArgNum, FieldNumType FieldNum)
+    FunctionCallInfo(const Function *F, ArgNumType ArgNum, FieldNumType FieldNum, ProfileCountType Hotness)
         : FunctionDeclaration(F) {
-      Arguments.resize(FunctionDeclaration->arg_size());
-      assert(ArgNum < Arguments.size());
-      Arguments[ArgNum] = FieldNum;
+      ArgFieldMappingArray.resize(FunctionDeclaration->arg_size());
+      assert(ArgNum < ArgFieldMappingArray.size());
+      ArgFieldMappingArray[ArgNum] = std::make_pair(FieldNum, Hotness);
     }
-    void insertCallInfo(unsigned ArgNum, FieldNumType FieldNum) {
-      assert(ArgNum < Arguments.size());
-      Arguments[ArgNum] = FieldNum;
+    void insertArgFieldMapping(ArgNumType ArgNum, FieldNumType FieldNum, ProfileCountType Hotness) {
+      assert(ArgNum < ArgFieldMappingArray.size());
+      ArgFieldMappingArray[ArgNum] = std::make_pair(FieldNum, Hotness);
     }
     const Function *FunctionDeclaration;
-    FieldNumArrayType Arguments;
+    ArgFieldMappingArrayType ArgFieldMappingArray;
   };
-  /// This struct organizes all calls on a function definition with all mappings
-  /// of arguments and struct field number
-  struct FunctionAccessPattern {
-    FunctionAccessPattern(FieldNumArrayType *CallSite) {
-      CallSites.clear();
-      CallSites.push_back(CallSite);
+
+  /// This struct organizes all ArgNum->FieldNum mappings of all calls/invokes
+  /// of a function
+  struct FunctionCallInfoSummary {
+    FunctionCallInfoSummary(ArgFieldMappingArrayType *ArgFieldMapping) {
+      AllArgFieldMappings.clear();
+      AllArgFieldMappings.push_back(ArgFieldMapping);
     }
-    void insertCallInfo(FieldNumArrayType *CallSite) {
-      CallSites.push_back(CallSite);
+    void insertCallInfo(ArgFieldMappingArrayType *ArgFieldMapping) {
+      AllArgFieldMappings.push_back(ArgFieldMapping);
     }
-    std::vector<FieldNumArrayType *> CallSites;
+    std::vector<ArgFieldMappingArrayType *> AllArgFieldMappings;
   };
 
 public:
@@ -292,11 +314,11 @@ public:
     for (auto& it : CallInstFieldAccessMap){
       delete it.second;
     }
-    for (auto& it : FunctionAccessMap){
+    for (auto& it : FunctionCallInfoMap){
       delete it.second;
     }
     CallInstFieldAccessMap.clear();
-    FunctionAccessMap.clear();
+    FunctionCallInfoMap.clear();
   }
 
   const StructType *getStructType() const { return StructureType; }
@@ -391,7 +413,7 @@ private:
 
   /// A map records all load/store instructions accessing which field of the
   /// structure
-  std::unordered_map<const Instruction *, unsigned> LoadStoreFieldAccessMap;
+  std::unordered_map<const Instruction *, FieldNumType> LoadStoreFieldAccessMap;
 
   /// A map records all call/invoke instructions accessing which field of the
   /// structure
@@ -400,13 +422,17 @@ private:
 
   /// A map records all functions that has calls with field accesses and their
   /// calling patterns
-  std::unordered_map<const Function *, FunctionAccessPattern *>
-      FunctionAccessMap;
+  std::unordered_map<const Function *, FunctionCallInfoSummary *>
+      FunctionCallInfoMap;
 
   /// A map records all functions that have at least one struct field accesses
   std::unordered_set<const Function *> FunctionsToAnalyze;
 
 private:
+  /// Use to retrieve the hottest field num of this arg of all the function
+  /// invocations. Used by getAccessFieldNum()
+  Optional<FieldNumType> getHottestArgFieldMapping(FunctionCallInfoSummary* FuncSummary, ArgNumType ArgNum) const;
+
   /// Calculate which field of the struct is the GEP pointing to, from
   /// GetElementPtrInst or GEPOperator
   FieldNumType calculateFieldNumFromGEP(const User *U) const;

@@ -165,7 +165,6 @@ void StructFieldAccessManager::summarizeFunctionCalls() {
 void StructFieldAccessManager::applyFiltersToStructs() {
   // TODO: This function needs more work to add more filters to reduce the
   // number of structs for analysis
-  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "To apply filters to structs\n");
   auto RemoveEntry =
       [&](std::unordered_map<const StructType *,
                              StructFieldAccessInfo *>::iterator &it) {
@@ -278,7 +277,7 @@ void StructFieldAccessManager::debugPrintAllCPGs() const
       dbgs() << "A literal struct has CPG: \n";
     }
     else{
-      dbgs() << "Struct [" << type->getStructName() << "] has FRG: \n";
+      dbgs() << "Struct [" << type->getStructName() << "] has CPG: \n";
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintCloseProximityGraph(dbgs());
@@ -345,10 +344,6 @@ void StructFieldAccessManager::printStats() {
              << " times\n";
     }
   };
-  outs().changeColor(raw_ostream::BLUE);
-  outs() << "Stats are stored into "
-         << "/tmp/SFCA-" + CurrentModule.getName().str() + ".csv"
-         << "\n";
   outs().resetColor();
   outs()
       << "----------------------------------------------------------------- \n";
@@ -457,6 +452,7 @@ static void performIRAnalysis(Module &M,
   for (auto &F : M) {
     if (F.isDeclaration())
       continue;
+    unsigned ArgNum = 0;
     for (auto &AG : F.args()) {
       if (AG.getType()->isStructTy()) {
         DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
@@ -466,26 +462,38 @@ static void performIRAnalysis(Module &M,
         StructManager->addStats(
             StructFieldAccessManager::DebugStats::DS_FuncArgValue);
       }
-      if (AG.getType()->isPointerTy() &&
-          AG.getType()->getPointerElementType()->isStructTy()) {
-        // Identified AG is an argument with a struct type
-        auto *StructPtr = StructManager->getStructFieldAccessInfo(
-            AG.getType()->getPointerElementType());
-        if (StructPtr) {
-          DEBUG_WITH_TYPE(
-              DEBUG_TYPE_IR,
-              dbgs() << "Found an argument of a struct defined in the module: "
-                     << AG << "\n");
-          StructPtr->analyzeUsersOfStructValue(&AG);
-        } else {
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
+      else if (AG.getType()->isPointerTy()) {
+        // AG is an address of a struct
+        if (AG.getType()->getPointerElementType()->isStructTy()) {
+          // Identified AG is an argument with a struct type
+          auto *StructPtr = StructManager->getStructFieldAccessInfo(
+              AG.getType()->getPointerElementType());
+          if (StructPtr) {
+            DEBUG_WITH_TYPE(
+                DEBUG_TYPE_IR,
+                dbgs() << "Found an argument of a struct defined in the module: "
+                       << AG << "\n");
+            StructPtr->analyzeUsersOfStructValue(&AG);
+          } else {
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
                                              << "Found an argument of a struct "
                                                 "not defined in the program: "
                                              << AG << "\n");
-          StructManager->addStats(
-              StructFieldAccessManager::DebugStats::DS_FuncArgNotDefined);
+            StructManager->addStats(
+                StructFieldAccessManager::DebugStats::DS_FuncArgNotDefined);
+          }
+        }
+        else{
+          // AG is a pointer, which could points to a field address when
+          // the function is called
+          for (auto* User : AG.users()){
+            if (isa<LoadInst>(User) || isa<StoreInst>(User)){
+              StructManager->addLoadStoreArgAccess(cast<Instruction>(User), ArgNum);
+            }
+          }
         }
       }
+      ArgNum++;
     }
   }
   // Summarizes all uses of fields in function calls
