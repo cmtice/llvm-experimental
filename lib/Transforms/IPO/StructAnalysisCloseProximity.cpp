@@ -397,10 +397,8 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
       if (!DisableIgnoreZeroCountNodes && C < 1e-3)
         continue;
       auto D = BBI->RemainBytes; // Use size of remaining data in BB
-      if (BBI->BackEdgeSet.find(SB) != BBI->BackEdgeSet.end())
-        FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D, true);
-      else
-        FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D);
+      auto isBackEdge = (BBI->BackEdgeSet.find(SB) != BBI->BackEdgeSet.end());
+      FRG->connectNodes(BBI->LastNode, SBI->FirstNode, C, D, isBackEdge);
     }
   }
   assert(StructInfo->getExecutionCount(&F->getEntryBlock()));
