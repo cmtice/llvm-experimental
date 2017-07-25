@@ -57,6 +57,9 @@ static cl::opt<bool> DisableIgnoreZeroCountNodes(
     cl::desc("Ignore zero-count nodes in FRG generation"));
 
 // Utility functions
+// Function used to update (count, distance) pair by taking a weighted average
+// of the Result and Source and save result to Result. Used when updating
+// CPG or updating an edge weight
 static void updatePairByMerging(ExecutionCountType &ResultCount,
                                 DataBytesType &ResultDistance,
                                 ExecutionCountType SourceCount,
@@ -70,6 +73,11 @@ static void updatePairByMerging(ExecutionCountType &ResultCount,
   ResultCount += SourceCount;
 }
 
+// Function used to update (count, distance) pair. distance is updated by
+// directly adding ResultDistance and SourceDistance. count is updated by
+// taking minimum of a portion of ResultCount and a portion of SourceCount
+// Used when calculating edge weight along a path, especially when nodes
+// have multiple in and out edges
 static void updatePairByConnecting(ExecutionCountType &ResultCount,
                                    double OutRatio,
                                    DataBytesType &ResultDistance,
@@ -82,6 +90,16 @@ static void updatePairByConnecting(ExecutionCountType &ResultCount,
 }
 
 // Functions for FieldReferenceGraph
+// Reconnect two nodes with the current Edge when collapsing FRG.
+// There are three possible results after this function.
+// Case #1. If the reconnection happens from a node to itself, no reconnection
+//    happens because we don't care a CP relations between a field with itself.
+// Case #2. If the reconnection happends between two nodes that already have
+//    a connection, no new edge is added. Instead, remove the existing edge
+//    after merging the weights onto the Edge and use Edge to connect the two
+//    nodes.
+// Case #3. Otherwise, connect the two nodes with current Edge without changing
+//    its weights
 void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node *From,
                                           FieldReferenceGraph::Node *To) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
@@ -89,6 +107,7 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node *From,
                          << ToNode->Id << ") to (" << From->Id << "," << To->Id
                          << ") with " << DEBUG_PRINT_COUNT(ExecutionCount)
                          << " and " << DEBUG_PRINT_DIST(DataSize) << "\n");
+  // Case #1
   if (From == To) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Reconnection results in a node "
                                               "pointing to itself, remove this "
@@ -106,6 +125,7 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node *From,
     if (E->ToNode == To)
       ExistEdge = E;
   }
+  // Case #2
   if (ExistEdge) {
     assert(To->InEdges.find(ExistEdge) != To->InEdges.end());
     DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
@@ -121,6 +141,7 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node *From,
     From->OutEdges.erase(ExistEdge);
     To->InEdges.erase(ExistEdge);
   }
+  // Case #3
   if (From != FromNode)
     FromNode->OutEdges.erase(this);
   if (To != ToNode)
@@ -155,10 +176,15 @@ FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size()
                                          << " for field " << FieldNum << "\n");
   auto *Node = new FieldReferenceGraph::Node(NodeList.size(), FieldNum, S);
+  // Use NodeList to collect all allocated Nodes. Will be deallocated in
+  // destructor to avoid memory leak
   NodeList.push_back(Node);
   return Node;
 }
 
+// Connect two nodes by creating an Edge between them and set the weight to
+// be (C, D). The only tricky case is when the two nodes are already connected
+// by another edge, instead of creating a new edge, we update its weight.
 void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node *From,
                                        FieldReferenceGraph::Node *To,
                                        ExecutionCountType C, DataBytesType D,
@@ -197,6 +223,7 @@ void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node *From,
     Edge->LoopArc = true;
 }
 
+// Collapse information of a Node to an Edge as a collapsed Entry
 void FieldReferenceGraph::collapseNodeToEdge(FieldReferenceGraph::Node *N,
                                              FieldReferenceGraph::Edge *E) {
   assert(E->Collapsed == false);
@@ -209,6 +236,7 @@ void FieldReferenceGraph::collapseNodeToEdge(FieldReferenceGraph::Node *N,
   EntryList.push_back(Entry);
 }
 
+// Copy collapsed Entry from one Edge to another
 void FieldReferenceGraph::moveCollapsedEntryToEdge(
     FieldReferenceGraph::Entry *Entry, FieldReferenceGraph::Edge *FromEdge,
     FieldReferenceGraph::Edge *ToEdge) {
@@ -216,6 +244,11 @@ void FieldReferenceGraph::moveCollapsedEntryToEdge(
   ToEdge->CollapsedEntries.insert(Entry);
 }
 
+// Debug only. Print FRG to a specified output stream in the order of BFS.
+// The format of each node in output is like:
+// Node 0 accesses 1 and has 2.0 out sum and 2.0 in sum connect with
+// { Node 1 (1.0, 0.0), Node 2 (1.0, 4.0) B}.
+// Here "B" denotes the edge is a back edge
 void FieldReferenceGraph::debugPrint(raw_ostream &OS) const {
   assert(RootNode);
   std::queue<Node *> ExamineList; // List of Nodes to print
@@ -243,6 +276,10 @@ void FieldReferenceGraph::debugPrint(raw_ostream &OS) const {
   }
 }
 
+// Debug only. Print collapsed entries on each Edge.
+// The output format of each entry is like:
+// Collapsed entry for edge: (0, 1)
+// Collapsed entry 0 field num: 1, count: 1.0, distance: 4.0
 void FieldReferenceGraph::debugPrintCollapsedEntries(
     raw_ostream &OS, FieldReferenceGraph::Edge *E) const {
   OS << "Collapsed entry for edge: (" << E->FromNode->Id << "," << E->ToNode->Id
@@ -255,6 +292,8 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(
 }
 
 // Functions for CloseProximityBuilder
+// Constructor of CloseProximityBuilder. Mainly used to initialize
+// two CP tables: CloseProximityTable and GoldCPT
 CloseProximityBuilder::CloseProximityBuilder(const Module &M,
                                              const StructFieldAccessManager *SM,
                                              const StructFieldAccessInfo *SI)
@@ -280,6 +319,8 @@ CloseProximityBuilder::CloseProximityBuilder(const Module &M,
   }
 }
 
+// Get the size of the data accessed by this load/store instruction.
+// Return number of bytes accessed by this instruction
 DataBytesType
 CloseProximityBuilder::getMemAccessDataSize(const Instruction *I) const {
   assert(I->getOpcode() == Instruction::Load ||
@@ -293,6 +334,9 @@ CloseProximityBuilder::getMemAccessDataSize(const Instruction *I) const {
   return CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
 }
 
+// A wrapper function to find all backedges on CFG. It wraps a call to
+// function FindFunctionBackedges() in CFG.h to find all backeges and record
+// backeges in the each BasicBlockHelperInfo of the BB
 void CloseProximityBuilder::detectBackEdges(const FieldReferenceGraph *FRG,
                                             const Function *F) {
   SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 32> BackEdges;
@@ -303,6 +347,21 @@ void CloseProximityBuilder::detectBackEdges(const FieldReferenceGraph *FRG,
   }
 }
 
+// Main function to build Field Reference Graph (FRG) and returns its pointer
+// The function consists of three parts.
+// 1. Build sub-FRG for each basic block. In this part, find all consecutive
+//    load/store field accesses in the basic block and connect each other with
+//    the execution count of the basic block and the distance in number of bytes
+//    of normal load/store instructions between them.
+//    There are two special cases: 1) if there's no memory accesses in the
+//    basic block, create a dummy node; 2) if the first load/store is not on
+//    any field, create a dummy node.
+// 2. Find all backedges and record them in each BasicBlockHelperInfo
+// 3. Build FRG by connecting all sub-FRGs. In this part, the connection is
+//    based on the branches connecting BBs in CFG. The count is taken by the
+//    minimum of branch probability and the execution count of following BB/
+//    The distance is the remaining bytes in each previous BB, i.e. number of
+//    bytes accessed after the last node.
 FieldReferenceGraph *
 CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a new empty FRG\n");
@@ -323,6 +382,8 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
         auto *NewNode =
             FRG->createNewNode(FieldNum.getValue(), getMemAccessDataSize(&I));
         if (BBI->LastNode) {
+          // If there's already a node created in the BB, connect the current
+          // node with previous one
           DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
                           dbgs() << "Previous nodes found in the BB\n");
           auto C = 0;
@@ -339,6 +400,7 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
                      << " and data " << D << " bytes \n");
           BBI->LastNode = NewNode;
         } else {
+          // If there's no previous node, update BBI info
           DEBUG_WITH_TYPE(
               DEBUG_TYPE_FRG,
               dbgs() << "No previous node found. It is the first node\n");
@@ -359,6 +421,7 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
                 dbgs() << "Create a dummy node as the first node in the BB.\n");
             BBI->FirstNode = BBI->LastNode = FRG->createNewNode();
           } else {
+            // Record the bytes accessed, used to calculate distance
             BBI->RemainBytes += getMemAccessDataSize(&I);
             DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
                             dbgs() << "Increment remaining data size to "
@@ -368,6 +431,8 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
       }
     }
     if (BBI->LastNode == NULL) {
+      // If all instructions are examined and the BB doesn't have any memory
+      // accesses, create a dummy node
       assert(BBI->FirstNode == NULL);
       DEBUG_WITH_TYPE(
           DEBUG_TYPE_FRG,
@@ -382,6 +447,7 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
   for (auto &BB : *F) {
     auto *BBI = FRG->getBasicBlockHelperInfo(&BB);
     auto *Term = BB.getTerminator();
+    // Check all the connections from BB in CFG
     for (const auto *SB : Term->successors()) {
       auto *SBI = FRG->getBasicBlockHelperInfo(SB);
       ExecutionCountType C = 0;
