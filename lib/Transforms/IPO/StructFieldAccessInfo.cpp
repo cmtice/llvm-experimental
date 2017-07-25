@@ -8,8 +8,17 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This file implements StructFieldAccessInfo that is used in
-// StructFieldCacheAnalysis pass.
+// This file implements class StructFieldAccessInfo and class HotnessAnalyzer
+//
+// Class StructFieldAccessInfo organizes all memory accesses or function calls
+// on each field of this struct type in the whole program. It provides
+// interfaces to StructFieldAccessManager to insert new field accesses info and
+// provides interfaces to StructFieldAccessManager and CloseProximityBuilder to
+// obtain which instruction accesses which field.
+//
+// Class HotnessAnalyzer provides interfaces for StructFieldAccessManager to
+// apply specific filters on all structs in the program according to hotness to
+// narrow down the analyze scope or get statistics.
 //
 //===------------------------------------------------------------------------===//
 
@@ -59,7 +68,8 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()) {
     auto Hotness = getExecutionCount(I);
     if (Hotness.hasValue())
-      CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum, Hotness.getValue());
+      CallInstFieldAccessMap[I] =
+          new FunctionCallInfo(F, Arg, FieldNum, Hotness.getValue());
   } else {
     auto *CallInfo = CallInstFieldAccessMap[I];
     assert(CallInfo->FunctionDeclaration == F);
@@ -70,16 +80,16 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   FunctionsToAnalyze.insert(F);
 }
 
-Optional<FieldNumType>
-StructFieldAccessInfo::getHottestArgFieldMapping(FunctionCallInfoSummary* FuncSummary, ArgNumType ArgNum) const {
+Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
+    FunctionCallInfoSummary *FuncSummary, ArgNumType ArgNum) const {
   ProfileCountType MaxHotness = 0;
   FieldNumType FieldWithMaxHotess;
-  for (auto* ArgFieldMapping : FuncSummary->AllArgFieldMappings){
+  for (auto *ArgFieldMapping : FuncSummary->AllArgFieldMappings) {
     assert(ArgNum < ArgFieldMapping->size());
-    auto& FieldAccessPair = (*ArgFieldMapping)[ArgNum];
+    auto &FieldAccessPair = (*ArgFieldMapping)[ArgNum];
     // Only check the hotness info if FieldNum of this ArgNum is none-zero
-    if (FieldAccessPair.first > 0){
-      if (FieldAccessPair.second > MaxHotness){
+    if (FieldAccessPair.first > 0) {
+      if (FieldAccessPair.second > MaxHotness) {
         // Update max hotness
         FieldWithMaxHotess = FieldAccessPair.first;
         MaxHotness = FieldAccessPair.second;
@@ -87,7 +97,7 @@ StructFieldAccessInfo::getHottestArgFieldMapping(FunctionCallInfoSummary* FuncSu
     }
   }
   Optional<FieldNumType> ret;
-  if (MaxHotness > 0){
+  if (MaxHotness > 0) {
     ret = FieldWithMaxHotess;
   }
   return ret;
@@ -104,12 +114,14 @@ StructFieldAccessInfo::getAccessFieldNum(const Instruction *I) const {
   }
   // Check if I accesses a function argument that can be a field address
   auto ArgNum = StructManager->getLoadStoreArgAccess(I);
-  if (ArgNum.hasValue()){
-    // If I is accessing a function argument, check if the arg can be a field address
+  if (ArgNum.hasValue()) {
+    // If I is accessing a function argument, check if the arg can be a field
+    // address
     auto FuncIter = FunctionCallInfoMap.find(I->getParent()->getParent());
     if (FuncIter == FunctionCallInfoMap.end())
       return ret;
-    if (auto FieldNum = getHottestArgFieldMapping(FuncIter->second, ArgNum.getValue())){
+    if (auto FieldNum =
+            getHottestArgFieldMapping(FuncIter->second, ArgNum.getValue())) {
       ret = FieldNum;
       return ret;
     }
@@ -122,18 +134,14 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: "
                                         << *U << "\n");
   // Operand 0 should be a pointer to the struct
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
-         (isa<ConstantExpr>(U) &&
-          cast<ConstantExpr>(U)->getOpcode() == Instruction::GetElementPtr));
-  // Have to use getOpcode to check
-  // opcode of GetElementPtrConstantExpr because it's private to lib/IR
   auto *Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of
   // StructFieldAccessInfo
   if (Op->getType()->getPointerElementType()->isStructTy() &&
       Op->getType()->getPointerElementType() == StructureType) {
-    if (U->getNumOperands() < 3) // GEP to calculate struct field needs at least 2
-                                 // indices (operand 1 and 2)
+    if (U->getNumOperands() <
+        3) // GEP to calculate struct field needs at least 2
+           // indices (operand 1 and 2)
       return 0;
     // Operand 1 should be first index to the struct, usually 0; if not 0, it's
     // like goto an element of an array of structs
@@ -150,12 +158,16 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
     // TODO: ignore indices after this one. If there's indices, the field has to
     // be an array or struct
     return Offset + 1; // return field number starting from 1
-  }
-  else if (Op->getType()->getPointerElementType()->isArrayTy() &&
-           Op->getType()->getPointerElementType()->getArrayElementType()->isStructTy() &&
-           Op->getType()->getPointerElementType()->getArrayElementType() == StructureType) {
-    if (U->getNumOperands() < 4) // GEP to calculate struct field needs at least 3
-                                 // indices (operand 1, 2, 3)
+  } else if (Op->getType()->getPointerElementType()->isArrayTy() &&
+             Op->getType()
+                 ->getPointerElementType()
+                 ->getArrayElementType()
+                 ->isStructTy() &&
+             Op->getType()->getPointerElementType()->getArrayElementType() ==
+                 StructureType) {
+    if (U->getNumOperands() <
+        4) // GEP to calculate struct field needs at least 3
+           // indices (operand 1, 2, 3)
       return 0;
     // Operand 1 should be first index to the struct, usually 0; if not 0, it's
     // like goto an element of an array of structs
@@ -170,10 +182,10 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
     auto *Index = cast<Constant>(Op);
     auto Offset = (FieldNumType)Index->getUniqueInteger().getZExtValue();
     assert(Offset < NumElements);
-    return Offset+1;
-  }
-  else{
-    assert(0 && "GEP instruction to analyze is neither from a struct or an array of struct");
+    return Offset + 1;
+  } else {
+    assert(0 && "GEP instruction to analyze is neither from a struct or an "
+                "array of struct");
   }
 }
 
@@ -191,7 +203,8 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   addFieldAccessFromGEPOrBitcast(U, FieldLoc);
 }
 
-void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(const User *U, FieldNumType FieldLoc) {
+void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
+    const User *U, FieldNumType FieldLoc) {
   for (auto *User : U->users()) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Check user of " << *U << ": " << *User << "\n");
@@ -208,10 +221,13 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(const User *U, FieldN
           ImmutableCallSite Call(Inst);
           auto *Func = Call.getCalledFunction();
           if (Func && Func->arg_size() == Call.getNumArgOperands()) {
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Call on function: " << *Func << "\n");
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                            dbgs() << "Call on function: " << *Func << "\n");
             for (unsigned i = 0; i < Call.getNumArgOperands(); i++) {
-              if (Call.getArgOperand(i) == U){
-                DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a call/invoke on field F" << FieldLoc << "\n");
+              if (Call.getArgOperand(i) == U) {
+                DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                                dbgs() << "Found a call/invoke on field F"
+                                       << FieldLoc << "\n");
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
               }
             }
@@ -267,15 +283,14 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
           }
         }
         continue;
-      }
-      else{
+      } else {
         assert(cast<GetElementPtrInst>(Inst)->getPointerOperand() == V);
-        if (Inst->getType()->getPointerElementType() == V->getType()->getPointerElementType()){
-          // If an GEP is used to calculate a struct type from a struct type, it should be
-          // an array index of a struct array
+        if (Inst->getType()->getPointerElementType() ==
+            V->getType()->getPointerElementType()) {
+          // If an GEP is used to calculate a struct type from a struct type, it
+          // should be an array index of a struct array
           analyzeUsersOfStructValue(Inst);
-        }
-        else{
+        } else {
           addFieldAccessFromGEP(Inst);
         }
       }
@@ -318,8 +333,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
         if (Inst->getType()->getPointerElementType()->isStructTy())
           analyzeUsersOfStructValue(Inst);
       } else if (isa<GetElementPtrInst>(Inst)) {
-        addStats(
-            StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
+        addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
       } else if (!isa<StoreInst>(Inst)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
@@ -327,8 +341,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
     } else if (isa<Operator>(U)) {
       auto *Oper = cast<Operator>(U);
       if (isa<GEPOperator>(Oper)) {
-        addStats(
-            StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
+        addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
       } else {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
@@ -356,14 +369,14 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
       // Only GEP instruction is valid on a struct array
       if (isa<GetElementPtrInst>(Inst)) {
         if (Inst->getType()->isPointerTy() &&
-            Inst->getType()->getPointerElementType()->isStructTy()){
+            Inst->getType()->getPointerElementType()->isStructTy()) {
           // If result of the GEP value is the address of a struct, which
           // is the same as the result of an alloc of a struct definition
           analyzeUsersOfStructValue(Inst);
-        }
-        else{
+        } else {
           // If the result of GEP is not a struct, then the GEP is directly used
-          // to calculate a field of this struct, directly send it to add field access
+          // to calculate a field of this struct, directly send it to add field
+          // access
           addFieldAccessFromGEP(Inst);
         }
       } else {
@@ -375,10 +388,9 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
       if (isa<GEPOperator>(Oper)) {
         // Same as GEP instruction above
         if (Oper->getType()->isPointerTy() &&
-            Oper->getType()->getPointerElementType()->isStructTy()){
+            Oper->getType()->getPointerElementType()->isStructTy()) {
           analyzeUsersOfStructValue(Oper);
-        }
-        else{
+        } else {
           addFieldAccessFromGEP(Oper);
         }
       } else {
@@ -408,33 +420,31 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
       FunctionCallInfoMap[F]->insertCallInfo(&CallInfo->ArgFieldMappingArray);
     }
   }
-  for (auto it = FunctionCallInfoMap.begin(); it != FunctionCallInfoMap.end(); ) {
+  for (auto it = FunctionCallInfoMap.begin();
+       it != FunctionCallInfoMap.end();) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Function " << it->first->getName()
                            << " is called with fields as argument:\n");
     // FIXME: add stats to check how often can a function passed into two
     // or more fields as argument
     if (EnableOneFieldMaxPerFunction) {
-      if (it->second->AllArgFieldMappings.size() > 1){
-        addStats(StructFieldAccessManager::DebugStats::DS_DifferentFieldsPassedIntoArg);
+      if (it->second->AllArgFieldMappings.size() > 1) {
+        addStats(StructFieldAccessManager::DebugStats::
+                     DS_DifferentFieldsPassedIntoArg);
         auto ToRemove = it++;
         FunctionCallInfoMap.erase(ToRemove);
-      }
-      else{
+      } else {
         it++;
       }
-    }
-    else{
+    } else {
       for (auto *Args : it->second->AllArgFieldMappings) {
         for (unsigned i = 0; i < Args->size(); i++) {
-          auto& FieldAccessPair = (*Args)[i];
+          auto &FieldAccessPair = (*Args)[i];
           if (FieldAccessPair.first > 0)
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Arg " << i
-                            << " is called as field "
-                            << FieldAccessPair.first
-                            << " with hotness "
-                            << FieldAccessPair.second
-                            << "\n");
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                            dbgs() << "Arg " << i << " is called as field "
+                                   << FieldAccessPair.first << " with hotness "
+                                   << FieldAccessPair.second << "\n");
         }
       }
       it++;
