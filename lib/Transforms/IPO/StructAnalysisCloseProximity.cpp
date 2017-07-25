@@ -478,6 +478,11 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
   return FRG;
 }
 
+// Core function to update a cell in CPT.
+// In this function, a CPT can be either CloseProximityTable (real CP relations)
+// or GoldCPT (used for result validation). A cell in CPT represents CP
+// relations between two fields and consists of a pair of numbers: count and
+// distance. When updating a cell, call updatePairByMerging().
 void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
                                       ExecutionCountType C, DataBytesType D,
                                       CloseProximityTableType &CPT) {
@@ -512,6 +517,8 @@ void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
                << DEBUG_PRINT_DIST(CPT[Src - 1][Dest - 1].second) << ")\n");
   }
 }
+
+// Wrapper function to update a cell in CloseProximityTable
 void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest,
                                       ExecutionCountType C, DataBytesType D) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
@@ -520,6 +527,8 @@ void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest,
                          << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
   updateCPT(Src, Dest, C, D, CloseProximityTable);
 }
+
+// Wrapper function to update a cell in GoldCPT
 void CloseProximityBuilder::updateGoldCPG(FieldNumType Src, FieldNumType Dest,
                                           ExecutionCountType C,
                                           DataBytesType D) {
@@ -530,6 +539,50 @@ void CloseProximityBuilder::updateGoldCPG(FieldNumType Src, FieldNumType Dest,
   updateCPT(Src, Dest, C, D, GoldCPT);
 }
 
+// Core code to update CP relations along a path from Node From in its subtree
+// Node To is a node on its subtree and the path ends at either a leaf node or
+// a back edge to a node on the path. Every pair of (From, To) on the path will
+// be updated. Edge Arc is used to keep record of the current Edge on the path
+// to be calculated.
+// There are possible two ways to calculate:
+// 1. If the next Edge on the path is a collapsed Edge, the path ends here and
+//    update CP relations between Node From and all collapsed entries on the
+//    Edge. When updating, make sure to take only a portion of the count on the
+//    collapsed entry when the collapsed Edge is one of the incoming edge of the
+//    node.
+// 2. If the next Edge is not collapsed, update CP relation between From and To
+//    and move on to the destination node of the Edge. When moving on,
+//    considering the current node might have multiple exits, take a portion of
+//    the weight is important to ensure correctness. Call
+//    updatePairByConnecting() to only take a portion count when recursively
+//    calling the function.
+// The following example shows overall guidance to guarantee correctness
+// when updating counts: When updating CP relations between A and D,
+//
+//       Count1      Count5     Count8
+//    A --------- B -------- C -------- D
+// Suppose A has two outgoing edges: Count1 and Count2, B has two incoming
+// edges: Count1 and Count3 and two outgoing edges: Count4 and Count5. C has two
+// incoming edges: Count5 and Count6 and two outgoing edges: Count7 and Count8.
+// D has two incoming edges: Count9 and Count8. In this case, when we update A
+// and D from the order of A->B->C->D, the result of count should be: (Order 1)
+//                    Count5                    Count8
+// min { Count1 * -------------- , Count5 * --------------- , Count8 }
+//                Count4+Count5              Count7+Count8
+//
+// Meanwhile, when we updating A and from the order of D->C->B->A, we need to
+// make sure the results are the same, so the result should be: (Order 2)
+//                            Count5                    Count1
+// min { Count8, Count8 * -------------- , Count5 * --------------- }
+//                         Count5+Count6              Count1+Count3
+//
+// The results are the same if Node B and C has the same incoming and outgoing
+// counts: Count4+Count5=Count1+Count3 and Count5+Count6=Count7+Count8.
+//
+// When updating CP relation along a path, it's Order 1. When collapsing a node
+// to its predecessor edge, it's Order 2. Thus this function is a combination of
+// Order 1 and 2 so we need to make sure the counts are correct when connecting
+// them.
 void CloseProximityBuilder::updateCPGBetweenNodes(
     FieldReferenceGraph::Node *From, FieldReferenceGraph::Node *To,
     FieldReferenceGraph::Edge *Arc, ExecutionCountType C, DataBytesType D,
@@ -547,10 +600,6 @@ void CloseProximityBuilder::updateCPGBetweenNodes(
     if (E->ToNode == From)
       continue;
     if (E->Collapsed) {
-      // DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " <<
-      // From->Id << " to collapsed subtree edge (" << E->FromNode->Id << "," <<
-      // E->ToNode->Id << ") with ratio " << Arc->ExecutionCount/To->InSum <<
-      // "\n");
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from " << From->Id
                                              << " to collapsed subtree edge ("
                                              << E->FromNode->Id << ","
@@ -561,8 +610,6 @@ void CloseProximityBuilder::updateCPGBetweenNodes(
         auto ExCnt = C;
         auto Dist = D;
         assert(To->InSum > 0);
-        // updatePairByConnecting(ExCnt, Dist, Entry->ExecutionCount,
-        // Arc->ExecutionCount/To->InSum, Dist, To->Size + Entry->DataSize);
         updatePairByConnecting(
             ExCnt, E->ExecutionCount / To->OutSum, Dist, Entry->ExecutionCount,
             Arc->ExecutionCount / To->InSum, To->Size + Entry->DataSize);
@@ -584,6 +631,9 @@ void CloseProximityBuilder::updateCPGBetweenNodes(
   CheckList->erase(To);
 }
 
+// Main function to update a node to its subtree. It's a wrapper function to
+// call the updateCPGBetweenNodes() function recursively. The function is used
+// when disconnecting an edge in collapsing FRG
 void CloseProximityBuilder::updateCPGFromNodeToSubtree(
     FieldReferenceGraph::Edge *E) {
   if (E->FromNode->FieldNum == 0 || E->ExecutionCount <= 1e-3)
@@ -596,6 +646,22 @@ void CloseProximityBuilder::updateCPGFromNodeToSubtree(
                         E->DataSize, &CheckList);
 }
 
+// Core function to collapse FRG. Edge Arc is the edge that is going to be
+// collapsed, i.e. only has one predecessor. Collapse this Edge means to add
+// the direct successor of this Edge (Arc->ToNode) to the collapesd entries
+// of this edge. If the node has outgoing edges, which should be a common case,
+// there are two possible solutions depending on if the edge is collapsed:
+// 1. If the outgoing edge is collapsed, i.e. it connects to a transformed leaf
+//    node, we only need to update CP relations between the source Node and all
+//    the collapsed entries and also move those collapsed entries to the Edge
+//    Arc. Before update CP relations or move collapsed entries, we need to
+//    recalculate the count in the entry according to the Order 2 above (see
+//    comments before updateCPGBetweenNodes() ).
+// 2. If the outgoing edge is not collapsed, we need to move the subtree to the
+//    source Node (Arc->FromNode), because the node Arc->ToNode is going to be
+//    collapsed and "disappeared". This disconnection needs to call
+//    updateCPGFromNodeToSubtree() to make sure we don't lose any information
+//    and the reconnection needs to call Edge::reconnect() to update weights.
 bool CloseProximityBuilder::collapseSuccessor(FieldReferenceGraph *FRG,
                                               FieldReferenceGraph::Edge *Arc) {
   bool Ret = false;
@@ -645,6 +711,13 @@ bool CloseProximityBuilder::collapseSuccessor(FieldReferenceGraph *FRG,
   return Ret;
 }
 
+// Main function to collapse FRG and update CloseProximityTable.
+// The function provides an order of examinations on the FRG: we make sure
+// all the successors are examined before a node is examined (first for-loop
+// in the while-loop) and if any of the successors are restructured, instead
+// of going up, we re-examine the successors, which is also guarantee that
+// when trying to collapsing a node, all of its successors are either collapsed
+// or proved to be not collapsable.
 bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
                                          FieldReferenceGraph::Node *Root) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
@@ -684,6 +757,11 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
   return SubtreeChange;
 }
 
+// Function to create CP relations on a collapsed FRG. If an FRG is not not
+// collapsed to a single Root node, we need to use this function to find all
+// the non-collapsed nodes from bottom to up (first for-loop) and use brutal
+// force to build CP relations between the node and its subtree (second
+// for-loop).
 void CloseProximityBuilder::createCloseProximityRelations(
     FieldReferenceGraph *FRG, FieldReferenceGraph::Node *Root) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
@@ -708,6 +786,10 @@ void CloseProximityBuilder::createCloseProximityRelations(
   Root->Visited = true;
 }
 
+// Main function to collpase FRG and create CP relations. First call
+// collapseRoot() to collapse FRG and if there's an outgoing edge of Root is
+// not collapsed, call createCloseProximityRelations() to build CP relations
+// with brutal force.
 void CloseProximityBuilder::collapseFieldReferenceGraph(
     FieldReferenceGraph *FRG) {
   auto *Root = FRG->getRootNode();
@@ -725,7 +807,9 @@ void CloseProximityBuilder::collapseFieldReferenceGraph(
   createCloseProximityRelations(FRG, Root);
 }
 
-// Functions for building CPG with brutal force, used for debugging
+// Functions for building CPG with brutal force, only used for debugging
+// (Debug Only) Function to calculate CP relations between the first node
+// and the last node along a path and update to GoldCPT for debugging
 void CloseProximityBuilder::calculateCPRelation(EdgeArrayType *Path) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Calculate path: \n");
   for (auto *E : *Path) {
@@ -747,6 +831,11 @@ void CloseProximityBuilder::calculateCPRelation(EdgeArrayType *Path) {
                 (*Path)[Path->size() - 1]->ToNode->FieldNum, C, D);
 }
 
+// (Debug only) Function to find a path in FRG. The function has to make
+// sure the path ends on either leaf node or a back edge to a visited node
+// on the path. After a path is found, call calculateCPRelation() to update
+// golden CP relations. The function is recursively called to find all paths
+// between two nodes.
 void CloseProximityBuilder::findPathInFRG(FieldReferenceGraph::Node *Start,
                                           FieldReferenceGraph::Node *End,
                                           EdgeArrayType *Path,
@@ -772,6 +861,7 @@ void CloseProximityBuilder::findPathInFRG(FieldReferenceGraph::Node *Start,
   }
 }
 
+// (Debug only) Wrapper function to find all paths between FromNode to ToNode.
 void CloseProximityBuilder::calculatePathBetween(
     FieldReferenceGraph::Node *FromNode, FieldReferenceGraph::Node *ToNode) {
   EdgeArrayType Path;
@@ -784,6 +874,9 @@ void CloseProximityBuilder::calculatePathBetween(
   findPathInFRG(FromNode, ToNode, &Path, &VisitedNodes);
 }
 
+// (Debug only) Function to create a pair between every node in FRG. In order
+// to save time on some obvious cases, we don't calculate CP relations for
+// dummy nodes, a node to itself or two nodes have the same field number.
 void CloseProximityBuilder::createFRGPairs(FieldReferenceGraph *FRG,
                                            FieldReferenceGraph::Node *Root,
                                            EdgeArrayType *Path) {
@@ -804,6 +897,7 @@ void CloseProximityBuilder::createFRGPairs(FieldReferenceGraph *FRG,
   }
 }
 
+// (Debug only) Main function to create golden CP relations.
 void CloseProximityBuilder::createGoldCloseProximityRelations(
     FieldReferenceGraph *FRG) {
   auto *Root = FRG->getRootNode();
@@ -813,6 +907,8 @@ void CloseProximityBuilder::createGoldCloseProximityRelations(
   createFRGPairs(FRG, Root, &Path);
 }
 
+// (Debug only) Function to compare results of CloseProximityTable and
+// GoldCPT. The error tolerance is 10% on count and distance.
 void CloseProximityBuilder::compareCloseProximityRelations() const {
   for (unsigned i = 0; i < NumElements; i++) {
     for (unsigned j = i + 1; j < NumElements; j++) {
@@ -833,6 +929,8 @@ void CloseProximityBuilder::compareCloseProximityRelations() const {
   }
 }
 
+// Main function to build CP relations. Called by StructFieldAccessManager
+// to build CP relations on the structure
 void CloseProximityBuilder::buildCloseProximityRelations() {
   for (auto &F : CurrentModule) {
     if (F.isDeclaration())
@@ -858,6 +956,7 @@ void CloseProximityBuilder::buildCloseProximityRelations() {
     compareCloseProximityRelations();
 }
 
+// (Debug only) Debug print FRG
 void CloseProximityBuilder::debugPrintFieldReferenceGraph(
     raw_ostream &OS) const {
   for (auto *FRG : FRGArray) {
@@ -865,6 +964,9 @@ void CloseProximityBuilder::debugPrintFieldReferenceGraph(
   }
 }
 
+// (Debug only) Main debug print function. If the pass only performs FRG
+// generation, print FRG. Otherwise, print CloseProximityTable and if
+// golden checker enable, also print GoldCPT.
 void CloseProximityBuilder::debugPrintCloseProximityGraph(
     raw_ostream &OS) const {
   if (PerformFRGOnly) {
@@ -886,6 +988,7 @@ void CloseProximityBuilder::debugPrintCloseProximityGraph(
     debugPrintGoldCPT(OS);
 }
 
+// (Debug only) Debug print GoldCPT
 void CloseProximityBuilder::debugPrintGoldCPT(raw_ostream &OS) const {
   for (unsigned i = 0; i < NumElements; i++) {
     OS << "F" << i + 1 << ": ";
