@@ -84,6 +84,9 @@ Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
     FunctionCallInfoSummary *FuncSummary, ArgNumType ArgNum) const {
   ProfileCountType MaxHotness = 0;
   FieldNumType FieldWithMaxHotess;
+  Optional<FieldNumType> ret;
+  if (FuncSummary->AllArgFieldMappings.size() > 1)
+    return ret;
   for (auto *ArgFieldMapping : FuncSummary->AllArgFieldMappings) {
     assert(ArgNum < ArgFieldMapping->size());
     auto &FieldAccessPair = (*ArgFieldMapping)[ArgNum];
@@ -96,7 +99,6 @@ Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
       }
     }
   }
-  Optional<FieldNumType> ret;
   if (MaxHotness > 0) {
     ret = FieldWithMaxHotess;
   }
@@ -420,34 +422,25 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
       FunctionCallInfoMap[F]->insertCallInfo(&CallInfo->ArgFieldMappingArray);
     }
   }
-  for (auto it = FunctionCallInfoMap.begin();
-       it != FunctionCallInfoMap.end();) {
+  for (auto &it : FunctionCallInfoMap) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                    dbgs() << "Function " << it->first->getName()
+                    dbgs() << "Function " << it.first->getName()
                            << " is called with fields as argument:\n");
     // FIXME: add stats to check how often can a function passed into two
     // or more fields as argument
-    if (EnableOneFieldMaxPerFunction) {
-      if (it->second->AllArgFieldMappings.size() > 1) {
-        addStats(StructFieldAccessManager::DebugStats::
-                     DS_DifferentFieldsPassedIntoArg);
-        auto ToRemove = it++;
-        FunctionCallInfoMap.erase(ToRemove);
-      } else {
-        it++;
+    if (it.second->AllArgFieldMappings.size() > 1) {
+      addStats(StructFieldAccessManager::DebugStats::
+                   DS_DifferentFieldsPassedIntoArg);
+    }
+    for (auto *Args : it.second->AllArgFieldMappings) {
+      for (unsigned i = 0; i < Args->size(); i++) {
+        auto &FieldAccessPair = (*Args)[i];
+        if (FieldAccessPair.first > 0)
+          DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                          dbgs() << "Arg " << i << " is called as field "
+                                 << FieldAccessPair.first << " with hotness "
+                                 << FieldAccessPair.second << "\n");
       }
-    } else {
-      for (auto *Args : it->second->AllArgFieldMappings) {
-        for (unsigned i = 0; i < Args->size(); i++) {
-          auto &FieldAccessPair = (*Args)[i];
-          if (FieldAccessPair.first > 0)
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Arg " << i << " is called as field "
-                                   << FieldAccessPair.first << " with hotness "
-                                   << FieldAccessPair.second << "\n");
-        }
-      }
-      it++;
     }
   }
 }
