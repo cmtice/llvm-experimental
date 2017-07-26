@@ -191,7 +191,10 @@ StructFieldAccessManager::getFieldAccessOnInstruction(
     const Instruction *I) const {
   Optional<StructInfoMapPairType> ret;
   for (auto &it : StructFieldAccessInfoMap) {
-    if (auto FieldNum = it.second->getAccessFieldNum(I)) {
+    Optional<FieldNumType> FieldNum;
+    Optional<ArgNumType> ArgNum;
+    it.second->getAccessFieldNumOrArgNum(I, FieldNum, ArgNum);
+    if (FieldNum) {
       return std::make_pair(it.first, FieldNum.getValue());
     }
   }

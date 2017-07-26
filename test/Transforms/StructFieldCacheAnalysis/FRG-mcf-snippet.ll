@@ -5,12 +5,12 @@
 ; RUN: llvm-as < %s > %t1
 ; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -struct-analysis-disable-ignore-zeros -struct-analysis-CPG-only -o %t2 %t1 2>&1 | FileCheck %s
 ; CHECK: Field Reference Graph for function: main
-; CHECK: Node 0 accesses 0 and has 1.00 out sum and 0.00 in sum: connect with { Node 1 (1.00,16.000)  }
-; CHECK: Node 1 accesses 1 and has 2.00 out sum and 2.00 in sum: connect with { Node 2 (2.00,4.000)  }
-; CHECK: Node 2 accesses 0 and has 2.00 out sum and 2.00 in sum: connect with { Node 3 (1.00,0.000)   Node 5 (1.00,0.000)  }
-; CHECK: Node 3 accesses 2 and has 2.00 out sum and 2.00 in sum: connect with { Node 1 (1.00,4.000) B  Node 4 (1.00,4.000)  }
-; CHECK: Node 5 accesses 0 and has 0.00 out sum and 1.00 in sum: connect with {}
-; CHECK: Node 4 accesses 3 and has 1.00 out sum and 1.00 in sum: connect with { Node 3 (1.00,4.000) B  Node 5 (0.00,4.000)  }
+; CHECK: Node 0 is a dummy node and has 1.00 out sum and 0.00 in sum: connect with { Node 1 (1.00,16.000)  }
+; CHECK: Node 1 accesses F1 and has 2.00 out sum and 2.00 in sum: connect with { Node 2 (2.00,4.000)  }
+; CHECK: Node 2 is a dummy node and has 2.00 out sum and 2.00 in sum: connect with { Node 3 (1.00,0.000)   Node 5 (1.00,0.000)  }
+; CHECK: Node 3 accesses F2 and has 2.00 out sum and 2.00 in sum: connect with { Node 1 (1.00,4.000) B  Node 4 (1.00,4.000)  }
+; CHECK: Node 5 is a dummy node and has 0.00 out sum and 1.00 in sum: connect with {}
+; CHECK: Node 4 accesses F3 and has 1.00 out sum and 1.00 in sum: connect with { Node 3 (1.00,4.000) B  Node 5 (0.00,4.000)  }
 
 %struct.FooBar = type { i32, i8, double }
 

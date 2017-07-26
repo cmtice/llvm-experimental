@@ -105,14 +105,14 @@ Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
   return ret;
 }
 
-Optional<FieldNumType>
-StructFieldAccessInfo::getAccessFieldNum(const Instruction *I) const {
-  Optional<FieldNumType> ret;
+void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
+    const Instruction *I, Optional<FieldNumType> &AccessedFieldNum,
+    Optional<ArgNumType> &AccessedArgNum) const {
   // Check if I directly access loads/stores
   auto FieldAccessIter = LoadStoreFieldAccessMap.find(I);
   if (FieldAccessIter != LoadStoreFieldAccessMap.end()) {
-    ret = FieldAccessIter->second;
-    return ret;
+    AccessedFieldNum = FieldAccessIter->second;
+    return;
   }
   // Check if I accesses a function argument that can be a field address
   auto ArgNum = StructManager->getLoadStoreArgAccess(I);
@@ -121,14 +121,17 @@ StructFieldAccessInfo::getAccessFieldNum(const Instruction *I) const {
     // address
     auto FuncIter = FunctionCallInfoMap.find(I->getParent()->getParent());
     if (FuncIter == FunctionCallInfoMap.end())
-      return ret;
+      return;
     if (auto FieldNum =
             getHottestArgFieldMapping(FuncIter->second, ArgNum.getValue())) {
-      ret = FieldNum;
-      return ret;
+      // If there's only one field can be the argument, return the FieldNum
+      // and will be treated as a normal field
+      AccessedFieldNum = FieldNum;
+      return;
+    } else {
+      AccessedArgNum = ArgNum.getValue();
     }
   }
-  return ret;
 }
 
 FieldNumType
@@ -426,8 +429,6 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Function " << it.first->getName()
                            << " is called with fields as argument:\n");
-    // FIXME: add stats to check how often can a function passed into two
-    // or more fields as argument
     if (it.second->AllArgFieldMappings.size() > 1) {
       addStats(StructFieldAccessManager::DebugStats::
                    DS_DifferentFieldsPassedIntoArg);

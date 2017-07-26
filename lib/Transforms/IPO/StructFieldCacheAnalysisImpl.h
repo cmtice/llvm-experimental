@@ -50,6 +50,7 @@ typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
 typedef uint64_t ProfileCountType;
 typedef std::pair<FieldNumType, ProfileCountType> FieldAccessInfoPairType;
 typedef std::vector<FieldAccessInfoPairType> ArgFieldMappingArrayType;
+typedef std::vector<ArgFieldMappingArrayType *> ArgFieldMappingArrayArrayType;
 typedef double ExecutionCountType;
 typedef double DataBytesType;
 typedef std::unordered_set<const BasicBlock *> BasicBlockSetType;
@@ -302,7 +303,7 @@ private:
     void insertCallInfo(ArgFieldMappingArrayType *ArgFieldMapping) {
       AllArgFieldMappings.push_back(ArgFieldMapping);
     }
-    std::vector<ArgFieldMappingArrayType *> AllArgFieldMappings;
+    ArgFieldMappingArrayArrayType AllArgFieldMappings;
   };
 
 public:
@@ -346,6 +347,15 @@ public:
 
   /// Calculate total hotness of all load/store field accesses
   ProfileCountType calculateTotalHotness() const;
+
+  /// Get ArgFieldMappings array
+  const ArgFieldMappingArrayArrayType *
+  getArgFieldMappings(const Function *F) const {
+    auto it = FunctionCallInfoMap.find(F);
+    if (it == FunctionCallInfoMap.end())
+      return NULL;
+    return &it->second->AllArgFieldMappings;
+  }
   /// %}
 
   /// Analyze a value pointing to a struct and collect struct access from it. It
@@ -360,9 +370,11 @@ public:
   /// It can be allocas/globals and only value use is GEP instructions/operators
   void analyzeUsersOfStructArrayValue(const Value *V);
 
-  /// Obtain which field the instruction is accessing and return no val if not
-  /// accessing any struct field
-  Optional<FieldNumType> getAccessFieldNum(const Instruction *I) const;
+  /// Obtain which struct field or an argument that will be a struct field that
+  /// the instruction is accessing and return according FieldNum or ArgNum
+  void getAccessFieldNumOrArgNum(const Instruction *I,
+                                 Optional<FieldNumType> &AccessedFieldNum,
+                                 Optional<ArgNumType> &AccessedArgNum) const;
 
   /// Obtain total number of instructions that access the struct fields
   unsigned getTotalNumFieldAccess() const {
@@ -468,16 +480,29 @@ private:
 }; // end of class StructFieldAccessInfo
 
 /// This class implements creation and organization of FieldReferenceGraph
+struct FieldVariableType {
+  FieldVariableType(FieldNumType N) : isFieldNum(true), FieldNum(N) {}
+  FieldVariableType(ArgNumType N, const ArgFieldMappingArrayArrayType *AFM,
+                    ProfileCountType TH)
+      : isFieldNum(false), ArgNum(N), ArgFieldMappings(AFM), TotalHotness(TH) {}
+  bool isFieldNum;
+  FieldNumType FieldNum;
+  ArgNumType ArgNum;
+  const ArgFieldMappingArrayArrayType *ArgFieldMappings;
+  ProfileCountType TotalHotness;
+};
+
 class FieldReferenceGraph {
 public:
   struct Edge;
 
   /// This structure represents a collapsed entry in collapsed FRG
   struct Entry {
-    Entry(unsigned I, FieldNumType N, ExecutionCountType C, DataBytesType D)
-        : Id(I), FieldNum(N), ExecutionCount(C), DataSize(D) {}
+    Entry(unsigned I, FieldVariableType FV, ExecutionCountType C,
+          DataBytesType D)
+        : Id(I), FieldVariable(FV), ExecutionCount(C), DataSize(D) {}
     unsigned Id;
-    FieldNumType FieldNum;
+    FieldVariableType FieldVariable;
     ExecutionCountType ExecutionCount;
     DataBytesType DataSize;
   };
@@ -485,9 +510,14 @@ public:
   /// This structure represents a general node in FRG
   struct Node {
     Node(unsigned I, FieldNumType N, DataBytesType S)
-        : Id(I), FieldNum(N), Size(S), Visited(false), InSum(0), OutSum(0) {}
+        : Id(I), FieldVariable(N), Size(S), Visited(false), InSum(0),
+          OutSum(0) {}
+    Node(unsigned I, ArgNumType N, const ArgFieldMappingArrayArrayType *AFM,
+         ProfileCountType TH, DataBytesType S)
+        : Id(I), FieldVariable(N, AFM, TH), Size(S), Visited(false), InSum(0),
+          OutSum(0) {}
     unsigned Id;
-    FieldNumType FieldNum;
+    FieldVariableType FieldVariable;
     DataBytesType Size;
     bool Visited;
     ExecutionCountType InSum;
@@ -570,6 +600,9 @@ public:
   /// with other nodes, and return the pointer to the Node
   /// %{
   Node *createNewNode(FieldNumType FieldNum, DataBytesType S);
+  Node *createNewNode(ArgNumType ArgNum,
+                      const ArgFieldMappingArrayArrayType *AFM,
+                      DataBytesType S);
   Node *createNewNode() { return createNewNode(0, 0); }
   /// %}
 
@@ -675,12 +708,18 @@ private:
   void updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
                  DataBytesType D, CloseProximityTableType &CPT);
 
+  /// Update a specified CPT with given CP pair but the field can be a variable
+  void updateCPT(const FieldVariableType &Src, const FieldVariableType &Dest,
+                 ExecutionCountType C, DataBytesType D,
+                 CloseProximityTableType &CPT);
+
   /// Update CloseProximityTable by calling updateCPT function
-  void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
-                 DataBytesType D);
+  void updateCPG(const FieldVariableType &Src, const FieldVariableType &Dest,
+                 ExecutionCountType C, DataBytesType D);
 
   /// Update GoldCPT by calling updateCPT function
-  void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
+  void updateGoldCPG(const FieldVariableType &Src,
+                     const FieldVariableType &Dest, ExecutionCountType C,
                      DataBytesType D);
   /// %}
 

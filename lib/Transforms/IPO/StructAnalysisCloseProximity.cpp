@@ -182,6 +182,22 @@ FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S) {
   return Node;
 }
 
+FieldReferenceGraph::Node *
+FieldReferenceGraph::createNewNode(ArgNumType ArgNum,
+                                   const ArgFieldMappingArrayArrayType *AFM,
+                                   DataBytesType S) {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size()
+                                         << " for argument " << ArgNum << "\n");
+  ProfileCountType TotalHotness = 0;
+  for (auto *ArgFieldMapping : *AFM) {
+    TotalHotness += (*ArgFieldMapping)[ArgNum].second;
+  }
+  auto *Node = new FieldReferenceGraph::Node(NodeList.size(), ArgNum, AFM,
+                                             TotalHotness, S);
+  NodeList.push_back(Node);
+  return Node;
+}
+
 // Connect two nodes by creating an Edge between them and set the weight to
 // be (C, D). The only tricky case is when the two nodes are already connected
 // by another edge, instead of creating a new edge, we update its weight.
@@ -228,10 +244,11 @@ void FieldReferenceGraph::collapseNodeToEdge(FieldReferenceGraph::Node *N,
                                              FieldReferenceGraph::Edge *E) {
   assert(E->Collapsed == false);
   E->Collapsed = true;
-  if (N->FieldNum == 0)
+  if (N->FieldVariable.isFieldNum && N->FieldVariable.FieldNum == 0)
+    // If this node is a dummy node, no need to create a collapsed entry for it
     return;
-  auto *Entry = new FieldReferenceGraph::Entry(EntryList.size(), N->FieldNum,
-                                               E->ExecutionCount, E->DataSize);
+  auto *Entry = new FieldReferenceGraph::Entry(
+      EntryList.size(), N->FieldVariable, E->ExecutionCount, E->DataSize);
   E->CollapsedEntries.insert(Entry);
   EntryList.push_back(Entry);
 }
@@ -246,7 +263,7 @@ void FieldReferenceGraph::moveCollapsedEntryToEdge(
 
 // Debug only. Print FRG to a specified output stream in the order of BFS.
 // The format of each node in output is like:
-// Node 0 accesses 1 and has 2.0 out sum and 2.0 in sum connect with
+// Node 0 accesses F1 and has 2.0 out sum and 2.0 in sum connect with
 // { Node 1 (1.0, 0.0), Node 2 (1.0, 4.0) B}.
 // Here "B" denotes the edge is a back edge
 void FieldReferenceGraph::debugPrint(raw_ostream &OS) const {
@@ -261,9 +278,20 @@ void FieldReferenceGraph::debugPrint(raw_ostream &OS) const {
     if (ExaminedSet.find(Node) != ExaminedSet.end())
       continue;
     ExaminedSet.insert(Node);
-    OS << "Node " << Node->Id << " accesses " << Node->FieldNum << " and has "
-       << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
-       << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
+    if (Node->FieldVariable.isFieldNum)
+      if (Node->FieldVariable.FieldNum == 0)
+        OS << "Node " << Node->Id << " is a dummy node and has "
+           << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
+           << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
+      else
+        OS << "Node " << Node->Id << " accesses F"
+           << Node->FieldVariable.FieldNum << " and has "
+           << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
+           << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
+    else
+      OS << "Node " << Node->Id << " accesses A" << Node->FieldVariable.ArgNum
+         << " and has " << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
+         << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
     OS << "connect with {";
     for (auto *Edge : Node->OutEdges) {
       OS << " Node " << Edge->ToNode->Id << " ("
@@ -285,9 +313,16 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(
   OS << "Collapsed entry for edge: (" << E->FromNode->Id << "," << E->ToNode->Id
      << ")\n";
   for (auto *CE : E->CollapsedEntries) {
-    OS << "Collapsed entry " << CE->Id << " field num: " << CE->FieldNum
-       << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount)
-       << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
+    if (CE->FieldVariable.isFieldNum)
+      OS << "Collapsed entry " << CE->Id
+         << " field num: " << CE->FieldVariable.FieldNum
+         << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount)
+         << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
+    else
+      OS << "Collapsed entry " << CE->Id
+         << " arg num: " << CE->FieldVariable.ArgNum
+         << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount)
+         << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
   }
 }
 
@@ -364,6 +399,31 @@ void CloseProximityBuilder::detectBackEdges(const FieldReferenceGraph *FRG,
 //    bytes accessed after the last node.
 FieldReferenceGraph *
 CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
+  auto createNewFRGNode = [&](FieldReferenceGraph *FRG,
+                              FieldReferenceGraph::BasicBlockHelperInfo *BBI,
+                              FieldReferenceGraph::Node *NewNode,
+                              const Instruction *I) {
+    if (BBI->LastNode) {
+      // If there's already a node created in the BB, connect the current
+      // node with previous one
+      DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
+                      dbgs() << "Previous nodes found in the BB\n");
+      auto C = 0;
+      if (auto ExCnt = StructInfo->getExecutionCount(I))
+        C = ExCnt.getValue();
+      auto D = BBI->RemainBytes;
+      FRG->connectNodes(BBI->LastNode, NewNode, C, D);
+      BBI->RemainBytes = 0;
+      BBI->LastNode = NewNode;
+    } else {
+      // If there's no previous node, update BBI info
+      DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
+                      dbgs()
+                          << "No previous node found. It is the first node\n");
+      BBI->FirstNode = BBI->LastNode = NewNode;
+    }
+  };
+
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create a new empty FRG\n");
   auto *FRG = new FieldReferenceGraph(F);
   FRGArray.push_back(FRG);
@@ -373,7 +433,10 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
                     dbgs() << "Build partial FRG for BB: " << BB << "\n");
     auto *BBI = FRG->createBasicBlockHelperInfo(&BB);
     for (auto &I : BB) {
-      if (auto FieldNum = StructInfo->getAccessFieldNum(&I)) {
+      Optional<FieldNumType> FieldNum;
+      Optional<ArgNumType> ArgNum;
+      StructInfo->getAccessFieldNumOrArgNum(&I, FieldNum, ArgNum);
+      if (FieldNum.hasValue()) {
         // Case that I is a struct access
         DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs()
                                             << "Found an instruction " << I
@@ -381,33 +444,18 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
                                             << FieldNum.getValue() << "]\n");
         auto *NewNode =
             FRG->createNewNode(FieldNum.getValue(), getMemAccessDataSize(&I));
-        if (BBI->LastNode) {
-          // If there's already a node created in the BB, connect the current
-          // node with previous one
-          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
-                          dbgs() << "Previous nodes found in the BB\n");
-          auto C = 0;
-          if (auto ExCnt = StructInfo->getExecutionCount(&I))
-            C = ExCnt.getValue();
-          auto D = BBI->RemainBytes;
-          FRG->connectNodes(BBI->LastNode, NewNode, C, D);
-          BBI->RemainBytes = 0;
-          DEBUG_WITH_TYPE(
-              DEBUG_TYPE_FRG,
-              dbgs() << "Connect new node with previous node in the BB: Field ["
-                     << BBI->LastNode->FieldNum << "] to ["
-                     << FieldNum.getValue() << "] with count: " << C
-                     << " and data " << D << " bytes \n");
-          BBI->LastNode = NewNode;
-        } else {
-          // If there's no previous node, update BBI info
-          DEBUG_WITH_TYPE(
-              DEBUG_TYPE_FRG,
-              dbgs() << "No previous node found. It is the first node\n");
-          BBI->FirstNode = BBI->LastNode = NewNode;
-        }
+        createNewFRGNode(FRG, BBI, NewNode, &I);
+      } else if (ArgNum.hasValue()) {
+        // Case that I is not struct access but a memory access to an argument
+        // In this case, the argument ArgNum has at least two invocations to be
+        // different fields (otherwise, it will go into the first case)
+        auto *NewNode = FRG->createNewNode(ArgNum.getValue(),
+                                           StructInfo->getArgFieldMappings(F),
+                                           getMemAccessDataSize(&I));
+        createNewFRGNode(FRG, BBI, NewNode, &I);
       } else {
-        // Case that I is not struct access but a memory access
+        // Case that I is not struct access nor an argument access but a normal
+        // memory access
         if (I.getOpcode() == Instruction::Load ||
             I.getOpcode() == Instruction::Store) {
           DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
@@ -498,6 +546,10 @@ void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
       std::swap(Src, Dest);
     }
 
+    DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
+                    dbgs() << "Will update between " << Src << " and " << Dest
+                           << " with count " << DEBUG_PRINT_COUNT(C)
+                           << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
     DEBUG_WITH_TYPE(
         DEBUG_TYPE_CPG,
         dbgs() << " Before update: "
@@ -520,24 +572,59 @@ void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
   }
 }
 
-// Wrapper function to update a cell in CloseProximityTable
-void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest,
+// Function that takes in FieldVariableType& and can handle different
+// case when Src and Dest can be a FieldNum or an ArgNum
+void CloseProximityBuilder::updateCPT(const FieldVariableType &Src,
+                                      const FieldVariableType &Dest,
+                                      ExecutionCountType C, DataBytesType D,
+                                      CloseProximityTableType &CPT) {
+  if (Src.isFieldNum) {
+    if (Dest.isFieldNum) {
+      // Case when both Src and Dest is only a FieldNum
+      updateCPT(Src.FieldNum, Dest.FieldNum, C, D, CPT);
+    } else {
+      // Case when Src is a FieldNum but Dest contains Arg->Field mappings
+      for (auto DestMappings : *Dest.ArgFieldMappings) {
+        auto DestCount =
+            C * (*DestMappings)[Dest.ArgNum].second / Dest.TotalHotness;
+        updateCPT(Src.FieldNum, (*DestMappings)[Dest.ArgNum].first, DestCount,
+                  D, CPT);
+      }
+    }
+  } else {
+    for (auto SrcMappings : *Src.ArgFieldMappings) {
+      auto SrcCount = C * (*SrcMappings)[Src.ArgNum].second / Src.TotalHotness;
+      if (Dest.isFieldNum) {
+        // Case when Src contains Arc->Field mappings but Dest is a FieldNum
+        updateCPT((*SrcMappings)[Src.ArgNum].first, Dest.FieldNum, SrcCount, D,
+                  CPT);
+      } else {
+        // Case when Src and Dest both contain Arg->Field mappings
+        for (auto DestMappings : *Dest.ArgFieldMappings) {
+          auto DestCount = SrcCount * (*DestMappings)[Dest.ArgNum].second /
+                           Dest.TotalHotness;
+          updateCPT((*SrcMappings)[Src.ArgNum].first,
+                    (*DestMappings)[Dest.ArgNum].first, DestCount, D, CPT);
+        }
+      }
+    }
+  }
+}
+
+// Wrapper function to update a cell in CloseProximityTable.
+void CloseProximityBuilder::updateCPG(const FieldVariableType &Src,
+                                      const FieldVariableType &Dest,
                                       ExecutionCountType C, DataBytesType D) {
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
-                  dbgs() << "Will update CPG between " << Src << " and " << Dest
-                         << " with count " << DEBUG_PRINT_COUNT(C)
-                         << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Will update CPG:\n");
   updateCPT(Src, Dest, C, D, CloseProximityTable);
 }
 
 // Wrapper function to update a cell in GoldCPT
-void CloseProximityBuilder::updateGoldCPG(FieldNumType Src, FieldNumType Dest,
+void CloseProximityBuilder::updateGoldCPG(const FieldVariableType &Src,
+                                          const FieldVariableType &Dest,
                                           ExecutionCountType C,
                                           DataBytesType D) {
-  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
-                  dbgs() << "Will update Gold CPG between " << Src << " and "
-                         << Dest << " with count " << DEBUG_PRINT_COUNT(C)
-                         << " and distance " << DEBUG_PRINT_DIST(D) << ":\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Will update Gold CPG:\n");
   updateCPT(Src, Dest, C, D, GoldCPT);
 }
 
@@ -596,7 +683,7 @@ void CloseProximityBuilder::updateCPGBetweenNodes(
                                          << DEBUG_PRINT_COUNT(C) << " and "
                                          << DEBUG_PRINT_DIST(D) << "\n");
   assert(!std::isnan(C));
-  updateCPG(From->FieldNum, To->FieldNum, C, D);
+  updateCPG(From->FieldVariable, To->FieldVariable, C, D);
   CheckList->insert(To);
   for (auto *E : To->OutEdges) {
     if (E->ToNode == From)
@@ -616,7 +703,7 @@ void CloseProximityBuilder::updateCPGBetweenNodes(
             ExCnt, E->ExecutionCount / To->OutSum, Dist, Entry->ExecutionCount,
             Arc->ExecutionCount / To->InSum, To->Size + Entry->DataSize);
         assert(!std::isnan(ExCnt));
-        updateCPG(From->FieldNum, Entry->FieldNum, ExCnt, Dist);
+        updateCPG(From->FieldVariable, Entry->FieldVariable, ExCnt, Dist);
       }
     } else {
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found non-collapsed successor "
@@ -638,7 +725,9 @@ void CloseProximityBuilder::updateCPGBetweenNodes(
 // when disconnecting an edge in collapsing FRG
 void CloseProximityBuilder::updateCPGFromNodeToSubtree(
     FieldReferenceGraph::Edge *E) {
-  if (E->FromNode->FieldNum == 0 || E->ExecutionCount <= 1e-3)
+  if ((E->FromNode->FieldVariable.isFieldNum &&
+       E->FromNode->FieldVariable.FieldNum == 0) ||
+      E->ExecutionCount <= 1e-3)
     return;
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Update CPG from "
                                          << E->FromNode->Id << " to subtree "
@@ -671,8 +760,8 @@ bool CloseProximityBuilder::collapseSuccessor(FieldReferenceGraph *FRG,
                                          << Arc->FromNode->Id << ","
                                          << Arc->ToNode->Id << ")\n");
   assert(!std::isnan(Arc->ExecutionCount));
-  updateCPG(Arc->FromNode->FieldNum, Arc->ToNode->FieldNum, Arc->ExecutionCount,
-            Arc->DataSize);
+  updateCPG(Arc->FromNode->FieldVariable, Arc->ToNode->FieldVariable,
+            Arc->ExecutionCount, Arc->DataSize);
   FRG->collapseNodeToEdge(Arc->ToNode, Arc);
   auto Edges = Arc->ToNode->OutEdges;
   assert(Arc->ToNode->InSum > 0);
@@ -693,7 +782,7 @@ bool CloseProximityBuilder::collapseSuccessor(FieldReferenceGraph *FRG,
             std::min(Entry->ExecutionCount * Ratio, Arc->ExecutionCount);
         Entry->DataSize += Arc->DataSize + Arc->ToNode->Size;
         assert(!std::isnan(Entry->ExecutionCount));
-        updateCPG(Arc->FromNode->FieldNum, Entry->FieldNum,
+        updateCPG(Arc->FromNode->FieldVariable, Entry->FieldVariable,
                   Entry->ExecutionCount, Entry->DataSize);
         FRG->moveCollapsedEntryToEdge(Entry, E, Arc);
       }
@@ -829,8 +918,8 @@ void CloseProximityBuilder::calculateCPRelation(EdgeArrayType *Path) {
                            E->ExecutionCount, 1.0,
                            E->DataSize + E->FromNode->Size);
   }
-  updateGoldCPG((*Path)[0]->FromNode->FieldNum,
-                (*Path)[Path->size() - 1]->ToNode->FieldNum, C, D);
+  updateGoldCPG((*Path)[0]->FromNode->FieldVariable,
+                (*Path)[Path->size() - 1]->ToNode->FieldVariable, C, D);
 }
 
 // (Debug only) Function to find a path in FRG. The function has to make
@@ -884,15 +973,19 @@ void CloseProximityBuilder::createFRGPairs(FieldReferenceGraph *FRG,
                                            EdgeArrayType *Path) {
   for (unsigned i = 0; i < FRG->getNumNodes(); i++) {
     auto *FromNode = FRG->getNodeById(i);
-    if (FromNode->FieldNum == 0) // Skip dummy nodes
+    if (FromNode->FieldVariable.isFieldNum &&
+        FromNode->FieldVariable.FieldNum == 0) // Skip dummy nodes
       continue;
     for (unsigned j = 0; j < FRG->getNumNodes(); j++) {
       if (i == j)
         continue;
       auto *ToNode = FRG->getNodeById(j);
-      if (ToNode->FieldNum == 0) // Skip dummy nodes
+      if (ToNode->FieldVariable.isFieldNum &&
+          ToNode->FieldVariable.FieldNum == 0) // Skip dummy nodes
         continue;
-      if (FromNode->FieldNum == ToNode->FieldNum)
+      if (FromNode->FieldVariable.isFieldNum &&
+          ToNode->FieldVariable.isFieldNum &&
+          FromNode->FieldVariable.FieldNum == ToNode->FieldVariable.FieldNum)
         continue;
       calculatePathBetween(FromNode, ToNode);
     }

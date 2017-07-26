@@ -1,9 +1,7 @@
 ; Test if FRG analysis can handle field addresses passed as function arguments
 ; There are two functions defined in the program: normal_function and normal_function2
 ; The first function is called three times and each time one field is passed into the
-; function. With current implementation, it should be ignored because we only support
-; one argument being one field in the program. Meanwhile, normal_function2 is called once
-; with one field. This case should be handled.
+; function. Meanwhile, normal_function2 is called once  with one field. Both cases should be handled.
 ;
 ; RUN: llvm-as < %s > %t1
 ; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-CPG-only -struct-analysis-check-CPG -o %t2 %t1 2>&1 | FileCheck %s
@@ -17,40 +15,75 @@
 @global_foo = global %struct.FooBar zeroinitializer, align 4
 
 ; Function Attrs: inlinehint noinline nounwind uwtable
-define void @_Z15normal_functionPi(i32* %Field) #0 !prof !28 {
+define void @_Z15normal_functionPiS_(i32* %Field1, i32* %Field2) #0 !prof !28 {
 entry:
-  %Field.addr = alloca i32*, align 8
-  store i32* %Field, i32** %Field.addr, align 8
-  %0 = load i32*, i32** %Field.addr, align 8
+  %Field1.addr = alloca i32*, align 8
+  %Field2.addr = alloca i32*, align 8
+  store i32* %Field1, i32** %Field1.addr, align 8
+  store i32* %Field2, i32** %Field2.addr, align 8
+  %0 = load i32*, i32** %Field1.addr, align 8
   %1 = load i32, i32* %0, align 4
   %cmp = icmp eq i32 %1, 0
   br i1 %cmp, label %if.then, label %if.else, !prof !29
 
 if.then:                                          ; preds = %entry
-  %2 = load i32*, i32** %Field.addr, align 8
+  %2 = load i32*, i32** %Field1.addr, align 8
   store i32 10, i32* %2, align 4
   br label %if.end
 
 if.else:                                          ; preds = %entry
-  %3 = load i32*, i32** %Field.addr, align 8
+  %3 = load i32*, i32** %Field1.addr, align 8
   %4 = load i32, i32* %3, align 4
   %inc = add nsw i32 %4, 1
   store i32 %inc, i32* %3, align 4
   br label %if.end
 
 if.end:                                           ; preds = %if.else, %if.then
+  %5 = load i32*, i32** %Field2.addr, align 8
+  %6 = load i32, i32* %5, align 4
+  %cmp1 = icmp eq i32 %6, 0
+  br i1 %cmp1, label %if.then2, label %if.else3, !prof !30
+
+if.then2:                                         ; preds = %if.end
+  %7 = load i32*, i32** %Field2.addr, align 8
+  store i32 20, i32* %7, align 4
+  br label %if.end5
+
+if.else3:                                         ; preds = %if.end
+  %8 = load i32*, i32** %Field2.addr, align 8
+  %9 = load i32, i32* %8, align 4
+  %inc4 = add nsw i32 %9, 1
+  store i32 %inc4, i32* %8, align 4
+  br label %if.end5
+
+if.end5:                                          ; preds = %if.else3, %if.then2
+  %10 = load i32*, i32** %Field1.addr, align 8
+  %11 = load i32, i32* %10, align 4
+  %12 = load i32*, i32** %Field2.addr, align 8
+  %13 = load i32, i32* %12, align 4
+  %cmp6 = icmp slt i32 %11, %13
+  br i1 %cmp6, label %if.then7, label %if.end8, !prof !29
+
+if.then7:                                         ; preds = %if.end5
+  %14 = load i32*, i32** %Field2.addr, align 8
+  %15 = load i32, i32* %14, align 4
+  %16 = load i32*, i32** %Field1.addr, align 8
+  store i32 %15, i32* %16, align 4
+  br label %if.end8
+
+if.end8:                                          ; preds = %if.then7, %if.end5
   ret void
 }
 
 ; Function Attrs: inlinehint noinline nounwind uwtable
-define void @_Z16normal_function2Pi(i32* %Field) #0 !prof !30 {
+define void @_Z16normal_function2Pi(i32* %Field) #0 !prof !31 {
 entry:
   %Field.addr = alloca i32*, align 8
   store i32* %Field, i32** %Field.addr, align 8
   %0 = load i32*, i32** %Field.addr, align 8
   %1 = load i32, i32* %0, align 4
   %cmp = icmp eq i32 %1, 0
-  br i1 %cmp, label %if.then, label %if.else, !prof !31
+  br i1 %cmp, label %if.then, label %if.else, !prof !32
 
 if.then:                                          ; preds = %entry
   %2 = load i32*, i32** %Field.addr, align 8
@@ -65,7 +98,7 @@ if.else:                                          ; preds = %entry
   %5 = load i32*, i32** %Field.addr, align 8
   %6 = load i32, i32* %5, align 4
   %cmp1 = icmp sgt i32 %6, 5
-  br i1 %cmp1, label %if.then2, label %if.end, !prof !32
+  br i1 %cmp1, label %if.then2, label %if.end, !prof !33
 
 if.then2:                                         ; preds = %if.else
   store i32 10, i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 1), align 4
@@ -80,7 +113,7 @@ if.end3:                                          ; preds = %if.end, %if.then
 }
 
 ; Function Attrs: inlinehint noinline norecurse nounwind uwtable
-define i32 @main(i32 %argc, i8** %argv) #1 !prof !33 {
+define i32 @main(i32 %argc, i8** %argv) #1 !prof !34 {
 entry:
   %retval = alloca i32, align 4
   %argc.addr = alloca i32, align 4
@@ -95,33 +128,33 @@ entry:
 for.cond:                                         ; preds = %for.inc, %entry
   %0 = load i32, i32* %i, align 4
   %cmp = icmp ult i32 %0, 100
-  br i1 %cmp, label %for.body, label %for.end, !prof !34
+  br i1 %cmp, label %for.body, label %for.end, !prof !35
 
 for.body:                                         ; preds = %for.cond
   %1 = load i32, i32* %i, align 4
   %cmp1 = icmp ult i32 %1, 20
-  br i1 %cmp1, label %if.then, label %if.else, !prof !35
+  br i1 %cmp1, label %if.then, label %if.else, !prof !36
 
 if.then:                                          ; preds = %for.body
-  call void @_Z15normal_functionPi(i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 0))
+  call void @_Z15normal_functionPiS_(i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 0), i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 1))
   br label %if.end9
 
 if.else:                                          ; preds = %for.body
   %2 = load i32, i32* %i, align 4
   %cmp2 = icmp ult i32 %2, 40
-  br i1 %cmp2, label %if.then3, label %if.else4, !prof !36
+  br i1 %cmp2, label %if.then3, label %if.else4, !prof !37
 
 if.then3:                                         ; preds = %if.else
-  call void @_Z15normal_functionPi(i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 1))
+  call void @_Z15normal_functionPiS_(i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 1), i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 2))
   br label %if.end8
 
 if.else4:                                         ; preds = %if.else
   %3 = load i32, i32* %i, align 4
   %cmp5 = icmp ult i32 %3, 60
-  br i1 %cmp5, label %if.then6, label %if.else7, !prof !37
+  br i1 %cmp5, label %if.then6, label %if.else7, !prof !38
 
 if.then6:                                         ; preds = %if.else4
-  call void @_Z15normal_functionPi(i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 2))
+  call void @_Z15normal_functionPiS_(i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 2), i32* getelementptr inbounds (%struct.FooBar, %struct.FooBar* @global_foo, i32 0, i32 0))
   br label %if.end
 
 if.else7:                                         ; preds = %if.else4
@@ -157,17 +190,17 @@ attributes #1 = { inlinehint noinline norecurse nounwind uwtable "correctly-roun
 !1 = !{i32 1, !"ProfileSummary", !2}
 !2 = !{!3, !4, !5, !6, !7, !8, !9, !10}
 !3 = !{!"ProfileFormat", !"InstrProf"}
-!4 = !{!"TotalCount", i64 241}
-!5 = !{!"MaxCount", i64 57}
+!4 = !{!"TotalCount", i64 243}
+!5 = !{!"MaxCount", i64 58}
 !6 = !{!"MaxInternalCount", i64 40}
-!7 = !{!"MaxFunctionCount", i64 57}
-!8 = !{!"NumCounts", i64 10}
+!7 = !{!"MaxFunctionCount", i64 58}
+!8 = !{!"NumCounts", i64 12}
 !9 = !{!"NumFunctions", i64 3}
 !10 = !{!"DetailedSummary", !11}
 !11 = !{!12, !13, !14, !15, !16, !17, !17, !18, !18, !19, !20, !21, !22, !23, !24, !25, !26, !27}
-!12 = !{i32 10000, i64 57, i32 1}
-!13 = !{i32 100000, i64 57, i32 1}
-!14 = !{i32 200000, i64 57, i32 1}
+!12 = !{i32 10000, i64 58, i32 1}
+!13 = !{i32 100000, i64 58, i32 1}
+!14 = !{i32 200000, i64 58, i32 1}
 !15 = !{i32 300000, i64 40, i32 4}
 !16 = !{i32 400000, i64 40, i32 4}
 !17 = !{i32 500000, i64 40, i32 4}
@@ -176,18 +209,19 @@ attributes #1 = { inlinehint noinline norecurse nounwind uwtable "correctly-roun
 !20 = !{i32 800000, i64 20, i32 7}
 !21 = !{i32 900000, i64 20, i32 7}
 !22 = !{i32 950000, i64 20, i32 7}
-!23 = !{i32 990000, i64 3, i32 8}
-!24 = !{i32 999000, i64 3, i32 8}
-!25 = !{i32 999900, i64 3, i32 8}
-!26 = !{i32 999990, i64 3, i32 8}
-!27 = !{i32 999999, i64 3, i32 8}
+!23 = !{i32 990000, i64 2, i32 8}
+!24 = !{i32 999000, i64 1, i32 11}
+!25 = !{i32 999900, i64 1, i32 11}
+!26 = !{i32 999990, i64 1, i32 11}
+!27 = !{i32 999999, i64 1, i32 11}
 !28 = !{!"function_entry_count", i64 60}
-!29 = !{!"branch_weights", i32 3, i32 57}
-!30 = !{!"function_entry_count", i64 40}
-!31 = !{!"branch_weights", i32 0, i32 40}
-!32 = !{!"branch_weights", i32 40, i32 0}
-!33 = !{!"function_entry_count", i64 1}
-!34 = !{!"branch_weights", i32 100, i32 1}
-!35 = !{!"branch_weights", i32 20, i32 80}
-!36 = !{!"branch_weights", i32 20, i32 60}
-!37 = !{!"branch_weights", i32 20, i32 40}
+!29 = !{!"branch_weights", i32 1, i32 59}
+!30 = !{!"branch_weights", i32 2, i32 58}
+!31 = !{!"function_entry_count", i64 40}
+!32 = !{!"branch_weights", i32 0, i32 40}
+!33 = !{!"branch_weights", i32 40, i32 0}
+!34 = !{!"function_entry_count", i64 1}
+!35 = !{!"branch_weights", i32 100, i32 1}
+!36 = !{!"branch_weights", i32 20, i32 80}
+!37 = !{!"branch_weights", i32 20, i32 60}
+!38 = !{!"branch_weights", i32 20, i32 40}
