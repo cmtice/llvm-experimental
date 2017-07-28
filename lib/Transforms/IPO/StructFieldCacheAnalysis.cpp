@@ -520,9 +520,16 @@ static void performIRAnalysis(Module &M,
           // AG is a pointer, which could points to a field address when
           // the function is called
           for (auto *User : AG.users()) {
-            if (isa<LoadInst>(User) || isa<StoreInst>(User)) {
+            if (isa<LoadInst>(User)) {
               StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
                                                    ArgNum);
+            }
+            else if (isa<StoreInst>(User)) {
+              if (cast<StoreInst>(User)->getPointerOperand() == &AG)
+                StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
+                                                     ArgNum);
+              else
+                StructManager->addStats(StructFieldAccessManager::DebugStats::DS_FuncArgStoredInAnotherVariable);
             }
           }
         }

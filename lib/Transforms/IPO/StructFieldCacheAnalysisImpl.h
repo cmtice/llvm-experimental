@@ -126,6 +126,7 @@ public:
     DS_UnknownUsesOnStructArray,
     DS_FilterColdStructs,
     DS_DifferentFieldsPassedIntoArg,
+    DS_FuncArgStoredInAnotherVariable,
     DS_MaxNumStats
   };
 
@@ -258,7 +259,8 @@ private:
       "Unknown instruction directly used on struct*",
       "Unknown instruction directly used on struct[]",
       "Struct filtered out due to colder than a ratio of maximum hotness",
-      "Different function calls taking different arguments found"};
+      "Different function calls taking different arguments found",
+      "Function pointer argument stored in a local variable"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
@@ -405,7 +407,7 @@ public:
     StatCounts[Category]++;
     if (Category == StructFieldAccessManager::DebugStats::DS_GepUnknownUse) {
       if (UnknownOpcodes.find(Opcode) == UnknownOpcodes.end())
-        UnknownOpcodes[Opcode] = 0;
+        UnknownOpcodes[Opcode] = 1;
       else
         UnknownOpcodes[Opcode]++;
     }
