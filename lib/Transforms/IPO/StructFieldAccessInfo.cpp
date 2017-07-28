@@ -348,7 +348,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
           analyzeUsersOfStructValue(Inst);
       } else if (isa<GetElementPtrInst>(Inst)) {
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else if (!isa<StoreInst>(Inst)) {
+      } else if (!isa<StoreInst>(Inst) && !isa<BitCastInst>(Inst)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
       }
@@ -356,7 +356,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
       auto *Oper = cast<Operator>(U);
       if (isa<GEPOperator>(Oper)) {
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else {
+      } else if (!isa<BitCastOperator>(Oper)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
       }
@@ -396,7 +396,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
           // access
           addFieldAccessFromGEP(Inst);
         }
-      } else {
+      } else if (!isa<BitCastInst>(Inst)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructArray);
       }
@@ -410,7 +410,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
         } else {
           addFieldAccessFromGEP(Oper);
         }
-      } else {
+      } else if (!isa<BitCastOperator>(Oper)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructArray);
       }
