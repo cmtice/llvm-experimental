@@ -33,6 +33,10 @@ static cl::opt<unsigned> HistogramSizeForStats(
     "struct-analysis-number-buckets", cl::init(10), cl::Hidden,
     cl::desc("Number of buckets used to analyze struct hotness"));
 
+static cl::opt<bool> FilterOutZeroHotness(
+    "struct-analysis-filter-zero-hotness", cl::init(false), cl::Hidden,
+    cl::desc("If true, do not analyze struct with zero hotness"));
+
 static cl::opt<unsigned> HotnessCutoffRatio(
     "struct-analysis-hotness-cutoff", cl::init(0), cl::Hidden,
     cl::desc("Filter out structs that is colder than a ratio of maximum "
@@ -491,17 +495,20 @@ void StructHotnessAnalyzer::generateHistogram() {
     auto Index = it.second * HistogramSizeForStats / MaxHotnessUpperBound;
     Histogram[Index]++;
   }
-  dbgs() << "Distribution of struct hotness: \n";
+  outs() << "Distribution of struct hotness: \n";
   for (unsigned i = 0; i < Histogram.size(); i++)
-    dbgs() << "Hotness >=" << MaxHotnessUpperBound * i / HistogramSizeForStats
+    outs() << "Hotness >=" << MaxHotnessUpperBound * i / HistogramSizeForStats
            << ": " << Histogram[i] << "\n";
 }
 
 bool StructHotnessAnalyzer::isHot(const StructFieldAccessInfo *SI) const {
-  if (HotnessCutoffRatio == 0)
-    return true;
   auto *T = SI->getStructType();
   auto it = StructHotness.find(T);
   assert(it != StructHotness.end());
+
+  if (FilterOutZeroHotness && it->second == 0)
+    return false;
+  if (HotnessCutoffRatio == 0)
+    return true;
   return (it->second > MaxHotness * HotnessCutoffRatio / 100);
 }

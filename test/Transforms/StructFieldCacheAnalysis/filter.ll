@@ -6,7 +6,7 @@
 ; 5th struct is never accessed in the program and should be filtered out
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-hotness-cutoff=50 -struct-analysis-number-buckets=3 -debug-only=struct-analysis-detailed-stats -o %t2 %t1 2>&1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-hotness-cutoff=50 -struct-analysis-number-buckets=3 -struct-analysis-hotness-histogram -o %t2 %t1 2>&1 | FileCheck %s
 ; CHECK: Distribution of struct hotness:
 ; CHECK: Hotness >=0: 1
 ; CHECK: Hotness >=33: 0

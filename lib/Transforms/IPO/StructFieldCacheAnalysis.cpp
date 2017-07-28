@@ -73,6 +73,15 @@ static cl::opt<unsigned> MinimalAccessCountForAnalysis(
     "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
     cl::desc("Minimal access count to make the struct eligible for analysis"));
 
+static cl::opt<bool> PrintHistogramOnStructHotness(
+    "struct-analysis-hotness-histogram", cl::init(false), cl::Hidden,
+    cl::desc("If true, print a histogram on struct hotness"));
+
+static cl::opt<unsigned> FilterOutSmallStructs(
+    "struct-analysis-filter-small-structs", cl::init(1), cl::Hidden,
+    cl::desc("If true, filter out structs with fewer number of fields than"
+             "the specified number"));
+
 static cl::opt<bool>
     PerformIROnly("struct-analysis-IR-only", cl::init(false), cl::Hidden,
                   cl::desc("Stop the analysis after performing IR analysis"));
@@ -227,13 +236,18 @@ void StructFieldAccessManager::applyFiltersToStructs() {
                MinimalAccessCountForAnalysis) {
       RemoveEntry(it);
       addStats(DebugStats::DS_NoAccess);
+    } else if (it->second->getNumElements() < FilterOutSmallStructs) {
+      RemoveEntry(it);
+      addStats(DebugStats::DS_StructTooSmall);
     } else {
       HotnessAnalyzer->addStruct(it->second);
       it++;
     }
   }
 
-  DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->generateHistogram());
+  if (PrintHistogramOnStructHotness)
+    HotnessAnalyzer->generateHistogram();
+
   for (auto it = StructFieldAccessInfoMap.begin();
        it != StructFieldAccessInfoMap.end();) {
     if (!HotnessAnalyzer->isHot(it->second)) {
@@ -342,8 +356,8 @@ void StructFieldAccessManager::printStats() {
   raw_fd_ostream FILE_OS("/tmp/SFCA-" + CurrentModule.getName().str() + ".csv",
                          EC, llvm::sys::fs::F_RW);
   FILE_OS << "Name," << CurrentModule.getName() << "\n";
-  outs()
-      << "------------ Printing stats for struct accesses: ---------------- \n";
+  outs() << "------------ Printing stats for struct accesses: "
+            "---------------- \n";
   outs().changeColor(raw_ostream::YELLOW);
   outs() << "There are " << StructFieldAccessInfoMap.size()
          << " struct types are accessed in the program\n";
@@ -385,8 +399,8 @@ void StructFieldAccessManager::printStats() {
     }
   };
   outs().resetColor();
-  outs()
-      << "----------------------------------------------------------------- \n";
+  outs() << "----------------------------------------------------------------"
+            "- \n";
   FILE_OS.close();
 }
 
@@ -523,13 +537,13 @@ static void performIRAnalysis(Module &M,
             if (isa<LoadInst>(User)) {
               StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
                                                    ArgNum);
-            }
-            else if (isa<StoreInst>(User)) {
+            } else if (isa<StoreInst>(User)) {
               if (cast<StoreInst>(User)->getPointerOperand() == &AG)
                 StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
                                                      ArgNum);
               else
-                StructManager->addStats(StructFieldAccessManager::DebugStats::DS_FuncArgStoredInAnotherVariable);
+                StructManager->addStats(StructFieldAccessManager::DebugStats::
+                                            DS_FuncArgStoredInAnotherVariable);
             }
           }
         }

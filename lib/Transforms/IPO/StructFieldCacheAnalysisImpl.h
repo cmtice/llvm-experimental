@@ -127,6 +127,7 @@ public:
     DS_FilterColdStructs,
     DS_DifferentFieldsPassedIntoArg,
     DS_FuncArgStoredInAnotherVariable,
+    DS_StructTooSmall,
     DS_MaxNumStats
   };
 
@@ -260,7 +261,8 @@ private:
       "Unknown instruction directly used on struct[]",
       "Struct filtered out due to colder than a ratio of maximum hotness",
       "Different function calls taking different arguments found",
-      "Function pointer argument stored in a local variable"};
+      "Function pointer argument stored in a local variable",
+      "Struct has small number of fields"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
