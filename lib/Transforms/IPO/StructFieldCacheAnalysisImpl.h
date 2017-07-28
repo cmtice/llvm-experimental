@@ -128,6 +128,7 @@ public:
     DS_DifferentFieldsPassedIntoArg,
     DS_FuncArgStoredInAnotherVariable,
     DS_StructTooSmall,
+    DS_FieldAddressStoredInAnotherVariable,
     DS_MaxNumStats
   };
 
@@ -262,7 +263,8 @@ private:
       "Struct filtered out due to colder than a ratio of maximum hotness",
       "Different function calls taking different arguments found",
       "Function pointer argument stored in a local variable",
-      "Struct has small number of fields"};
+      "Struct has small number of fields",
+      "Field address is stored to another variable"};
   /// %}
 
   /// Used to print name of each StructDefinitionType

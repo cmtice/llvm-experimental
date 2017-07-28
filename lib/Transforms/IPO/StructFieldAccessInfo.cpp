@@ -226,6 +226,9 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
       else if (isa<StoreInst>(Inst)) {
         if (U == Inst->getOperand(1))
           addFieldAccessNum(Inst, FieldLoc);
+        else
+          addStats(StructFieldAccessManager::DebugStats::
+                       DS_FieldAddressStoredInAnotherVariable);
       } else {
         if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a call inst\n");
