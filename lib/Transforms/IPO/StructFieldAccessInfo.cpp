@@ -193,6 +193,8 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
     assert(Offset < NumElements);
     return Offset + 1;
   } else {
+    errs() << *U << "\n";
+    errs() << *Op << " " << *Op->getType() << "\n";
     assert(0 && "GEP instruction to analyze is neither from a struct or an "
                 "array of struct");
   }
