@@ -383,7 +383,10 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
             Inst->getType()->getPointerElementType()->isStructTy()) {
           // If result of the GEP value is the address of a struct, which
           // is the same as the result of an alloc of a struct definition
-          analyzeUsersOfStructValue(Inst);
+          if (Inst->getType()->getPointerElementType() == StructureType)
+            // Only this kind of struct is allow because sometimes an array
+            // can store an address of base class
+            analyzeUsersOfStructValue(Inst);
         } else {
           // If the result of GEP is not a struct, then the GEP is directly used
           // to calculate a field of this struct, directly send it to add field
