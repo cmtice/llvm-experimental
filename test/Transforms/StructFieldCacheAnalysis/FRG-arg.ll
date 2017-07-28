@@ -17,58 +17,44 @@
 ; Function Attrs: inlinehint noinline nounwind uwtable
 define void @_Z15normal_functionPiS_(i32* %Field1, i32* %Field2) #0 !prof !28 {
 entry:
-  %Field1.addr = alloca i32*, align 8
-  %Field2.addr = alloca i32*, align 8
-  store i32* %Field1, i32** %Field1.addr, align 8
-  store i32* %Field2, i32** %Field2.addr, align 8
-  %0 = load i32*, i32** %Field1.addr, align 8
-  %1 = load i32, i32* %0, align 4
-  %cmp = icmp eq i32 %1, 0
+  %0 = load i32, i32* %Field1, align 4
+  %cmp = icmp eq i32 %0, 0
   br i1 %cmp, label %if.then, label %if.else, !prof !29
 
 if.then:                                          ; preds = %entry
-  %2 = load i32*, i32** %Field1.addr, align 8
-  store i32 10, i32* %2, align 4
+  store i32 10, i32* %Field1, align 4
   br label %if.end
 
 if.else:                                          ; preds = %entry
-  %3 = load i32*, i32** %Field1.addr, align 8
-  %4 = load i32, i32* %3, align 4
-  %inc = add nsw i32 %4, 1
-  store i32 %inc, i32* %3, align 4
+  %1 = load i32, i32* %Field1, align 4
+  %inc = add nsw i32 %1, 1
+  store i32 %inc, i32* %Field1, align 4
   br label %if.end
 
 if.end:                                           ; preds = %if.else, %if.then
-  %5 = load i32*, i32** %Field2.addr, align 8
-  %6 = load i32, i32* %5, align 4
-  %cmp1 = icmp eq i32 %6, 0
+  %2 = load i32, i32* %Field2, align 4
+  %cmp1 = icmp eq i32 %2, 0
   br i1 %cmp1, label %if.then2, label %if.else3, !prof !30
 
 if.then2:                                         ; preds = %if.end
-  %7 = load i32*, i32** %Field2.addr, align 8
-  store i32 20, i32* %7, align 4
+  store i32 20, i32* %Field2, align 4
   br label %if.end5
 
 if.else3:                                         ; preds = %if.end
-  %8 = load i32*, i32** %Field2.addr, align 8
-  %9 = load i32, i32* %8, align 4
-  %inc4 = add nsw i32 %9, 1
-  store i32 %inc4, i32* %8, align 4
+  %3 = load i32, i32* %Field2, align 4
+  %inc4 = add nsw i32 %3, 1
+  store i32 %inc4, i32* %Field2, align 4
   br label %if.end5
 
 if.end5:                                          ; preds = %if.else3, %if.then2
-  %10 = load i32*, i32** %Field1.addr, align 8
-  %11 = load i32, i32* %10, align 4
-  %12 = load i32*, i32** %Field2.addr, align 8
-  %13 = load i32, i32* %12, align 4
-  %cmp6 = icmp slt i32 %11, %13
+  %4 = load i32, i32* %Field1, align 4
+  %5 = load i32, i32* %Field2, align 4
+  %cmp6 = icmp slt i32 %4, %5
   br i1 %cmp6, label %if.then7, label %if.end8, !prof !29
 
 if.then7:                                         ; preds = %if.end5
-  %14 = load i32*, i32** %Field2.addr, align 8
-  %15 = load i32, i32* %14, align 4
-  %16 = load i32*, i32** %Field1.addr, align 8
-  store i32 %15, i32* %16, align 4
+  %6 = load i32, i32* %Field2, align 4
+  store i32 %6, i32* %Field1, align 4
   br label %if.end8
 
 if.end8:                                          ; preds = %if.then7, %if.end5
@@ -78,26 +64,20 @@ if.end8:                                          ; preds = %if.then7, %if.end5
 ; Function Attrs: inlinehint noinline nounwind uwtable
 define void @_Z16normal_function2Pi(i32* %Field) #0 !prof !31 {
 entry:
-  %Field.addr = alloca i32*, align 8
-  store i32* %Field, i32** %Field.addr, align 8
-  %0 = load i32*, i32** %Field.addr, align 8
-  %1 = load i32, i32* %0, align 4
-  %cmp = icmp eq i32 %1, 0
+  %0 = load i32, i32* %Field, align 4
+  %cmp = icmp eq i32 %0, 0
   br i1 %cmp, label %if.then, label %if.else, !prof !32
 
 if.then:                                          ; preds = %entry
-  %2 = load i32*, i32** %Field.addr, align 8
-  store i32 20, i32* %2, align 4
+  store i32 20, i32* %Field, align 4
   br label %if.end3
 
 if.else:                                          ; preds = %entry
-  %3 = load i32*, i32** %Field.addr, align 8
-  %4 = load i32, i32* %3, align 4
-  %inc = add nsw i32 %4, 1
-  store i32 %inc, i32* %3, align 4
-  %5 = load i32*, i32** %Field.addr, align 8
-  %6 = load i32, i32* %5, align 4
-  %cmp1 = icmp sgt i32 %6, 5
+  %1 = load i32, i32* %Field, align 4
+  %inc = add nsw i32 %1, 1
+  store i32 %inc, i32* %Field, align 4
+  %2 = load i32, i32* %Field, align 4
+  %cmp1 = icmp sgt i32 %2, 5
   br i1 %cmp1, label %if.then2, label %if.end, !prof !33
 
 if.then2:                                         ; preds = %if.else
@@ -116,12 +96,8 @@ if.end3:                                          ; preds = %if.end, %if.then
 define i32 @main(i32 %argc, i8** %argv) #1 !prof !34 {
 entry:
   %retval = alloca i32, align 4
-  %argc.addr = alloca i32, align 4
-  %argv.addr = alloca i8**, align 8
   %i = alloca i32, align 4
   store i32 0, i32* %retval, align 4
-  store i32 %argc, i32* %argc.addr, align 4
-  store i8** %argv, i8*** %argv.addr, align 8
   store i32 0, i32* %i, align 4
   br label %for.cond
 
