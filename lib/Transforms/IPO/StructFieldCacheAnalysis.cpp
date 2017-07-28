@@ -192,8 +192,8 @@ StructFieldAccessManager::getFieldAccessOnInstruction(
   Optional<StructInfoMapPairType> ret;
   for (auto &it : StructFieldAccessInfoMap) {
     Optional<FieldNumType> FieldNum;
-    Optional<ArgNumType> ArgNum;
-    it.second->getAccessFieldNumOrArgNum(I, FieldNum, ArgNum);
+    FieldNumListType* FieldNumList;
+    it.second->getAccessFieldNumOrList(I, FieldNum, FieldNumList);
     if (FieldNum) {
       return std::make_pair(it.first, FieldNum.getValue());
     }
@@ -520,9 +520,20 @@ static void performIRAnalysis(Module &M,
           // AG is a pointer, which could points to a field address when
           // the function is called
           for (auto *User : AG.users()) {
-            if (isa<LoadInst>(User) || isa<StoreInst>(User)) {
+            if (isa<LoadInst>(User)) {
               StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
                                                    ArgNum);
+            }
+            else if (isa<StoreInst>(User)) {
+              if (&AG == cast<StoreInst>(User)->getPointerOperand()){
+                // Only track this instruction is the arg is used as address
+                StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
+                                                     ArgNum);
+              }
+              else{
+                // If the arg is used as value, it might be stored into another variable
+                StructManager->addStats(StructFieldAccessManager::DebugStats::DS_FuncArgStoredToAnotherVariable);
+              }
             }
           }
         }

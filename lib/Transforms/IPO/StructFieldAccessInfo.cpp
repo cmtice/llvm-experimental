@@ -46,10 +46,48 @@ static cl::opt<bool> EnableOneFieldMaxPerFunction(
 // Functions for StructFieldAccessInfo
 // Add a record of load/store Instruction I accessing field FieldNum in the map
 void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
-                                              FieldNumType FieldNum) {
+                                              FieldNumType FieldNum,
+                                              const BasicBlock* PHINodeIncomingBB)
+{
   assert(isa<LoadInst>(I) || isa<StoreInst>(I)); // Only loads and stores
-  assert(LoadStoreFieldAccessMap.find(I) == LoadStoreFieldAccessMap.end());
-  LoadStoreFieldAccessMap[I] = FieldNum;
+  auto FieldAccessIter = LoadStoreFieldAccessMap.find(I);
+  if (FieldAccessIter == LoadStoreFieldAccessMap.end()) {
+    // If the load/store is accessing the field for the first time
+    auto* NewFieldNumList = LoadStoreFieldAccessMap[I] = new FieldNumListType;
+    if (PHINodeIncomingBB){
+      // The access is from a Phi Node, only record it's source BB execution count
+      if (auto ExecutionCount = getExecutionCount(PHINodeIncomingBB))
+        NewFieldNumList->push_back(
+            std::make_pair(FieldNum, ExecutionCount.getValue()));
+      else
+        NewFieldNumList->push_back(
+            std::make_pair(FieldNum, 0));
+    }
+    else{
+      // Count all the execution count of this instruction to the field
+      if (auto ExecutionCount = getExecutionCount(I))
+        NewFieldNumList->push_back(
+            std::make_pair(FieldNum, ExecutionCount.getValue()));
+      else
+        NewFieldNumList->push_back(
+            std::make_pair(FieldNum, 0));
+    }
+  } else {
+    // Add a second field has to be a PHINode for now
+    assert(PHINodeIncomingBB);
+    ProfileCountType Hotness = 0;
+    if (auto ExecutionCount = getExecutionCount(PHINodeIncomingBB))
+      Hotness = ExecutionCount.getValue();
+    if (FieldAccessIter->second->size() == 1 &&
+        (*FieldAccessIter->second)[0].first == FieldNum) {
+      // If the load/store is accessing the same field as last time
+      // only update the hotness to avoid complexity
+      (*FieldAccessIter->second)[0].second += Hotness;
+    } else {
+      // Insert new pair
+      FieldAccessIter->second->push_back(std::make_pair(FieldNum, Hotness));
+    }
+  }
   FunctionsToAnalyze.insert(I->getParent()->getParent());
 }
 
@@ -67,14 +105,14 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   // Arg->FieldNum to an existing FunctionCallInfo object
   if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()) {
     auto Hotness = getExecutionCount(I);
-    if (Hotness.hasValue())
+    if (Hotness.hasValue() && Hotness.getValue() > 0)
       CallInstFieldAccessMap[I] =
           new FunctionCallInfo(F, Arg, FieldNum, Hotness.getValue());
   } else {
     auto *CallInfo = CallInstFieldAccessMap[I];
     assert(CallInfo->FunctionDeclaration == F);
     auto Hotness = getExecutionCount(I);
-    if (Hotness.hasValue())
+    if (Hotness.hasValue() && Hotness.getValue() > 0)
       CallInfo->insertArgFieldMapping(Arg, FieldNum, Hotness.getValue());
   }
   FunctionsToAnalyze.insert(F);
@@ -85,11 +123,10 @@ Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
   ProfileCountType MaxHotness = 0;
   FieldNumType FieldWithMaxHotess;
   Optional<FieldNumType> ret;
-  if (FuncSummary->AllArgFieldMappings.size() > 1)
+  assert(ArgNum < FuncSummary->AllArgFieldMappings.size());
+  if (FuncSummary->AllArgFieldMappings[ArgNum].size() > 1)
     return ret;
-  for (auto *ArgFieldMapping : FuncSummary->AllArgFieldMappings) {
-    assert(ArgNum < ArgFieldMapping->size());
-    auto &FieldAccessPair = (*ArgFieldMapping)[ArgNum];
+  for (auto &FieldAccessPair : FuncSummary->AllArgFieldMappings[ArgNum]) {
     // Only check the hotness info if FieldNum of this ArgNum is none-zero
     if (FieldAccessPair.first > 0) {
       if (FieldAccessPair.second > MaxHotness) {
@@ -105,13 +142,18 @@ Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
   return ret;
 }
 
-void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
+void StructFieldAccessInfo::getAccessFieldNumOrList(
     const Instruction *I, Optional<FieldNumType> &AccessedFieldNum,
-    Optional<ArgNumType> &AccessedArgNum) const {
+    FieldNumListType*& ReturnFieldNumList) const {
   // Check if I directly access loads/stores
   auto FieldAccessIter = LoadStoreFieldAccessMap.find(I);
   if (FieldAccessIter != LoadStoreFieldAccessMap.end()) {
-    AccessedFieldNum = FieldAccessIter->second;
+    if (FieldAccessIter->second->size() == 1) {
+      AccessedFieldNum = (*FieldAccessIter->second)[0].first;
+    } else {
+      AccessedFieldNum = NumElements;
+      ReturnFieldNumList = FieldAccessIter->second;
+    }
     return;
   }
   // Check if I accesses a function argument that can be a field address
@@ -127,9 +169,9 @@ void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
       // If there's only one field can be the argument, return the FieldNum
       // and will be treated as a normal field
       AccessedFieldNum = FieldNum;
-      return;
     } else {
-      AccessedArgNum = ArgNum.getValue();
+      AccessedFieldNum = NumElements;
+      ReturnFieldNumList = &FuncIter->second->AllArgFieldMappings[ArgNum.getValue()];
     }
   }
 }
@@ -205,21 +247,21 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   auto FieldLoc = calculateFieldNumFromGEP(U);
   if (FieldLoc == 0)
     return;
-  addFieldAccessFromGEPOrBitcast(U, FieldLoc);
+  addFieldAccessFromGEPOrWrapperUseOfGEP(U, FieldLoc);
 }
 
-void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
-    const User *U, FieldNumType FieldLoc) {
+void StructFieldAccessInfo::addFieldAccessFromGEPOrWrapperUseOfGEP(
+    const User *U, FieldNumType FieldLoc, const BasicBlock* PHINodeIncomingBB) {
   for (auto *User : U->users()) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Check user of " << *U << ": " << *User << "\n");
     if (isa<Instruction>(User)) {
       auto *Inst = cast<Instruction>(User);
-      if (isa<LoadInst>(Inst))
-        addFieldAccessNum(Inst, FieldLoc);
-      else if (isa<StoreInst>(Inst)) {
+      if (isa<LoadInst>(Inst)) {
+        addFieldAccessNum(Inst, FieldLoc, PHINodeIncomingBB);
+      } else if (isa<StoreInst>(Inst)) {
         if (U == Inst->getOperand(1))
-          addFieldAccessNum(Inst, FieldLoc);
+          addFieldAccessNum(Inst, FieldLoc, PHINodeIncomingBB);
       } else {
         if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a call inst\n");
@@ -243,7 +285,22 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
                          DS_GepPassedIntoIndirectFunc);
           }
         } else if (isa<BitCastInst>(Inst)) {
+          addFieldAccessFromGEPOrWrapperUseOfGEP(Inst, FieldLoc);
+          /*
+        } else if (isa<SelectInst>(Inst)) {
           addFieldAccessFromGEPOrBitcast(Inst, FieldLoc);
+          */
+        } else if (isa<PHINode>(Inst)) {
+          auto Size = cast<PHINode>(Inst)->getNumIncomingValues();
+          unsigned Index = Size;
+          for (unsigned i = 0; i < Size; i++){
+            if (cast<PHINode>(Inst)->getIncomingValue(i) == U){
+              Index = i;
+              break;
+            }
+          }
+          assert(Index < Size);
+          addFieldAccessFromGEPOrWrapperUseOfGEP(Inst, FieldLoc, cast<PHINode>(Inst)->getIncomingBlock(Index));
         } else {
           // TODO: Collect stats of this kind of access and add analysis later
           addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
@@ -253,7 +310,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
     } else if (isa<Operator>(User)) {
       auto *Oper = cast<Operator>(User);
       if (isa<BitCastOperator>(Oper)) {
-        addFieldAccessFromGEPOrBitcast(Oper, FieldLoc);
+        addFieldAccessFromGEPOrWrapperUseOfGEP(Oper, FieldLoc);
       } else {
         // TODO: Collect stats of this kind of access and add analysis later
         addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
@@ -429,13 +486,9 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Function " << it.first->getName()
                            << " is called with fields as argument:\n");
-    if (it.second->AllArgFieldMappings.size() > 1) {
-      addStats(StructFieldAccessManager::DebugStats::
-                   DS_DifferentFieldsPassedIntoArg);
-    }
-    for (auto *Args : it.second->AllArgFieldMappings) {
-      for (unsigned i = 0; i < Args->size(); i++) {
-        auto &FieldAccessPair = (*Args)[i];
+    for (unsigned i = 0; i < it.second->AllArgFieldMappings.size(); i++) {
+      auto &ArgMappings = it.second->AllArgFieldMappings[i];
+      for (auto &FieldAccessPair : ArgMappings) {
         if (FieldAccessPair.first > 0)
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                           dbgs() << "Arg " << i << " is called as field "
@@ -465,8 +518,11 @@ ProfileCountType StructFieldAccessInfo::calculateTotalHotness() const {
 
 void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream &OS) {
   for (auto &it : LoadStoreFieldAccessMap) {
-    OS << "\tInstruction [" << *it.first << "] accesses field number ["
-       << it.second << "]\n";
+    if (it.second->size() == 1)
+      OS << "\tInstruction [" << *it.first << "] accesses field number ["
+         << (*it.second)[0].first << "]\n";
+    else
+      OS << "\tInstruction [" << *it.first << "] accesses multiple fields\n";
   }
   for (auto &it : CallInstFieldAccessMap) {
     OS << "\tInstruction [" << *it.first << "] calls function "

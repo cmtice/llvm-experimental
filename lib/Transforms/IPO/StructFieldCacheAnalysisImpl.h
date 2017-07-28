@@ -50,7 +50,8 @@ typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
 typedef uint64_t ProfileCountType;
 typedef std::pair<FieldNumType, ProfileCountType> FieldAccessInfoPairType;
 typedef std::vector<FieldAccessInfoPairType> ArgFieldMappingArrayType;
-typedef std::vector<ArgFieldMappingArrayType *> ArgFieldMappingArrayArrayType;
+typedef std::vector<FieldAccessInfoPairType> FieldNumListType;
+typedef std::vector<FieldNumListType> ArgFieldMappingArrayArrayType;
 typedef double ExecutionCountType;
 typedef double DataBytesType;
 typedef std::unordered_set<const BasicBlock *> BasicBlockSetType;
@@ -126,6 +127,7 @@ public:
     DS_UnknownUsesOnStructArray,
     DS_FilterColdStructs,
     DS_DifferentFieldsPassedIntoArg,
+    DS_FuncArgStoredToAnotherVariable,
     DS_MaxNumStats
   };
 
@@ -258,7 +260,8 @@ private:
       "Unknown instruction directly used on struct*",
       "Unknown instruction directly used on struct[]",
       "Struct filtered out due to colder than a ratio of maximum hotness",
-      "Different function calls taking different arguments found"};
+      "Different function calls taking different arguments found",
+      "Pointer function arguments stored into a variable"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
@@ -297,11 +300,18 @@ private:
   /// of a function
   struct FunctionCallInfoSummary {
     FunctionCallInfoSummary(ArgFieldMappingArrayType *ArgFieldMapping) {
-      AllArgFieldMappings.clear();
-      AllArgFieldMappings.push_back(ArgFieldMapping);
+      AllArgFieldMappings.resize(ArgFieldMapping->size());
+      for (unsigned ArgNum = 0; ArgNum < ArgFieldMapping->size(); ArgNum++) {
+        AllArgFieldMappings[ArgNum].clear();
+      }
     }
     void insertCallInfo(ArgFieldMappingArrayType *ArgFieldMapping) {
-      AllArgFieldMappings.push_back(ArgFieldMapping);
+      for (unsigned ArgNum = 0; ArgNum < ArgFieldMapping->size(); ArgNum++) {
+        auto ArgFieldMappingPair = (*ArgFieldMapping)[ArgNum];
+        if (ArgFieldMappingPair.first > 0)
+          // Only add this mapping to ArgNum is the FieldNum is really mapping
+          AllArgFieldMappings[ArgNum].push_back(ArgFieldMappingPair);
+      }
     }
     ArgFieldMappingArrayArrayType AllArgFieldMappings;
   };
@@ -318,12 +328,16 @@ public:
         StatCounts(StructFieldAccessManager::DebugStats::DS_MaxNumStats) {}
 
   ~StructFieldAccessInfo() {
+    for (auto &it : LoadStoreFieldAccessMap) {
+      delete it.second;
+    }
     for (auto &it : CallInstFieldAccessMap) {
       delete it.second;
     }
     for (auto &it : FunctionCallInfoMap) {
       delete it.second;
     }
+    LoadStoreFieldAccessMap.clear();
     CallInstFieldAccessMap.clear();
     FunctionCallInfoMap.clear();
   }
@@ -349,12 +363,12 @@ public:
   ProfileCountType calculateTotalHotness() const;
 
   /// Get ArgFieldMappings array
-  const ArgFieldMappingArrayArrayType *
-  getArgFieldMappings(const Function *F) const {
+  const FieldNumListType *getArgFieldMappings(const Function *F,
+                                              ArgNumType ArgNum) const {
     auto it = FunctionCallInfoMap.find(F);
     if (it == FunctionCallInfoMap.end())
       return NULL;
-    return &it->second->AllArgFieldMappings;
+    return &it->second->AllArgFieldMappings[ArgNum];
   }
   /// %}
 
@@ -372,9 +386,9 @@ public:
 
   /// Obtain which struct field or an argument that will be a struct field that
   /// the instruction is accessing and return according FieldNum or ArgNum
-  void getAccessFieldNumOrArgNum(const Instruction *I,
-                                 Optional<FieldNumType> &AccessedFieldNum,
-                                 Optional<ArgNumType> &AccessedArgNum) const;
+  void getAccessFieldNumOrList(const Instruction *I,
+                               Optional<FieldNumType> &AccessedFieldNum,
+                               FieldNumListType* &ReturnFieldNumList) const;
 
   /// Obtain total number of instructions that access the struct fields
   unsigned getTotalNumFieldAccess() const {
@@ -437,7 +451,8 @@ private:
 
   /// A map records all load/store instructions accessing which field of the
   /// structure
-  std::unordered_map<const Instruction *, FieldNumType> LoadStoreFieldAccessMap;
+  std::unordered_map<const Instruction *, FieldNumListType *>
+      LoadStoreFieldAccessMap;
 
   /// A map records all call/invoke instructions accessing which field of the
   /// structure
@@ -465,14 +480,15 @@ private:
 
   /// Record all users of a GEP instruction/operator OR a bitcast of a GEP
   /// with given FieldNum calculated by GEP
-  void addFieldAccessFromGEPOrBitcast(const User *U, FieldNumType FieldLoc);
+  void addFieldAccessFromGEPOrWrapperUseOfGEP(const User *U, FieldNumType FieldLoc, const BasicBlock* PHINodeIncomingBB = NULL);
 
   /// Record all users of a GEP instruction/operator that calculates the address
   /// of a field.
   void addFieldAccessFromGEP(const User *U);
 
   /// Record an access pattern in the data structure for a load/store
-  void addFieldAccessNum(const Instruction *I, FieldNumType FieldNum);
+  void addFieldAccessNum(const Instruction *I, FieldNumType FieldNum,
+                         const BasicBlock* PHINodeIncomingBB);
 
   /// Record an access pattern in the data structure for a call/invoke
   void addFieldAccessNum(const Instruction *I, const Function *F, unsigned Arg,
@@ -481,14 +497,13 @@ private:
 
 /// This class implements creation and organization of FieldReferenceGraph
 struct FieldVariableType {
-  FieldVariableType(FieldNumType N) : isFieldNum(true), FieldNum(N) {}
-  FieldVariableType(ArgNumType N, const ArgFieldMappingArrayArrayType *AFM,
-                    ProfileCountType TH)
-      : isFieldNum(false), ArgNum(N), ArgFieldMappings(AFM), TotalHotness(TH) {}
+  FieldVariableType(FieldNumType N)
+      : isFieldNum(true), FieldNum(N), FieldNumList(NULL) {}
+  FieldVariableType(const FieldNumListType *FNL, ProfileCountType TH)
+      : isFieldNum(false), FieldNumList(FNL), TotalHotness(TH) {}
   bool isFieldNum;
   FieldNumType FieldNum;
-  ArgNumType ArgNum;
-  const ArgFieldMappingArrayArrayType *ArgFieldMappings;
+  const FieldNumListType *FieldNumList;
   ProfileCountType TotalHotness;
 };
 
@@ -512,9 +527,9 @@ public:
     Node(unsigned I, FieldNumType N, DataBytesType S)
         : Id(I), FieldVariable(N), Size(S), Visited(false), InSum(0),
           OutSum(0) {}
-    Node(unsigned I, ArgNumType N, const ArgFieldMappingArrayArrayType *AFM,
-         ProfileCountType TH, DataBytesType S)
-        : Id(I), FieldVariable(N, AFM, TH), Size(S), Visited(false), InSum(0),
+    Node(unsigned I, const FieldNumListType *FNL, ProfileCountType TH,
+         DataBytesType S)
+        : Id(I), FieldVariable(FNL, TH), Size(S), Visited(false), InSum(0),
           OutSum(0) {}
     unsigned Id;
     FieldVariableType FieldVariable;
@@ -600,10 +615,8 @@ public:
   /// with other nodes, and return the pointer to the Node
   /// %{
   Node *createNewNode(FieldNumType FieldNum, DataBytesType S);
-  Node *createNewNode(ArgNumType ArgNum,
-                      const ArgFieldMappingArrayArrayType *AFM,
-                      DataBytesType S);
-  Node *createNewNode() { return createNewNode(0, 0); }
+  Node *createNewNode(const FieldNumListType *FNL, DataBytesType S);
+  Node *createNewNode();
   /// %}
 
   /// The two functions are used to connect two nodes in FRG with or without

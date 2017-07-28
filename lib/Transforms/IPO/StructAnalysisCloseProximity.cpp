@@ -172,6 +172,14 @@ FieldReferenceGraph::getBasicBlockHelperInfo(const BasicBlock *BB) const {
 }
 
 FieldReferenceGraph::Node *
+FieldReferenceGraph::createNewNode() {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node # as a dummy node\n");
+  auto *Node = new FieldReferenceGraph::Node(NodeList.size(), 0, 0);
+  NodeList.push_back(Node);
+  return Node;
+}
+
+FieldReferenceGraph::Node *
 FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size()
                                          << " for field " << FieldNum << "\n");
@@ -183,18 +191,19 @@ FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S) {
 }
 
 FieldReferenceGraph::Node *
-FieldReferenceGraph::createNewNode(ArgNumType ArgNum,
-                                   const ArgFieldMappingArrayArrayType *AFM,
+FieldReferenceGraph::createNewNode(const FieldNumListType *FNL,
                                    DataBytesType S) {
-  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size()
-                                         << " for argument " << ArgNum << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
+                  dbgs() << "Create Node #" << NodeList.size()
+                         << " that has multiple possible field num\n");
   ProfileCountType TotalHotness = 0;
-  for (auto *ArgFieldMapping : *AFM) {
-    TotalHotness += (*ArgFieldMapping)[ArgNum].second;
+  for (unsigned i = 0; i < FNL->size(); i++){
+    TotalHotness += (*FNL)[i].second;
   }
-  auto *Node = new FieldReferenceGraph::Node(NodeList.size(), ArgNum, AFM,
-                                             TotalHotness, S);
+  auto *Node =
+      new FieldReferenceGraph::Node(NodeList.size(), FNL, TotalHotness, S);
   NodeList.push_back(Node);
+  dbgs() << "Done\n";
   return Node;
 }
 
@@ -289,8 +298,8 @@ void FieldReferenceGraph::debugPrint(raw_ostream &OS) const {
            << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
            << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
     else
-      OS << "Node " << Node->Id << " accesses A" << Node->FieldVariable.ArgNum
-         << " and has " << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
+      OS << "Node " << Node->Id << " accesses multiple fields and has "
+         << DEBUG_PRINT_COUNT(Node->OutSum) << " out sum and "
          << DEBUG_PRINT_COUNT(Node->InSum) << " in sum: ";
     OS << "connect with {";
     for (auto *Edge : Node->OutEdges) {
@@ -319,9 +328,8 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(
          << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount)
          << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
     else
-      OS << "Collapsed entry " << CE->Id
-         << " arg num: " << CE->FieldVariable.ArgNum
-         << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount)
+      OS << "Collapsed entry " << CE->Id << " access multiple fields, count: "
+         << DEBUG_PRINT_COUNT(CE->ExecutionCount)
          << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
   }
 }
@@ -434,25 +442,27 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
     auto *BBI = FRG->createBasicBlockHelperInfo(&BB);
     for (auto &I : BB) {
       Optional<FieldNumType> FieldNum;
-      Optional<ArgNumType> ArgNum;
-      StructInfo->getAccessFieldNumOrArgNum(&I, FieldNum, ArgNum);
+      FieldNumListType *FieldNumList;
+      StructInfo->getAccessFieldNumOrList(&I, FieldNum, FieldNumList);
       if (FieldNum.hasValue()) {
-        // Case that I is a struct access
-        DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs()
-                                            << "Found an instruction " << I
-                                            << " is a struct access on field ["
-                                            << FieldNum.getValue() << "]\n");
-        auto *NewNode =
-            FRG->createNewNode(FieldNum.getValue(), getMemAccessDataSize(&I));
-        createNewFRGNode(FRG, BBI, NewNode, &I);
-      } else if (ArgNum.hasValue()) {
-        // Case that I is not struct access but a memory access to an argument
-        // In this case, the argument ArgNum has at least two invocations to be
-        // different fields (otherwise, it will go into the first case)
-        auto *NewNode = FRG->createNewNode(ArgNum.getValue(),
-                                           StructInfo->getArgFieldMappings(F),
-                                           getMemAccessDataSize(&I));
-        createNewFRGNode(FRG, BBI, NewNode, &I);
+        if (FieldNum.getValue() == NumElements){
+          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
+                          dbgs()
+                          << "Found an instruction " << I
+                          << " is a struct access on different fields\n");
+          auto *NewNode =
+              FRG->createNewNode(FieldNumList, getMemAccessDataSize(&I));
+          createNewFRGNode(FRG, BBI, NewNode, &I);
+        }
+        else{
+          DEBUG_WITH_TYPE(DEBUG_TYPE_FRG,
+                          dbgs() << "Found an instruction " << I
+                                 << " is a struct access on field ["
+                                 << FieldNum.getValue() << "]\n");
+          auto *NewNode =
+              FRG->createNewNode(FieldNum.getValue(), getMemAccessDataSize(&I));
+          createNewFRGNode(FRG, BBI, NewNode, &I);
+        }
       } else {
         // Case that I is not struct access nor an argument access but a normal
         // memory access
@@ -584,27 +594,22 @@ void CloseProximityBuilder::updateCPT(const FieldVariableType &Src,
       updateCPT(Src.FieldNum, Dest.FieldNum, C, D, CPT);
     } else {
       // Case when Src is a FieldNum but Dest contains Arg->Field mappings
-      for (auto DestMappings : *Dest.ArgFieldMappings) {
-        auto DestCount =
-            C * (*DestMappings)[Dest.ArgNum].second / Dest.TotalHotness;
-        updateCPT(Src.FieldNum, (*DestMappings)[Dest.ArgNum].first, DestCount,
-                  D, CPT);
+      for (auto DestMappings : *Dest.FieldNumList) {
+        auto DestCount = C * DestMappings.second / Dest.TotalHotness;
+        updateCPT(Src.FieldNum, DestMappings.first, DestCount, D, CPT);
       }
     }
   } else {
-    for (auto SrcMappings : *Src.ArgFieldMappings) {
-      auto SrcCount = C * (*SrcMappings)[Src.ArgNum].second / Src.TotalHotness;
+    for (auto SrcMappings : *Src.FieldNumList) {
+      auto SrcCount = C * SrcMappings.second / Src.TotalHotness;
       if (Dest.isFieldNum) {
         // Case when Src contains Arc->Field mappings but Dest is a FieldNum
-        updateCPT((*SrcMappings)[Src.ArgNum].first, Dest.FieldNum, SrcCount, D,
-                  CPT);
+        updateCPT(SrcMappings.first, Dest.FieldNum, SrcCount, D, CPT);
       } else {
         // Case when Src and Dest both contain Arg->Field mappings
-        for (auto DestMappings : *Dest.ArgFieldMappings) {
-          auto DestCount = SrcCount * (*DestMappings)[Dest.ArgNum].second /
-                           Dest.TotalHotness;
-          updateCPT((*SrcMappings)[Src.ArgNum].first,
-                    (*DestMappings)[Dest.ArgNum].first, DestCount, D, CPT);
+        for (auto DestMappings : *Dest.FieldNumList) {
+          auto DestCount = SrcCount * DestMappings.second / Dest.TotalHotness;
+          updateCPT(SrcMappings.first, DestMappings.first, DestCount, D, CPT);
         }
       }
     }

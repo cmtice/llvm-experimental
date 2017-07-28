@@ -120,7 +120,6 @@ void StructTransformAnalyzer::mapFieldsToDefinition()
                  (i == NumElements-1 && Address % FieldSizes[i-1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i-1] == 0)){
           // If remove this field, the next/previous field is not aligned and add this field, it is aligned, it's likely to be a padding
           unsigned MaxWCP = 0;
-          dbgs() << "Considering F" << i+1 << "\n";
           for (unsigned j = 0; j < NumElements; j++){
             auto* Pair = CPBuilder->getCloseProximityPair(i, j);
             dbgs() << "(" << Pair->first << "," << Pair->second << ")\n";
