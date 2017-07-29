@@ -210,6 +210,39 @@ StructFieldAccessManager::getFieldAccessOnInstruction(
   return ret;
 }
 
+void StructFieldAccessManager::countIgnoredStructsInField() {
+  std::unordered_set<StructType *> IgnoredStructTypes; // Make sure struct
+  // type is not counted multiple times
+  for (auto &it : StructFieldAccessInfoMap) {
+    for (unsigned i = 0; i < it.first->getNumElements(); i++) {
+      auto *Ty = it.first->getElementType(i);
+      StructType *StructTypeToFind = NULL;
+      if (Ty->isStructTy()) {
+        StructTypeToFind = cast<StructType>(Ty);
+      } else if (Ty->isPointerTy() &&
+                 Ty->getPointerElementType()->isStructTy()) {
+        StructTypeToFind = cast<StructType>(Ty->getPointerElementType());
+      } else if (Ty->isArrayTy() && Ty->getArrayElementType()->isStructTy()) {
+        StructTypeToFind = cast<StructType>(Ty->getArrayElementType());
+      } else if (Ty->isPointerTy() &&
+                 Ty->getPointerElementType()->isPointerTy() &&
+                 Ty->getPointerElementType()
+                     ->getPointerElementType()
+                     ->isStructTy()) {
+        addStats(DebugStats::DS_StructPtrPtrAsField);
+      }
+      if (StructTypeToFind && IgnoredStructTypes.find(StructTypeToFind) ==
+                                  IgnoredStructTypes.end()) {
+        auto it = StructFieldAccessInfoMap.find(StructTypeToFind);
+        if (it == StructFieldAccessInfoMap.end()) {
+          addStats(DebugStats::DS_StructAsFieldIgnored);
+          IgnoredStructTypes.insert(StructTypeToFind);
+        }
+      }
+    }
+  }
+}
+
 void StructFieldAccessManager::summarizeFunctionCalls() {
   for (auto &it : StructFieldAccessInfoMap) {
     it.second->summarizeFunctionCalls();
@@ -551,6 +584,8 @@ static void performIRAnalysis(Module &M,
       ArgNum++;
     }
   }
+  // Add stats to count struct as a field of another struct
+  StructManager->countIgnoredStructsInField();
   // Summarizes all uses of fields in function calls
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAllStructAccesses());
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAnnotatedModule());

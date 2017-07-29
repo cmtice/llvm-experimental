@@ -129,6 +129,8 @@ public:
     DS_FuncArgStoredInAnotherVariable,
     DS_StructTooSmall,
     DS_FieldAddressStoredInAnotherVariable,
+    DS_StructPtrPtrAsField,
+    DS_StructAsFieldIgnored,
     DS_MaxNumStats
   };
 
@@ -179,6 +181,10 @@ public:
       ret = it->second;
     return ret;
   }
+
+  /// For stats only: count how many structs defined as field of another
+  /// struct ignored in analysis
+  void countIgnoredStructsInField();
 
   /// Summarizes all CallInst and InvokeInst into function declarations
   void summarizeFunctionCalls();
@@ -264,7 +270,9 @@ private:
       "Different function calls taking different arguments found",
       "Function pointer argument stored in a local variable",
       "Struct has small number of fields",
-      "Field address is stored to another variable"};
+      "Field address is stored to another variable",
+      "Struct** in the field of another struct",
+      "Struct defined in another struct but ignored"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
