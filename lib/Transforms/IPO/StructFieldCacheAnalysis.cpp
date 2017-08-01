@@ -219,7 +219,7 @@ void StructFieldAccessManager::countIgnoredStructsInField() {
   for (auto &it : StructFieldAccessInfoMap) {
     for (unsigned i = 0; i < it.first->getNumElements(); i++) {
       auto *Ty = it.first->getElementType(i);
-      StructType *StructTypeToFind = NULL;
+      StructType *StructTypeToFind = nullptr;
       if (Ty->isStructTy()) {
         StructTypeToFind = cast<StructType>(Ty);
       } else if (Ty->isPointerTy() &&
@@ -317,10 +317,10 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
     outs() << " (Hotness "
            << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
            << "% of hottest struct):\n";
-    auto *FRA =
-        UseOld
-            ? new OldFieldReorderAnalyzer(CurrentModule, type, it.second, NULL)
-            : new FieldReorderAnalyzer(CurrentModule, type, it.second, NULL);
+    auto *FRA = UseOld ? new OldFieldReorderAnalyzer(CurrentModule, type,
+                                                     it.second, nullptr)
+                       : new FieldReorderAnalyzer(CurrentModule, type,
+                                                  it.second, nullptr);
     FRA->makeSuggestions();
   }
   outs() << "----------------------------------------------------------\n";
@@ -335,7 +335,8 @@ void StructFieldAccessManager::suggestStructSplitting() {
     } else {
       outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
     }
-    auto *SSA = new StructSplitAnalyzer(CurrentModule, type, it.second, NULL);
+    auto *SSA =
+        new StructSplitAnalyzer(CurrentModule, type, it.second, nullptr);
     SSA->makeSuggestions();
   }
   outs() << "----------------------------------------------------------\n";

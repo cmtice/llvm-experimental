@@ -367,7 +367,7 @@ public:
   getArgFieldMappings(const Function *F) const {
     auto it = FunctionCallInfoMap.find(F);
     if (it == FunctionCallInfoMap.end())
-      return NULL;
+      return nullptr;
     return &it->second->AllArgFieldMappings;
   }
   /// %}
