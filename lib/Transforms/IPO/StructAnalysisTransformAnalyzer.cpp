@@ -8,8 +8,8 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This file implements two StructTransformAnalyzer that are used to give suggestions
-// on field reordering and struct splitting
+// This file implements two StructTransformAnalyzer that are used to give
+// suggestions on field reordering and struct splitting
 //
 //===------------------------------------------------------------------------===//
 
@@ -24,22 +24,24 @@
 #define DEBUG_PRINT_DIST(x) (format("%.3f", (x)))
 
 // Parameters for tuning analyzers
-static cl::opt<unsigned> CacheBlockSize(
-    "struct-analysis-cache-block-size", cl::init(64), cl::Hidden,
-    cl::desc("Set cache block size for the analysis"));
+static cl::opt<unsigned>
+    CacheBlockSize("struct-analysis-cache-block-size", cl::init(64), cl::Hidden,
+                   cl::desc("Set cache block size for the analysis"));
 
 // Parameter tuning for struct split
-static cl::opt<unsigned> StructSplitColdRatio(
-    "struct-analysis-split-cold-ratio", cl::init(5), cl::Hidden,
-    cl::desc("Set COLD_RATIO in struct split algorithm"));
+static cl::opt<unsigned>
+    StructSplitColdRatio("struct-analysis-split-cold-ratio", cl::init(5),
+                         cl::Hidden,
+                         cl::desc("Set COLD_RATIO in struct split algorithm"));
 
 static cl::opt<unsigned> StructSplitDistanceThreshold(
     "struct-analysis-split-distance-threshold", cl::init(120), cl::Hidden,
     cl::desc("Set DISTANCE_THRESHOLD in struct split algorithm"));
 
-static cl::opt<unsigned> StructSplitMaxSize(
-    "struct-analysis-split-max-size", cl::init(32), cl::Hidden,
-    cl::desc("Set MAX_SIZE in struct split algorithm"));
+static cl::opt<unsigned>
+    StructSplitMaxSize("struct-analysis-split-max-size", cl::init(32),
+                       cl::Hidden,
+                       cl::desc("Set MAX_SIZE in struct split algorithm"));
 
 static cl::opt<unsigned> StructSplitSizePenalty(
     "struct-analysis-split-size-penalty", cl::init(20), cl::Hidden,
@@ -47,82 +49,105 @@ static cl::opt<unsigned> StructSplitSizePenalty(
 
 static cl::opt<unsigned> StructSplitMaxThresholdUpdates(
     "struct-analysis-split-max-threshold-updates", cl::init(3), cl::Hidden,
-    cl::desc("Max number of lowering threshold allowed when making suggestions"));
+    cl::desc(
+        "Max number of lowering threshold allowed when making suggestions"));
 
 // Functions for StructTransformAnalyzer
-StructTransformAnalyzer::StructTransformAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI) : StructureType(ST), CPBuilder(CPB), NumElements(StructureType->getNumElements()), DebugInfo(DI), Eligibility(true)
-{
-  if (NumElements <= 2){
+StructTransformAnalyzer::StructTransformAnalyzer(
+    const Module &CM, const StructType *ST, const CloseProximityBuilder *CPB,
+    const DICompositeType *DI)
+    : StructureType(ST), CPBuilder(CPB),
+      NumElements(StructureType->getNumElements()), DebugInfo(DI),
+      Eligibility(true) {
+  if (NumElements <= 2) {
     Eligibility = false;
   }
-  // Calculate field sizes and establish a set of all fields considered to transform
+  // Calculate field sizes and establish a set of all fields considered to
+  // transform
   FieldSizes.resize(NumElements);
-  for (unsigned i = 0; i < NumElements; i++){
-    FieldSizes[i] = CM.getDataLayout().getTypeSizeInBits(StructureType->getElementType(i)) / 8;
+  for (unsigned i = 0; i < NumElements; i++) {
+    FieldSizes[i] =
+        CM.getDataLayout().getTypeSizeInBits(StructureType->getElementType(i)) /
+        8;
     FieldsToTransform.insert(i);
   }
 
   // Check if any field could be a padding
   mapFieldsToDefinition();
-  for (unsigned i = 0; i < NumElements; i++){
-    if (FieldDI[i] == NULL){
-      outs() << "Field " << i+1 << " is actually a padding, ignore in reordering...\n";
+  for (unsigned i = 0; i < NumElements; i++) {
+    if (FieldDI[i] == nullptr) {
+      outs() << "Field " << i + 1
+             << " is actually a padding, ignore in reordering...\n";
       FieldsToTransform.erase(i);
     }
   }
 }
 
-void StructTransformAnalyzer::mapFieldsToDefinition()
-{
+void StructTransformAnalyzer::mapFieldsToDefinition() {
   FieldDI.resize(NumElements);
-  if (DebugInfo){
+  if (DebugInfo) {
+    // Not actually using this part because DebugInfo can't be correctly
+    // retrieved now
     assert(DebugInfo->getElements().size() <= NumElements);
     FieldNumType FieldNum = 0;
-    for (unsigned i = 0; i < DebugInfo->getElements().size(); i++){
-      DINode* node = DebugInfo->getElements()[i];
-      assert(node && isa<DIDerivedType>(node) && dyn_cast<DIDerivedType>(node)->getTag() == dwarf::Tag::DW_TAG_member);
-      Metadata* T = dyn_cast<DIDerivedType>(node)->getBaseType();
+    for (unsigned i = 0; i < DebugInfo->getElements().size(); i++) {
+      DINode *node = DebugInfo->getElements()[i];
+      assert(node && isa<DIDerivedType>(node) &&
+             dyn_cast<DIDerivedType>(node)->getTag() ==
+                 dwarf::Tag::DW_TAG_member);
+      Metadata *T = dyn_cast<DIDerivedType>(node)->getBaseType();
       assert(T && isa<DIType>(T));
-      auto Size = dyn_cast<DIType>(T)->getSizeInBits()/8 != FieldSizes[FieldNum];
-      if (Size == 0){
-        if (dyn_cast<DIType>(T)->getTag() == dwarf::Tag::DW_TAG_structure_type){
+      auto Size =
+          dyn_cast<DIType>(T)->getSizeInBits() / 8 != FieldSizes[FieldNum];
+      if (Size == 0) {
+        if (dyn_cast<DIType>(T)->getTag() ==
+            dwarf::Tag::DW_TAG_structure_type) {
           assert(isa<DICompositeType>(T));
         }
       }
-      while (Size && FieldNum < NumElements){
-        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << FieldNum+1 << " might be a padding because its size is " << FieldSizes[FieldNum] << " Bytes but the actual field is " << dyn_cast<DIType>(T)->getSizeInBits()/8 << " Bytes\n");
-        FieldDI[FieldNum] = NULL;
+      while (Size && FieldNum < NumElements) {
+        DEBUG_WITH_TYPE(
+            DEBUG_TYPE_REORDER,
+            dbgs() << "Field " << FieldNum + 1
+                   << " might be a padding because its size is "
+                   << FieldSizes[FieldNum] << " Bytes but the actual field is "
+                   << dyn_cast<DIType>(T)->getSizeInBits() / 8 << " Bytes\n");
+        FieldDI[FieldNum] = nullptr;
         FieldNum++;
       }
       assert(FieldNum < NumElements);
-      assert(dyn_cast<DIType>(T)->getSizeInBits()/8 == FieldSizes[FieldNum]);
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << *dyn_cast<DIType>(T) << "\n");
-      FieldDI[FieldNum] = new FieldDebugInfo(i, dyn_cast<DIDerivedType>(node)->getName(), dyn_cast<DIType>(T)->getName());
+      assert(dyn_cast<DIType>(T)->getSizeInBits() / 8 == FieldSizes[FieldNum]);
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs()
+                                              << *dyn_cast<DIType>(T) << "\n");
+      FieldDI[FieldNum] =
+          new FieldDebugInfo(i, dyn_cast<DIDerivedType>(node)->getName(),
+                             dyn_cast<DIType>(T)->getName());
       FieldNum++;
     }
-  }
-  else{
+  } else {
     unsigned Address;
     unsigned FieldNum = 0;
-    for (unsigned i = 0; i < NumElements; i++){
-      auto* Ty = StructureType->getElementType(i);
-      if (!Ty->isArrayTy()){
+    for (unsigned i = 0; i < NumElements; i++) {
+      auto *Ty = StructureType->getElementType(i);
+      if (!Ty->isArrayTy()) {
         FieldDI[i] = new FieldDebugInfo(FieldNum++);
         Address += FieldSizes[i];
-      }
-      else{
-        //ArrayTy is suspicious to be a padding
-        if ((i < NumElements-1 && FieldSizes[i] > FieldSizes[i+1]) ||
-            (i == NumElements-1 && FieldSizes[i] > FieldSizes[i-1]))
+      } else {
+        // ArrayTy is suspicious to be a padding
+        if ((i < NumElements - 1 && FieldSizes[i] > FieldSizes[i + 1]) ||
+            (i == NumElements - 1 && FieldSizes[i] > FieldSizes[i - 1]))
           // Padding can't be larger than the field before or after
           FieldDI[i] = new FieldDebugInfo(FieldNum++);
-        else if ((i < NumElements-1 && Address % FieldSizes[i+1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i+1] == 0) ||
-                 (i == NumElements-1 && Address % FieldSizes[i-1] != 0 && (Address + FieldSizes[i]) % FieldSizes[i-1] == 0)){
-          // If remove this field, the next/previous field is not aligned and add this field, it is aligned, it's likely to be a padding
+        else if ((i < NumElements - 1 && Address % FieldSizes[i + 1] != 0 &&
+                  (Address + FieldSizes[i]) % FieldSizes[i + 1] == 0) ||
+                 (i == NumElements - 1 && Address % FieldSizes[i - 1] != 0 &&
+                  (Address + FieldSizes[i]) % FieldSizes[i - 1] == 0)) {
+          // If remove this field, the next/previous field is not aligned and
+          // add this field, it is aligned, it's likely to be a padding
           unsigned MaxWCP = 0;
-          dbgs() << "Considering F" << i+1 << "\n";
-          for (unsigned j = 0; j < NumElements; j++){
-            auto* Pair = CPBuilder->getCloseProximityPair(i, j);
+          dbgs() << "Considering F" << i + 1 << "\n";
+          for (unsigned j = 0; j < NumElements; j++) {
+            auto *Pair = CPBuilder->getCloseProximityPair(i, j);
             dbgs() << "(" << Pair->first << "," << Pair->second << ")\n";
             if (Pair->first > MaxWCP)
               MaxWCP = Pair->first;
@@ -130,10 +155,10 @@ void StructTransformAnalyzer::mapFieldsToDefinition()
           if (MaxWCP != 0)
             FieldDI[i] = new FieldDebugInfo(FieldNum++);
           else
-            // This is highly likely to be a padding because there's no WCP with other fields
-            FieldDI[i] = NULL;
-        }
-        else{
+            // This is highly likely to be a padding because there's no WCP with
+            // other fields
+            FieldDI[i] = nullptr;
+        } else {
           FieldDI[i] = new FieldDebugInfo(FieldNum++);
         }
         Address += FieldSizes[i];
@@ -143,31 +168,37 @@ void StructTransformAnalyzer::mapFieldsToDefinition()
 }
 
 // Functions for FieldReorderAnalyzer
-FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI) : StructTransformAnalyzer(CM, ST, CPB, DI)
-{
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing FieldReorderAnalyzer of size: " << NumElements << "\n");
-  // Calculate every CP relations and save it to an array to avoid repeated calculation
+FieldReorderAnalyzer::FieldReorderAnalyzer(const Module &CM,
+                                           const StructType *ST,
+                                           const CloseProximityBuilder *CPB,
+                                           const DICompositeType *DI)
+    : StructTransformAnalyzer(CM, ST, CPB, DI) {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                  dbgs() << "Initializing FieldReorderAnalyzer of size: "
+                         << NumElements << "\n");
+  // Calculate every CP relations and save it to an array to avoid repeated
+  // calculation
   CloseProximityRelations.resize(NumElements);
   double MaxWCP = 0;
   FieldNumType MaxI, MaxJ;
-  for (unsigned i = 0; i < NumElements; i++){
+  for (unsigned i = 0; i < NumElements; i++) {
     CloseProximityRelations[i].resize(NumElements);
-    for (unsigned j = 0; j < NumElements; j++){
+    for (unsigned j = 0; j < NumElements; j++) {
       CloseProximityRelations[i][j] = calculateCloseProximity(i, j);
-      if (i < j && CloseProximityRelations[i][j] > MaxWCP){
+      if (i < j && CloseProximityRelations[i][j] > MaxWCP) {
         MaxWCP = CloseProximityRelations[i][j];
         MaxI = i;
         MaxJ = j;
       }
     }
   }
-  if (MaxWCP < 1e-3){
+  if (MaxWCP < 1e-3) {
     Eligibility = false;
     return;
   }
   DEBUG(dbgs() << "CPG for field reordering recommendation\n");
-  for (unsigned i = 0; i < NumElements; i++){
-    DEBUG(dbgs() << "F" << i+1 << "\t");
+  for (unsigned i = 0; i < NumElements; i++) {
+    DEBUG(dbgs() << "F" << i + 1 << "\t");
     for (unsigned j = 0; j < NumElements; j++)
       DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
     DEBUG(dbgs() << "\n");
@@ -178,18 +209,23 @@ FieldReorderAnalyzer::FieldReorderAnalyzer(const Module& CM, const StructType* S
   NewOrder.push_back(MaxJ);
   FieldsToTransform.erase(MaxI);
   FieldsToTransform.erase(MaxJ);
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxI+1 << " and F" << MaxJ+1 << " as seeds in reordering\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxI + 1 << " and F"
+                                             << MaxJ + 1
+                                             << " as seeds in reordering\n");
   assert(MaxWCP == getWCP());
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                  dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(MaxWCP)
+                         << "\n");
 }
 
-double FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const
-{
+double
+FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
+                                              FieldNumType Field2) const {
   if (Field1 == Field2)
     return 0;
   if (!canFitInOneCacheBlock(Field1, Field2))
     return 0;
-  auto* Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
+  auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
   if (Pair->first < 1e-3)
     return 0;
   if (Pair->second < 1)
@@ -197,54 +233,67 @@ double FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldN
   return Pair->first / Pair->second;
 }
 
-bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const
-{
+bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1,
+                                                 FieldNumType Field2) const {
   if (FieldSizes[Field1] % CacheBlockSize == 0)
     return false;
   return true;
 }
 
-double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(std::vector<FieldNumType>* CacheBlock) const
-{
+double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(
+    std::vector<FieldNumType> *CacheBlock) const {
   double WCP = 0;
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Calculate WCP within a cache block: ");
-  for (unsigned i = 0; i < CacheBlock->size(); i++){
-    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "F" << (*CacheBlock)[i]+1 << " ");
-    for (unsigned j = i+1; j < CacheBlock->size(); j++)
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                  dbgs() << "Calculate WCP within a cache block: ");
+  for (unsigned i = 0; i < CacheBlock->size(); i++) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                    dbgs() << "F" << (*CacheBlock)[i] + 1 << " ");
+    for (unsigned j = i + 1; j < CacheBlock->size(); j++)
       if ((*CacheBlock)[i] < (*CacheBlock)[j])
         WCP += CloseProximityRelations[(*CacheBlock)[i]][(*CacheBlock)[j]];
       else
         WCP += CloseProximityRelations[(*CacheBlock)[j]][(*CacheBlock)[i]];
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "produces WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                  dbgs() << "produces WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
   return WCP;
 }
 
-double FieldReorderAnalyzer::getWCP() const
-{
+double FieldReorderAnalyzer::getWCP() const {
   unsigned CurrentCacheBlockSize = 0;
   std::vector<FieldNumType> CurrentCacheBlock;
   double WCP = 0;
-  for (auto& FieldNum : NewOrder){
+  for (auto &FieldNum : NewOrder) {
     auto Size = FieldSizes[FieldNum];
-    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << FieldNum+1 << " size is " << Size << "\n");
-    if (!StructureType->getElementType(FieldNum)->isAggregateType() && CurrentCacheBlockSize % Size){
-      // Alignment needed, need to add padding. Ignore alignment for aggregated type (array and struct)
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Need to add " << (CurrentCacheBlockSize / Size + 1) * Size - CurrentCacheBlockSize << " Bytes of padding\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Field " << FieldNum + 1
+                                               << " size is " << Size << "\n");
+    if (!StructureType->getElementType(FieldNum)->isAggregateType() &&
+        CurrentCacheBlockSize % Size) {
+      // Alignment needed, need to add padding. Ignore alignment for aggregated
+      // type (array and struct)
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                      dbgs() << "Need to add "
+                             << (CurrentCacheBlockSize / Size + 1) * Size -
+                                    CurrentCacheBlockSize
+                             << " Bytes of padding\n");
       CurrentCacheBlockSize = (CurrentCacheBlockSize / Size + 1) * Size;
       assert(CurrentCacheBlockSize <= CacheBlockSize);
     }
-    if (CurrentCacheBlockSize == CacheBlockSize){
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Need to put into a new cache block calculate current one\n");
+    if (CurrentCacheBlockSize == CacheBlockSize) {
+      DEBUG_WITH_TYPE(
+          DEBUG_TYPE_REORDER,
+          dbgs()
+              << "Need to put into a new cache block calculate current one\n");
       WCP += calculateWCPWithinCacheBlock(&CurrentCacheBlock);
       CurrentCacheBlockSize = 0;
       CurrentCacheBlock.clear();
-    }
-    else{
+    } else {
       CurrentCacheBlockSize += Size;
       CurrentCacheBlock.push_back(FieldNum);
-      if (CurrentCacheBlockSize >= CacheBlockSize){
-        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current cache block cannot fit remaining field\n");
+      if (CurrentCacheBlockSize >= CacheBlockSize) {
+        DEBUG_WITH_TYPE(
+            DEBUG_TYPE_REORDER,
+            dbgs() << "Current cache block cannot fit remaining field\n");
         WCP += calculateWCPWithinCacheBlock(&CurrentCacheBlock);
         CurrentCacheBlockSize %= CacheBlockSize;
         CurrentCacheBlock.clear();
@@ -257,47 +306,52 @@ double FieldReorderAnalyzer::getWCP() const
   return WCP;
 }
 
-double FieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum)
-{
+double FieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum) {
   NewOrder.push_back(FieldNum);
   auto WCP = getWCP();
   NewOrder.pop_back();
   return WCP;
 }
 
-double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum)
-{
+double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum) {
   NewOrder.push_front(FieldNum);
   auto WCP = getWCP();
   NewOrder.pop_front();
   return WCP;
 }
 
-void FieldReorderAnalyzer::makeSuggestions()
-{
-  if (!Eligibility){
+void FieldReorderAnalyzer::makeSuggestions() {
+  if (!Eligibility) {
     outs() << "Struct has too few fields or cold in profiling for reordering\n";
     return;
   }
 
   double MaxWCP = getWCP();
-  while (FieldsToTransform.size()){
+  while (FieldsToTransform.size()) {
     FieldNumType MaxField;
     bool InFront = false;
     MaxWCP = 0;
-    for (auto& F : FieldsToTransform){
+    for (auto &F : FieldsToTransform) {
       auto WCP = estimateWCPAtBack(F);
-      if (WCP > MaxWCP){
-        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Found better ordering by add F" << F+1 << " in the end\n");
-        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
+      if (WCP > MaxWCP) {
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                        dbgs() << "Found better ordering by add F" << F + 1
+                               << " in the end\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                        dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(WCP)
+                               << "\n");
         MaxWCP = WCP;
         MaxField = F;
         InFront = false;
       }
       WCP = estimateWCPAtFront(F);
-      if (WCP > MaxWCP){
-        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Found better ordering by add F" << F+1 << " in the front\n");
-        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(WCP) << "\n");
+      if (WCP > MaxWCP) {
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                        dbgs() << "Found better ordering by add F" << F + 1
+                               << " in the front\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                        dbgs() << "Current WCP: " << DEBUG_PRINT_COUNT(WCP)
+                               << "\n");
         MaxWCP = WCP;
         MaxField = F;
         InFront = true;
@@ -313,51 +367,61 @@ void FieldReorderAnalyzer::makeSuggestions()
   // Print suggestions
   std::list<FieldNumType> BestOrder(NewOrder);
   NewOrder.clear();
-  for (unsigned i = 0; i < NumElements; i++){
+  for (unsigned i = 0; i < NumElements; i++) {
     if (FieldDI[i])
       NewOrder.push_back(i);
   }
   auto OldWCP = getWCP();
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "New WCP: " << DEBUG_PRINT_COUNT(MaxWCP) << " vs Old WCP: " << DEBUG_PRINT_COUNT(OldWCP) << "\n");
-  //assert(MaxWCP >= OldWCP || std::abs(OldWCP-MaxWCP)/OldWCP < 1e-3);
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                  dbgs() << "New WCP: " << DEBUG_PRINT_COUNT(MaxWCP)
+                         << " vs Old WCP: " << DEBUG_PRINT_COUNT(OldWCP)
+                         << "\n");
+  // assert(MaxWCP >= OldWCP || std::abs(OldWCP-MaxWCP)/OldWCP < 1e-3);
   auto Confidence = 100.0 * (MaxWCP - OldWCP) / OldWCP;
   if (Confidence > 100.0)
     Confidence = 100.0;
 
   // Print suggestions
   outs() << "Struct definition: " << *StructureType << "\n";
-  if (Confidence < 1.0){
+  if (Confidence < 1.0) {
     outs() << "Suggest to keep the current order: \n";
-    for (auto& FieldNum : NewOrder){
+    for (auto &FieldNum : NewOrder) {
       assert(FieldDI[FieldNum]);
-      outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
+      outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << " ";
     }
     outs() << "\n";
-  }
-  else{
+  } else {
     outs() << "Suggest to reorder the fields according to: ";
-    for (auto& FieldNum : BestOrder){
+    for (auto &FieldNum : BestOrder) {
       assert(FieldDI[FieldNum]);
-      outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
+      outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << " ";
     }
-    outs() << " might improve performance with " << format("%.0f", Confidence) << " % confidence\n";
+    outs() << " might improve performance with " << format("%.0f", Confidence)
+           << " % confidence\n";
   }
 }
 
 // Functions for StructSplitAnalyzer
-StructSplitAnalyzer::StructSplitAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI) : StructTransformAnalyzer(CM, ST, CPB, DI), Params({StructSplitColdRatio, StructSplitDistanceThreshold, StructSplitMaxSize, StructSplitSizePenalty})
-{
-  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Initializing StructSplitAnalyzer of size: " << NumElements << "\n");
-  // Calculate every CP relations and save it to an array to avoid repeated calculation
+StructSplitAnalyzer::StructSplitAnalyzer(const Module &CM, const StructType *ST,
+                                         const CloseProximityBuilder *CPB,
+                                         const DICompositeType *DI)
+    : StructTransformAnalyzer(CM, ST, CPB, DI),
+      Params({StructSplitColdRatio, StructSplitDistanceThreshold,
+              StructSplitMaxSize, StructSplitSizePenalty}) {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                  dbgs() << "Initializing StructSplitAnalyzer of size: "
+                         << NumElements << "\n");
+  // Calculate every CP relations and save it to an array to avoid repeated
+  // calculation
   CloseProximityRelations.resize(NumElements);
-  for (unsigned i = 0; i < NumElements; i++){
+  for (unsigned i = 0; i < NumElements; i++) {
     CloseProximityRelations[i].resize(NumElements);
-    for (unsigned j = 0; j < NumElements; j++){
+    for (unsigned j = 0; j < NumElements; j++) {
       CloseProximityRelations[i][j] = calculateCloseProximity(i, j);
     }
   }
-  for (unsigned i = 0; i < NumElements; i++){
-    DEBUG(dbgs() << "F" << i+1 << "\t");
+  for (unsigned i = 0; i < NumElements; i++) {
+    DEBUG(dbgs() << "F" << i + 1 << "\t");
     for (unsigned j = 0; j < NumElements; j++)
       DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
     DEBUG(dbgs() << "\n");
@@ -374,9 +438,9 @@ StructSplitAnalyzer::StructSplitAnalyzer(const Module& CM, const StructType* ST,
   DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Finish constructor\n");
 }
 
-double StructSplitAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const
-{
-  auto* Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
+double StructSplitAnalyzer::calculateCloseProximity(FieldNumType Field1,
+                                                    FieldNumType Field2) const {
+  auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
   if (Pair->second > Params.DistanceThreshold)
     return 0;
   if (FieldSizes[Field1] + FieldSizes[Field2] > Params.MaxSize)
@@ -390,108 +454,132 @@ double StructSplitAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNu
   return Pair->first / Ratio;
 }
 
-FieldPairType StructSplitAnalyzer::findMaxRemainCP() const
-{
+FieldPairType StructSplitAnalyzer::findMaxRemainCP() const {
   double MaxCP = 0;
   auto it = FieldsToTransform.begin();
   auto Field1 = *(it++);
   assert(it != FieldsToTransform.end());
   auto Field2 = *it;
-  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Try to find a pair with maxmium CP\n");
-  for (auto& F1 : FieldsToTransform)
-    for (auto& F2 : FieldsToTransform)
-      if (F1 != F2){
-        if (CloseProximityRelations[F1][F2] > MaxCP){
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                  dbgs() << "Try to find a pair with maxmium CP\n");
+  for (auto &F1 : FieldsToTransform)
+    for (auto &F2 : FieldsToTransform)
+      if (F1 != F2) {
+        if (CloseProximityRelations[F1][F2] > MaxCP) {
           MaxCP = CloseProximityRelations[F1][F2];
           Field1 = F1;
           Field2 = F2;
         }
       }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "The pair with largest CP is: (F" << Field1+1 << ", F" << Field2+1 << ")\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "The pair with largest CP is: (F"
+                                           << Field1 + 1 << ", F" << Field2 + 1
+                                           << ")\n");
   return std::make_pair(Field1, Field2);
 }
 
-void StructSplitAnalyzer::makeSuggestions()
-{
-  if (!Eligibility){
+void StructSplitAnalyzer::makeSuggestions() {
+  if (!Eligibility) {
     outs() << "Struct has too few fields or cold in profiling for splitting\n";
     return;
   }
   unsigned dynamicThresholdUpdates = 0;
-  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Making suggestions for struct splitting\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                  dbgs() << "Making suggestions for struct splitting\n");
   auto BestPair = findMaxRemainCP();
-  double Threshold = CloseProximityRelations[BestPair.first][BestPair.second] / Params.ColdRatio;
+  double Threshold = CloseProximityRelations[BestPair.first][BestPair.second] /
+                     Params.ColdRatio;
 
-  while (FieldsToTransform.size()){
-    if (FieldsToTransform.size() == 1){
+  while (FieldsToTransform.size()) {
+    if (FieldsToTransform.size() == 1) {
       // Only has one field left, break the loop and create a subrecord for it
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Only have one remaining field...\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                      dbgs() << "Only have one remaining field...\n");
       break;
     }
     auto BestPair = findMaxRemainCP();
     auto MaxCP = CloseProximityRelations[BestPair.first][BestPair.second];
     if (MaxCP == 0)
       break;
-    // If MaxCP is colder than the current threshold, adjust the threhold for several times
-    // until the current pair is hotter than threshold or reach the limit of lowering the bar
-    while (MaxCP < Threshold){
+    // If MaxCP is colder than the current threshold, adjust the threhold for
+    // several times until the current pair is hotter than threshold or reach
+    // the limit of lowering the bar
+    while (MaxCP < Threshold) {
       if (dynamicThresholdUpdates++ > Params.MaxNumThresholdUpdates)
         break;
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Lowering threshold by a factor of " << Params.ColdRatio << "\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                      dbgs() << "Lowering threshold by a factor of "
+                             << Params.ColdRatio << "\n");
       Threshold /= Params.ColdRatio;
     }
     if (MaxCP < Threshold)
       break;
-    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "CP value is: " << DEBUG_PRINT_COUNT(MaxCP) << " and threshold is: " << DEBUG_PRINT_COUNT(Threshold) << "\n");
-    auto* NewRecord = new SubRecordType;
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                    dbgs() << "CP value is: " << DEBUG_PRINT_COUNT(MaxCP)
+                           << " and threshold is: "
+                           << DEBUG_PRINT_COUNT(Threshold) << "\n");
+    auto *NewRecord = new SubRecordType;
     SubRecords.push_back(NewRecord);
     // Add the pair into the new sub record and remove from remaining fields
     NewRecord->push_back(BestPair.first);
     NewRecord->push_back(BestPair.second);
-    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Create a new record with F" << BestPair.first+1 << " and F" << BestPair.second+1 << "\n");
-    auto NewRecordSize = FieldSizes[BestPair.first] + FieldSizes[BestPair.second];
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Create a new record with F"
+                                             << BestPair.first + 1 << " and F"
+                                             << BestPair.second + 1 << "\n");
+    auto NewRecordSize =
+        FieldSizes[BestPair.first] + FieldSizes[BestPair.second];
     FieldsToTransform.erase(BestPair.first);
     FieldsToTransform.erase(BestPair.second);
-    // If the pair is enough to take the MAX_SIZE, no need to add more fields to the subrecord
+    // If the pair is enough to take the MAX_SIZE, no need to add more fields to
+    // the subrecord
     if (NewRecordSize >= Params.MaxSize)
       continue;
-    while (FieldsToTransform.size()){
+    while (FieldsToTransform.size()) {
       double MaxSum = 0;
       FieldNumType MaxF = 0;
-      for (auto& Field : FieldsToTransform){
-        // If the field is too large to fit in the new sub record, give up on this one
+      for (auto &Field : FieldsToTransform) {
+        // If the field is too large to fit in the new sub record, give up on
+        // this one
         if (FieldSizes[Field] + NewRecordSize > Params.MaxSize)
           continue;
         auto Sum = 0;
-        for (auto& Fi : *NewRecord){
+        for (auto &Fi : *NewRecord) {
           Sum += CloseProximityRelations[Field][Fi];
         }
-        if (Sum > MaxSum){
+        if (Sum > MaxSum) {
           MaxSum = Sum;
           MaxF = Field;
         }
       }
       // Take average
       MaxSum /= NewRecord->size();
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "F" << MaxF+1 << " has the best CP relations with new record: " << DEBUG_PRINT_COUNT(MaxSum) << "\n");
-      if (MaxSum < Threshold){
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                      dbgs() << "F" << MaxF + 1
+                             << " has the best CP relations with new record: "
+                             << DEBUG_PRINT_COUNT(MaxSum) << "\n");
+      if (MaxSum < Threshold) {
         // None of the remaining fields is suitable to put into this sub record
         break;
       }
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "F" << MaxF+1 << " is added to the new record\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs()
+                                            << "F" << MaxF + 1
+                                            << " is added to the new record\n");
       NewRecord->push_back(MaxF);
       NewRecordSize += FieldSizes[MaxF];
       FieldsToTransform.erase(MaxF);
     }
   }
 
-  // All the remaining fields are cold with others, create one record for all of them
-  if (FieldsToTransform.size()){
-    auto* NewRecord = new SubRecordType;
+  // All the remaining fields are cold with others, create one record for all of
+  // them
+  if (FieldsToTransform.size()) {
+    auto *NewRecord = new SubRecordType;
     SubRecords.push_back(NewRecord);
-    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "All remaining fields are cold, create one record for all of them\n");
-    for (auto& F : FieldsToTransform){
-      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Put F" << F+1 << " into the cold record\n");
+    DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "All remaining fields are "
+                                                "cold, create one record for "
+                                                "all of them\n");
+    for (auto &F : FieldsToTransform) {
+      DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT,
+                      dbgs() << "Put F" << F + 1 << " into the cold record\n");
       NewRecord->push_back(F);
     }
     FieldsToTransform.clear();
@@ -500,49 +588,56 @@ void StructSplitAnalyzer::makeSuggestions()
 
   // Print suggestions
   outs() << "Struct definition: " << *StructureType << "\n";
-  for (unsigned i = 0; i < SubRecords.size(); i++){
-    outs() << "Group #" << i+1 << ":{ ";
-    for (auto& F : *SubRecords[i]){
-      outs() << "F" << F+1 << " ";
+  for (unsigned i = 0; i < SubRecords.size(); i++) {
+    outs() << "Group #" << i + 1 << ":{ ";
+    for (auto &F : *SubRecords[i]) {
+      outs() << "F" << F + 1 << " ";
     }
     outs() << "}\n";
   }
 }
 
-OldFieldReorderAnalyzer::OldFieldReorderAnalyzer(const Module& CM, const StructType* ST, const CloseProximityBuilder* CPB, const DICompositeType* DI) : FieldReorderAnalyzer(CM, ST, CPB, DI, true), DistanceThreshold(StructSplitDistanceThreshold)
-{
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Initializing OldFieldReorderAnalyzer of size: " << NumElements << "\n");
-  // Calculate every CP relations and save it to an array to avoid repeated calculation
+OldFieldReorderAnalyzer::OldFieldReorderAnalyzer(
+    const Module &CM, const StructType *ST, const CloseProximityBuilder *CPB,
+    const DICompositeType *DI)
+    : FieldReorderAnalyzer(CM, ST, CPB, DI, true),
+      DistanceThreshold(StructSplitDistanceThreshold) {
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                  dbgs() << "Initializing OldFieldReorderAnalyzer of size: "
+                         << NumElements << "\n");
+  // Calculate every CP relations and save it to an array to avoid repeated
+  // calculation
   CloseProximityRelations.resize(NumElements);
   double MaxWCP = 0;
-  for (unsigned i = 0; i < NumElements; i++){
+  for (unsigned i = 0; i < NumElements; i++) {
     CloseProximityRelations[i].resize(NumElements);
-    for (unsigned j = 0; j < NumElements; j++){
+    for (unsigned j = 0; j < NumElements; j++) {
       CloseProximityRelations[i][j] = calculateCloseProximity(i, j);
       if (CloseProximityRelations[i][j] > MaxWCP)
         MaxWCP = CloseProximityRelations[i][j];
     }
   }
-  if (MaxWCP < 1e-3){
+  if (MaxWCP < 1e-3) {
     Eligibility = false;
     return;
   }
   DEBUG(dbgs() << "CPG for field reordering recommendation\n");
-  for (unsigned i = 0; i < NumElements; i++){
-    DEBUG(dbgs() << "F" << i+1 << "\t");
+  for (unsigned i = 0; i < NumElements; i++) {
+    DEBUG(dbgs() << "F" << i + 1 << "\t");
     for (unsigned j = 0; j < NumElements; j++)
       DEBUG(dbgs() << DEBUG_PRINT_COUNT(CloseProximityRelations[i][j]) << "\t");
     DEBUG(dbgs() << "\n");
   }
 }
 
-double OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1, FieldNumType Field2) const
-{
+double
+OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
+                                                 FieldNumType Field2) const {
   if (Field1 == Field2)
     // In old implementation, actually it's good to have a self-related field
     // But we ignore this
     return 0;
-  auto* Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
+  auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
   if (Pair->first < 1e-3)
     return 0;
   if (Pair->second > DistanceThreshold)
@@ -550,98 +645,101 @@ double OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1, Fie
   return Pair->first;
 }
 
-double OldFieldReorderAnalyzer::calculateFanOut(FieldNumType FieldNum) const
-{
+double OldFieldReorderAnalyzer::calculateFanOut(FieldNumType FieldNum) const {
   double CPSum = 0;
-  for (auto& F : FieldsToTransform){
-    if (F != FieldNum){
+  for (auto &F : FieldsToTransform) {
+    if (F != FieldNum) {
       CPSum += CloseProximityRelations[FieldNum][F];
     }
   }
   return CPSum;
 }
 
-FieldNumType OldFieldReorderAnalyzer::findMaxFanOut() const
-{
+FieldNumType OldFieldReorderAnalyzer::findMaxFanOut() const {
   assert(FieldsToTransform.size());
   double MaxFanOut = 0;
   FieldNumType MaxI = *FieldsToTransform.begin();
-  for (auto& F : FieldsToTransform){
+  for (auto &F : FieldsToTransform) {
     auto FanOut = calculateFanOut(F);
-    if (FanOut > MaxFanOut){
+    if (FanOut > MaxFanOut) {
       MaxFanOut = FanOut;
       MaxI = F;
     }
   }
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current Max FanOut: " << DEBUG_PRINT_COUNT(MaxFanOut) << "\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Current Max FanOut: "
+                                             << DEBUG_PRINT_COUNT(MaxFanOut)
+                                             << "\n");
   return MaxI;
 }
 
-double OldFieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum)
-{
-  // FIXME: This code is inefficient because of reverse() is called twice on the list
-  // It's written like this to reuse the other function but can write better code
-  // with higher code efficiency later
+double OldFieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum) {
+  // FIXME: This code is inefficient because of reverse() is called twice on the
+  // list It's written like this to reuse the other function but can write
+  // better code with higher code efficiency later
   NewOrder.reverse();
   auto WCP = estimateWCPAtFront(FieldNum);
   NewOrder.reverse();
   return WCP;
 }
 
-double OldFieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum)
-{
+double OldFieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum) {
   double WCP = 0;
   unsigned TotalSizes = 1;
-  for (auto& F : NewOrder){
+  for (auto &F : NewOrder) {
     TotalSizes *= FieldSizes[F];
     WCP += CloseProximityRelations[FieldNum][F] / TotalSizes;
   }
   return WCP;
 }
-void OldFieldReorderAnalyzer::makeSuggestions()
-{
-  if (!Eligibility){
+void OldFieldReorderAnalyzer::makeSuggestions() {
+  if (!Eligibility) {
     outs() << "Struct has too few fields or cold in profiling for reordering\n";
     return;
   }
   auto BestField = findMaxFanOut();
   NewOrder.push_back(BestField);
   FieldsToTransform.erase(BestField);
-  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << BestField+1 << " as the seed in reordering\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << BestField + 1
+                                             << " as the seed in reordering\n");
 
-  while (FieldsToTransform.size()){
+  while (FieldsToTransform.size()) {
     double MaxWCP = 0;
     FieldNumType MaxField;
     bool InFront = false;
-    for (auto& F : FieldsToTransform){
+    for (auto &F : FieldsToTransform) {
       auto WCP = estimateWCPAtBack(F);
-      if (WCP > MaxWCP){
+      if (WCP > MaxWCP) {
         MaxWCP = WCP;
         MaxField = F;
         InFront = false;
       }
       WCP = estimateWCPAtFront(F);
-      if (WCP > MaxWCP){
+      if (WCP > MaxWCP) {
         MaxWCP = WCP;
         MaxField = F;
         InFront = true;
       }
     }
 
-    if (MaxWCP < 1e-3){
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "No Field contributes to existing order\n");
-      // If none of the remaining field can contribute to existing order, start with maximum fanout again
+    if (MaxWCP < 1e-3) {
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                      dbgs() << "No Field contributes to existing order\n");
+      // If none of the remaining field can contribute to existing order, start
+      // with maximum fanout again
       MaxField = findMaxFanOut();
       InFront = true; // Either side is fine, old code always put on front
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Use F" << MaxField+1 << " as the seed in reordering\n");
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                      dbgs() << "Use F" << MaxField + 1
+                             << " as the seed in reordering\n");
     }
 
-    if (InFront){
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Insert F" << MaxField+1 << " to front\n");
+    if (InFront) {
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                      dbgs() << "Insert F" << MaxField + 1 << " to front\n");
       NewOrder.push_front(MaxField);
-    }
-    else{
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs() << "Insert F" << MaxField+1 << " to back\n");
+    } else {
+      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
+                      dbgs() << "Insert F" << MaxField + 1 << " to back\n");
       NewOrder.push_back(MaxField);
     }
     FieldsToTransform.erase(MaxField);
@@ -650,9 +748,9 @@ void OldFieldReorderAnalyzer::makeSuggestions()
   // Print suggestions
   outs() << "Struct definition: " << *StructureType << "\n";
   outs() << "Suggest to reorder the fields according to: ";
-  for (auto& FieldNum : NewOrder){
+  for (auto &FieldNum : NewOrder) {
     assert(FieldDI[FieldNum]);
-    outs() << "F" << FieldDI[FieldNum]->FieldNum+1 << " ";
+    outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << " ";
   }
   outs() << "\n";
 }
