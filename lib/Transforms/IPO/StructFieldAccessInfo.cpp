@@ -25,7 +25,6 @@
 #include "StructFieldCacheAnalysisImpl.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
 
 using namespace llvm;

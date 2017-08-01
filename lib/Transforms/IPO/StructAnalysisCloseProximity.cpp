@@ -29,6 +29,10 @@
 // non-collapsed nodes. In either case, the complexity is much smaller than
 // exponential that can complete with reasonable amount of time.
 //
+// Some of the algorithms in this file is derived from the following paper:
+//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
+//  in GCC”, Proceedings of the GCC Developers’ Summit,  Ottawa, 2005.
+//
 //===------------------------------------------------------------------------===//
 
 #include "StructFieldCacheAnalysisImpl.h"
@@ -52,18 +56,19 @@ static cl::opt<bool> PerformCPGCheck(
     "struct-analysis-check-CPG", cl::init(false), cl::Hidden,
     cl::desc("Perform CPG checking algorithm that takes a long time"));
 
-static cl::opt<bool> DisableIgnoreZeroCountNodes(
-    "struct-analysis-disable-ignore-zeros", cl::init(false), cl::Hidden,
-    cl::desc("Ignore zero-count nodes in FRG generation"));
+static cl::opt<bool> IncludeZeroCountNodesInFRG(
+    "struct-analysis-FRG-include-zeros", cl::init(false), cl::Hidden,
+    cl::desc(
+        "Include zero-count nodes in FRG generation, turned off by default"));
 
 // Utility functions
 // Function used to update (count, distance) pair by taking a weighted average
 // of the Result and Source and save result to Result. Used when updating
 // CPG or updating an edge weight
 static void updatePairByMerging(ExecutionCountType &ResultCount,
-                                DataBytesType &ResultDistance,
+                                DistanceInBytesType &ResultDistance,
                                 ExecutionCountType SourceCount,
-                                DataBytesType SourceDistance) {
+                                DistanceInBytesType SourceDistance) {
   if (SourceCount + ResultCount != 0)
     ResultDistance =
         (SourceCount * SourceDistance + ResultCount * ResultDistance) /
@@ -80,10 +85,10 @@ static void updatePairByMerging(ExecutionCountType &ResultCount,
 // have multiple in and out edges
 static void updatePairByConnecting(ExecutionCountType &ResultCount,
                                    double OutRatio,
-                                   DataBytesType &ResultDistance,
+                                   DistanceInBytesType &ResultDistance,
                                    ExecutionCountType SourceCount,
                                    double InRatio,
-                                   DataBytesType SourceDistance) {
+                                   DistanceInBytesType SourceDistance) {
   assert(InRatio <= 1 && OutRatio <= 1);
   ResultCount = std::min(ResultCount * OutRatio, SourceCount * InRatio);
   ResultDistance += SourceDistance;
@@ -122,8 +127,10 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node *From,
                                             // already connected with this Edge
   Edge *ExistEdge = NULL;
   for (auto *E : From->OutEdges) {
-    if (E->ToNode == To)
+    if (E->ToNode == To) {
       ExistEdge = E;
+      break;
+    }
   }
   // Case #2
   if (ExistEdge) {
@@ -172,7 +179,8 @@ FieldReferenceGraph::getBasicBlockHelperInfo(const BasicBlock *BB) const {
 }
 
 FieldReferenceGraph::Node *
-FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S) {
+FieldReferenceGraph::createNewNode(FieldNumType FieldNum,
+                                   DistanceInBytesType S) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size()
                                          << " for field " << FieldNum << "\n");
   auto *Node = new FieldReferenceGraph::Node(NodeList.size(), FieldNum, S);
@@ -187,8 +195,8 @@ FieldReferenceGraph::createNewNode(FieldNumType FieldNum, DataBytesType S) {
 // by another edge, instead of creating a new edge, we update its weight.
 void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node *From,
                                        FieldReferenceGraph::Node *To,
-                                       ExecutionCountType C, DataBytesType D,
-                                       bool BackEdge) {
+                                       ExecutionCountType C,
+                                       DistanceInBytesType D, bool BackEdge) {
   if (From == To) {
     // Don't connect a node back to itself to avoid a node never be able to
     // collapse
@@ -297,7 +305,8 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(
 CloseProximityBuilder::CloseProximityBuilder(const Module &M,
                                              const StructFieldAccessManager *SM,
                                              const StructFieldAccessInfo *SI)
-    : CurrentModule(M), StructManager(SM), StructInfo(SI) {
+    : CurrentModule(M), CurrentDataLayout(M.getDataLayout()), StructManager(SM),
+      StructInfo(SI) {
   assert(StructInfo);
   NumElements = StructInfo->getNumElements();
   FRGArray.clear();
@@ -321,17 +330,14 @@ CloseProximityBuilder::CloseProximityBuilder(const Module &M,
 
 // Get the size of the data accessed by this load/store instruction.
 // Return number of bytes accessed by this instruction
-DataBytesType
+DistanceInBytesType
 CloseProximityBuilder::getMemAccessDataSize(const Instruction *I) const {
-  assert(I->getOpcode() == Instruction::Load ||
-         I->getOpcode() == Instruction::Store);
-  Type *type;
-  if (I->getOpcode() == Instruction::Load)
-    type = I->getType();
-  else
-    type = I->getOperand(0)->getType();
+  assert(isa<LoadInst>(I) || isa<StoreInst>(I));
+  Type *type = (isa<LoadInst>(I))
+                   ? I->getType()
+                   : cast<StoreInst>(I)->getValueOperand()->getType();
   assert(type->isSized());
-  return CurrentModule.getDataLayout().getTypeSizeInBits(type) / 8;
+  return CurrentDataLayout.getTypeSizeInBits(type) / 8;
 }
 
 // A wrapper function to find all backedges on CFG. It wraps a call to
@@ -456,11 +462,11 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
       if (BBCount.hasValue() && SBCount.hasValue()) {
         // Take probability of the branch
         auto Prob = StructManager->getBranchProbability(&BB, SB);
-        assert(Prob.hasValue());
-        C = std::min(BBCount.getValue() * Prob.getValue(),
+        C = std::min(BBCount.getValue() * 1.0 * Prob.getNumerator() /
+                         Prob.getDenominator(),
                      SBCount.getValue() * 1.0);
       }
-      if (!DisableIgnoreZeroCountNodes && C < 1e-3)
+      if (!IncludeZeroCountNodesInFRG && C < 1e-3)
         continue;
       auto D = BBI->RemainBytes; // Use size of remaining data in BB
       auto isBackEdge = (BBI->BackEdgeSet.find(SB) != BBI->BackEdgeSet.end());
@@ -484,7 +490,8 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
 // relations between two fields and consists of a pair of numbers: count and
 // distance. When updating a cell, call updatePairByMerging().
 void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
-                                      ExecutionCountType C, DataBytesType D,
+                                      ExecutionCountType C,
+                                      DistanceInBytesType D,
                                       CloseProximityTableType &CPT) {
   assert(Src <= NumElements && Dest <= NumElements);
   if (Src == 0 || Dest == 0 || C < 1e-3 || Src == Dest)
@@ -520,7 +527,8 @@ void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
 
 // Wrapper function to update a cell in CloseProximityTable
 void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest,
-                                      ExecutionCountType C, DataBytesType D) {
+                                      ExecutionCountType C,
+                                      DistanceInBytesType D) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
                   dbgs() << "Will update CPG between " << Src << " and " << Dest
                          << " with count " << DEBUG_PRINT_COUNT(C)
@@ -531,7 +539,7 @@ void CloseProximityBuilder::updateCPG(FieldNumType Src, FieldNumType Dest,
 // Wrapper function to update a cell in GoldCPT
 void CloseProximityBuilder::updateGoldCPG(FieldNumType Src, FieldNumType Dest,
                                           ExecutionCountType C,
-                                          DataBytesType D) {
+                                          DistanceInBytesType D) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
                   dbgs() << "Will update Gold CPG between " << Src << " and "
                          << Dest << " with count " << DEBUG_PRINT_COUNT(C)
@@ -585,7 +593,7 @@ void CloseProximityBuilder::updateGoldCPG(FieldNumType Src, FieldNumType Dest,
 // them.
 void CloseProximityBuilder::updateCPGBetweenNodes(
     FieldReferenceGraph::Node *From, FieldReferenceGraph::Node *To,
-    FieldReferenceGraph::Edge *Arc, ExecutionCountType C, DataBytesType D,
+    FieldReferenceGraph::Edge *Arc, ExecutionCountType C, DistanceInBytesType D,
     NodeSetType *CheckList) {
   if (To == NULL || To == From || CheckList->find(To) != CheckList->end())
     return;
