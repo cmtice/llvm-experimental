@@ -23,6 +23,7 @@
 #include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormattedStream.h"
@@ -48,9 +49,10 @@ typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
 typedef uint64_t ProfileCountType;
 typedef std::vector<FieldNumType> FieldNumArrayType;
 typedef double ExecutionCountType;
-typedef double DataBytesType;
+typedef double DistanceInBytesType;
 typedef std::unordered_set<const BasicBlock *> BasicBlockSetType;
-typedef std::pair<ExecutionCountType, DataBytesType> CloseProximityPairType;
+typedef std::pair<ExecutionCountType, DistanceInBytesType>
+    CloseProximityPairType;
 typedef std::vector<std::vector<CloseProximityPairType>>
     CloseProximityTableType;
 typedef std::pair<FieldNumType, FieldNumType> FieldPairType;
@@ -148,12 +150,11 @@ public:
   }
 
   /// Retrieve branch probability information of a branch
-  Optional<double> getBranchProbability(const BasicBlock *FromBB,
-                                        const BasicBlock *ToBB) const {
+  BranchProbability getBranchProbability(const BasicBlock *FromBB,
+                                         const BasicBlock *ToBB) const {
     assert(FromBB->getParent() == ToBB->getParent());
     Function *func = const_cast<Function *>(FromBB->getParent());
-    auto Prob = LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
-    return 1.0 * Prob.getNumerator() / Prob.getDenominator();
+    return LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
   }
 
   /// Summarizes all CallInst and InvokeInst into function declarations
@@ -431,21 +432,22 @@ public:
 
   /// This structure represents a collapsed entry in collapsed FRG
   struct Entry {
-    Entry(unsigned I, FieldNumType N, ExecutionCountType C, DataBytesType D)
+    Entry(unsigned I, FieldNumType N, ExecutionCountType C,
+          DistanceInBytesType D)
         : Id(I), FieldNum(N), ExecutionCount(C), DataSize(D) {}
     unsigned Id;
     FieldNumType FieldNum;
     ExecutionCountType ExecutionCount;
-    DataBytesType DataSize;
+    DistanceInBytesType DataSize;
   };
 
   /// This structure represents a general node in FRG
   struct Node {
-    Node(unsigned I, FieldNumType N, DataBytesType S)
+    Node(unsigned I, FieldNumType N, DistanceInBytesType S)
         : Id(I), FieldNum(N), Size(S), Visited(false), InSum(0), OutSum(0) {}
     unsigned Id;
     FieldNumType FieldNum;
-    DataBytesType Size;
+    DistanceInBytesType Size;
     bool Visited;
     ExecutionCountType InSum;
     ExecutionCountType OutSum;
@@ -456,7 +458,7 @@ public:
   /// This structure represents an edge in FRG, before or after collapsing
   struct Edge {
   public:
-    Edge(unsigned I, ExecutionCountType C, DataBytesType D)
+    Edge(unsigned I, ExecutionCountType C, DistanceInBytesType D)
         : Id(I), ExecutionCount(C), DataSize(D), Collapsed(false),
           LoopArc(false) {}
     void connectNodes(Node *From, Node *To) {
@@ -466,7 +468,7 @@ public:
     void reconnect(Node *From, Node *To);
     unsigned Id;
     ExecutionCountType ExecutionCount;
-    DataBytesType DataSize;
+    DistanceInBytesType DataSize;
     bool Collapsed;
     bool LoopArc;
     Node *FromNode;
@@ -478,15 +480,16 @@ public:
   /// This structure stores nodes in each basic block and is used to help
   /// building FRG
   struct BasicBlockHelperInfo {
-    BasicBlockHelperInfo() : RemainBytes(0), FirstNode(NULL), LastNode(NULL) {}
-    DataBytesType RemainBytes;
+    BasicBlockHelperInfo()
+        : RemainBytes(0), FirstNode(nullptr), LastNode(nullptr) {}
+    DistanceInBytesType RemainBytes;
     Node *FirstNode;
     Node *LastNode;
     BasicBlockSetType BackEdgeSet;
   };
 
 public:
-  FieldReferenceGraph(const Function *F) : Func(F), RootNode(NULL) {
+  FieldReferenceGraph(const Function *F) : Func(F), RootNode(nullptr) {
     NodeList.clear();
     EdgeList.clear();
     EntryList.clear();
@@ -526,15 +529,15 @@ public:
   /// The two functions are used to create a new node in the graph, unconnected
   /// with other nodes, and return the pointer to the Node
   /// %{
-  Node *createNewNode(FieldNumType FieldNum, DataBytesType S);
+  Node *createNewNode(FieldNumType FieldNum, DistanceInBytesType S);
   Node *createNewNode() { return createNewNode(0, 0); }
   /// %}
 
   /// The two functions are used to connect two nodes in FRG with or without
   /// given weight
   /// %{
-  void connectNodes(Node *From, Node *To, ExecutionCountType C, DataBytesType D,
-                    bool BackEdge = false);
+  void connectNodes(Node *From, Node *To, ExecutionCountType C,
+                    DistanceInBytesType D, bool BackEdge = false);
   void connectNodes(Node *From, Node *To) { connectNodes(From, To, 0, 0); }
   /// %}
 
@@ -549,7 +552,7 @@ public:
   void collapseNodeToEdge(Node *N, Edge *E);
 
   /// Copy a collapsed entry to a new edge
-  void moveCollapsedEntryToEdge(Entry *Entry, Edge *FromEdge, Edge *ToEdge);
+  void copyCollapsedEntryToEdge(Entry *Entry, Edge *ToEdge);
 
   /// For debug
   void debugPrint(raw_ostream &OS) const;
@@ -559,8 +562,12 @@ public:
 private:
   const Function *Func;
   Node *RootNode;
+  /// Container used to track all nodes allocated when building FRG
   std::vector<Node *> NodeList;
+  /// Container used to track all edges allocated when building FRG
   std::vector<Edge *> EdgeList;
+  /// Container used to track all entries allocated when building FRG
+  /// used to deallocate fastly instead of finding all entries in edges
   std::vector<Entry *> EntryList;
   std::unordered_map<const BasicBlock *, BasicBlockHelperInfo *> BBInfoMap;
 }; // end of class FieldReferenceGraph
@@ -609,6 +616,7 @@ public:
 
 private:
   const Module &CurrentModule;
+  const DataLayout &CurrentDataLayout;
   const StructFieldAccessManager *StructManager;
   const StructFieldAccessInfo *StructInfo;
   FieldNumType NumElements;
@@ -621,7 +629,7 @@ private:
 
 private:
   /// Calculate memory access data size in Bytes
-  DataBytesType getMemAccessDataSize(const Instruction *I) const;
+  DistanceInBytesType getMemAccessDataSize(const Instruction *I) const;
 
   /// Main function to detect and mark all backedges
   void detectBackEdges(const FieldReferenceGraph *FRG, const Function *F);
@@ -630,15 +638,15 @@ private:
   /// %{
   /// Update a specified CPT with given CP pair
   void updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
-                 DataBytesType D, CloseProximityTableType &CPT);
+                 DistanceInBytesType D, CloseProximityTableType &CPT);
 
   /// Update CloseProximityTable by calling updateCPT function
   void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
-                 DataBytesType D);
+                 DistanceInBytesType D);
 
   /// Update GoldCPT by calling updateCPT function
   void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
-                     DataBytesType D);
+                     DistanceInBytesType D);
   /// %}
 
   /// Functions used for building CP relations with brutal force, only used for
@@ -671,7 +679,7 @@ private:
   void updateCPGBetweenNodes(FieldReferenceGraph::Node *From,
                              FieldReferenceGraph::Node *To,
                              FieldReferenceGraph::Edge *Edge,
-                             ExecutionCountType C, DataBytesType D,
+                             ExecutionCountType C, DistanceInBytesType D,
                              NodeSetType *CheckList);
 
   /// Call the recursive function updateCPGBetweenNodes() to update CPG between

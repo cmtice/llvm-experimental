@@ -15,22 +15,25 @@
 // The pass is implemented as following steps:
 // 0. Prerequites: BlockFrequencyInfo and BranchProbabilityInfo
 // 1. Perform IR analysis to obtain and record all memory accesses on which
-// field
-//    of all structs defined in the program. This step involves interaction with
-//    class StructFieldAccessManager that calls functions in class
-//    StructFieldAccessInfo to complete IR analysis.
+//    field of all structs defined in the program. This step involves
+//    interaction with class StructFieldAccessManager that calls functions in
+//    class StructFieldAccessInfo to complete IR analysis.
 // 2. Apply filters to structs and gather function arguments info. This step
-// will
-//    filter out some structs due to safety or performance concernts to narrow
-//    down structs to be analyzed. It involves HotnessAnalyzer class.
+//    will filter out some structs due to safety or performance concernts to
+//    narrow down structs to be analyzed. It involves HotnessAnalyzer class.
 //    This step also summarizes function calls that takes field address as
 //    argument into function definitions to facilitate analysis.
 // 3. Build close proximity graph for every pair of fields of each struct. It
-// needs
-//    to interact with StructFieldAccessManager to retrieve info for each struct
-//    and create an object of CloseProximityBuilder to build CP relations.
-//    The CloseProximityBuilder needs to build FieldReferenceGraph object first
-//    to help build CP relations in steps.
+//    needs to interact with StructFieldAccessManager to retrieve info for each
+//    struct and create an object of CloseProximityBuilder to build CP
+//    relations. The CloseProximityBuilder needs to build FieldReferenceGraph
+//    object first to help build CP relations in steps.
+// 4. (Not implemented) Use the results of CP relations between fields and give
+//    suggestions to either reorder struct fields or split structs by grouping
+//    fields into smaller sub-structs. Depending on the flag specified by users,
+//    one or both of FieldReorderTransformAnalyzer or
+//    StructSplitTransformAnalyzer will be created to perform analysis and print
+//    suggestions.
 //
 // Meanwhile, this cpp file also implements the class of
 // StructFieldAccessManager. It works like an organizer of all the informations
@@ -100,7 +103,7 @@ class StructFieldCacheAnalysisAnnotatedWriter
     : public AssemblyAnnotationWriter {
 public:
   StructFieldCacheAnalysisAnnotatedWriter(
-      const StructFieldAccessManager *S = NULL)
+      const StructFieldAccessManager *S = nullptr)
       : StructManager(S) {}
 
   /// Override the base class function to print an annotate message after each
@@ -125,7 +128,7 @@ public:
   /// Instruction
   virtual void emitInstructionAnnot(const Instruction *I,
                                     formatted_raw_ostream &OS) {
-    if (StructManager == NULL)
+    if (StructManager == nullptr)
       return;
     if (auto pair = StructManager->getFieldAccessOnInstruction(I)) {
       OS.changeColor(raw_ostream::GREEN, false, false);
@@ -169,7 +172,7 @@ StructFieldAccessManager::createOrGetStructFieldAccessInfo(
     // FIXME: retrieve debug info of the struct first: auto* debugInfo =
     // retrieveDebugInfoForStruct(T);
     def = StructFieldAccessInfoMap[ST] =
-        new StructFieldAccessInfo(ST, SType, CurrentModule, this, NULL);
+        new StructFieldAccessInfo(ST, SType, CurrentModule, this, nullptr);
     return def;
   }
 }
@@ -177,13 +180,13 @@ StructFieldAccessManager::createOrGetStructFieldAccessInfo(
 StructFieldAccessInfo *
 StructFieldAccessManager::getStructFieldAccessInfo(const Type *T) const {
   if (!isa<StructType>(T))
-    return NULL;
+    return nullptr;
   auto *ST = cast<StructType>(T);
   auto ret = StructFieldAccessInfoMap.find(ST);
   if (ret != StructFieldAccessInfoMap.end())
     return ret->second;
   else
-    return NULL;
+    return nullptr;
 }
 
 Optional<StructInfoMapPairType>
