@@ -462,7 +462,8 @@ public:
   /// This structure stores nodes in each basic block and is used to help
   /// building FRG
   struct BasicBlockHelperInfo {
-    BasicBlockHelperInfo() : RemainBytes(0), FirstNode(NULL), LastNode(NULL) {}
+    BasicBlockHelperInfo()
+        : RemainBytes(0), FirstNode(nullptr), LastNode(nullptr) {}
     DistanceInBytesType RemainBytes;
     Node *FirstNode;
     Node *LastNode;
@@ -470,7 +471,7 @@ public:
   };
 
 public:
-  FieldReferenceGraph(const Function *F) : Func(F), RootNode(NULL) {
+  FieldReferenceGraph(const Function *F) : Func(F), RootNode(nullptr) {
     NodeList.clear();
     EdgeList.clear();
     EntryList.clear();
@@ -533,7 +534,7 @@ public:
   void collapseNodeToEdge(Node *N, Edge *E);
 
   /// Copy a collapsed entry to a new edge
-  void moveCollapsedEntryToEdge(Entry *Entry, Edge *FromEdge, Edge *ToEdge);
+  void copyCollapsedEntryToEdge(Entry *Entry, Edge *ToEdge);
 
   /// For debug
   void debugPrint(raw_ostream &OS) const;
@@ -543,8 +544,12 @@ public:
 private:
   const Function *Func;
   Node *RootNode;
+  /// Container used to track all nodes allocated when building FRG
   std::vector<Node *> NodeList;
+  /// Container used to track all edges allocated when building FRG
   std::vector<Edge *> EdgeList;
+  /// Container used to track all entries allocated when building FRG
+  /// used to deallocate fastly instead of finding all entries in edges
   std::vector<Entry *> EntryList;
   std::unordered_map<const BasicBlock *, BasicBlockHelperInfo *> BBInfoMap;
 }; // end of class FieldReferenceGraph
