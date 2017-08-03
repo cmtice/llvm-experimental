@@ -736,9 +736,13 @@ protected:
   FieldNumType NumElements;
   const DICompositeType *DebugInfo;
   std::vector<unsigned> FieldSizes;
+  /// Holds a mapping between LLVM struct fields and the fields in original
+  /// source code
   std::vector<FieldDebugInfo *> FieldDI;
   std::vector<std::vector<double>> CloseProximityRelations;
-  bool Eligibility; // If the struct is eligible for this kind of transformation
+  /// If the struct is eligible for this kind of transformation
+  bool Eligibility;
+  /// All remaining fields to be considered
   std::unordered_set<FieldNumType> FieldsToTransform;
 
 protected:
@@ -766,21 +770,26 @@ protected:
                        const DICompositeType *DI, bool OldType)
       : StructTransformAnalyzer(CM, ST, CPB, DI) {}
 
+  /// Hold a list of new ordering
   std::list<FieldNumType> NewOrder;
 
 private:
   virtual double calculateCloseProximity(FieldNumType Field1,
                                          FieldNumType Field2) const;
-  // Decide if two fields can fit within one cache block
+  /// Decide if two fields can fit within one cache block
   bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
-  // Calculate WCP for every pair of fields that can fit within a cache block
+
+  /// Calculate WCP for every pair of fields that can fit within a cache block
   double
   calculateWCPWithinCacheBlock(std::vector<FieldNumType> *CacheBlock) const;
-  // Calculate WCP for a sequence of fields
+
+  /// Calculate WCP for a sequence of fields
   double getWCP() const;
-  // Calculate WCP for a sequence of fields adding a field to the end
+
+  /// Calculate WCP for a sequence of fields adding a field to the end
   double estimateWCPAtBack(FieldNumType FieldNum);
-  // Calculate WCP for a sequence of fields adding a field to the front
+
+  /// Calculate WCP for a sequence of fields adding a field to the front
   double estimateWCPAtFront(FieldNumType FieldNum);
 }; // end of class FieldReorderAnalyzer
 
@@ -809,6 +818,8 @@ private:
 private:
   virtual double calculateCloseProximity(FieldNumType Field1,
                                          FieldNumType Field2) const;
+
+  /// Function to find maximum CP value of all remaining pairs of fields
   FieldPairType findMaxRemainCP() const;
 }; // end of class StructSplitAnalyzer
 
@@ -836,10 +847,10 @@ private:
   /// calling calculateFanOut()
   FieldNumType findMaxFanOut() const;
 
-  // Calculate WCP for a sequence of fields adding a field to the end
+  /// Calculate WCP for a sequence of fields adding a field to the end
   double estimateWCPAtBack(FieldNumType FieldNum);
 
-  // Calculate WCP for a sequence of fields adding a field to the front
+  /// Calculate WCP for a sequence of fields adding a field to the front
   double estimateWCPAtFront(FieldNumType FieldNum);
 }; // end of class OldFieldReorderAnalyzer
 

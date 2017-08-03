@@ -30,7 +30,7 @@
 // exponential that can complete with reasonable amount of time.
 //
 // Some of the algorithms in this file is derived from the following paper:
-//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
+//  M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
 //  in GCC”, Proceedings of the GCC Developers’ Summit,  Ottawa, 2005.
 //
 //===------------------------------------------------------------------------===//

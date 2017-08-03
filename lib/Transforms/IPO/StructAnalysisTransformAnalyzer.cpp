@@ -8,9 +8,29 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This file implements two StructTransformAnalyzer that are used to give
-// suggestions on field reordering and struct splitting
+// This file implements three classes derived from StructTransformAnalyzer that
+// are used to give suggestions on field reordering and struct splitting.
 //
+// StructTransformAnalyzer is the base class that requires two virtual
+// functions, makeSuggestions() and calculateCloseProximity() to be implemented
+// in derived class because different suggestion algorithms should have
+// different way to evaluate close proximity and different methods to make
+// suggestions.
+//
+// FieldReorderAnalyzer and OldFieldReorderAnalyzer are two derived classes that
+// implement two different reordering algorithms to give suggestions to reorder
+// fields of a given struct. See the code for details of the differences between
+// the two algorithms but generally, FieldReorderAnalyzer weighs cache behavior
+// when reordering fields, while OldFieldReorderAnalyzer uses greedy algorithm
+// to add fields first that generates potential benefits to the order.
+//
+// StructSplitAnalyzer is a derived class the implements a struct splitting
+// algorithm. It has some parameters to tune (defined as static global variables
+// at the beginning)
+//
+// The algorithms are derived from the following paper:
+//  M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
+//  in GCC”, Proceedings of the GCC Developers’ Summit,  Ottawa, 2005.
 //===------------------------------------------------------------------------===//
 
 #include "StructFieldCacheAnalysisImpl.h"
@@ -52,7 +72,8 @@ static cl::opt<unsigned> StructSplitMaxThresholdUpdates(
     cl::desc(
         "Max number of lowering threshold allowed when making suggestions"));
 
-// Functions for StructTransformAnalyzer
+// Functions of StructTransformAnalyzer
+// Constructor of base class
 StructTransformAnalyzer::StructTransformAnalyzer(
     const Module &CM, const StructType *ST, const CloseProximityBuilder *CPB,
     const DICompositeType *DI)
@@ -77,12 +98,22 @@ StructTransformAnalyzer::StructTransformAnalyzer(
   for (unsigned i = 0; i < NumElements; i++) {
     if (FieldDI[i] == nullptr) {
       outs() << "Field " << i + 1
-             << " is actually a padding, ignore in reordering...\n";
+             << " is actually a padding, ignore in suggestions...\n";
       FieldsToTransform.erase(i);
     }
   }
 }
 
+// Functions that maps LLVM struct types to struct definition in source
+// code. The function constructs an array FieldDI, where each index represents
+// each field in LLVM struct type and the content in each index is the debug
+// info (FieldDebugInfo type) that contains info like name of the field,
+// type of the field and actual field number (in case of padding). If a field
+// is a padding, we save a nullptr to the according index.
+// When DebugInfo of the struct is not retrieved (which is the
+// default case for now), we use some heuristics to guess which field
+// might be a padding. Other elements in FieldDI stores FieldDebugInfo type
+// that only contains a field number in original definition (excluding padding)
 void StructTransformAnalyzer::mapFieldsToDefinition() {
   FieldDI.resize(NumElements);
   if (DebugInfo) {
@@ -167,7 +198,12 @@ void StructTransformAnalyzer::mapFieldsToDefinition() {
   }
 }
 
-// Functions for FieldReorderAnalyzer
+// Functions of FieldReorderAnalyzer
+// Constructor of FieldReorderAnalyzer. Need to calculate CP relations
+// according to the new reordering algorithm and based on CloseProximityBuilder
+// passed in. Constructor also selects starting fields to put in to the NewOrder
+// that is going to be a recommended ordering. Other variables are initialized
+// in the base class constructor
 FieldReorderAnalyzer::FieldReorderAnalyzer(const Module &CM,
                                            const StructType *ST,
                                            const CloseProximityBuilder *CPB,
@@ -218,6 +254,12 @@ FieldReorderAnalyzer::FieldReorderAnalyzer(const Module &CM,
                          << "\n");
 }
 
+// Calculate Close Proximity in this reordering algorithm. This algorithm
+// takes in a pair of CP relation of (count, distance) and return a single
+// floating point number that is count/distance. Special cases is that when
+// two fields are the same, or they can't fit into the same cache block,
+// return 0. When distance is smaller than 1 byte, return the count as if
+// the distance is 1 byte.
 double
 FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
                                               FieldNumType Field2) const {
@@ -233,6 +275,13 @@ FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
   return Pair->first / Pair->second;
 }
 
+// Function to check if any part of the two fields can fit on the same
+// cache block or not. When two fields are too big to fit on one cache block,
+// we check if any part of the first field can be on the same cache block
+// of the second field.
+// This function is used to measure if it could be beneficial to put two
+// fields together because bringing one field will load another field
+// into the cache if the function returns true
 bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1,
                                                  FieldNumType Field2) const {
   if (FieldSizes[Field1] % CacheBlockSize == 0)
@@ -240,6 +289,9 @@ bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1,
   return true;
 }
 
+// Calculate weighted CP (WCP) value of all fields within a cache block
+// The function takes an array of fields that can fit on this cache block and
+// returns a sum of CP value between every pair of fields on the block
 double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(
     std::vector<FieldNumType> *CacheBlock) const {
   double WCP = 0;
@@ -259,6 +311,9 @@ double FieldReorderAnalyzer::calculateWCPWithinCacheBlock(
   return WCP;
 }
 
+// Calculate a total WCP of all fields that are already in NewOrder. Return
+// the total WCP. This function is used to measure if the current NewOrder
+// is a good ordering
 double FieldReorderAnalyzer::getWCP() const {
   unsigned CurrentCacheBlockSize = 0;
   std::vector<FieldNumType> CurrentCacheBlock;
@@ -306,6 +361,8 @@ double FieldReorderAnalyzer::getWCP() const {
   return WCP;
 }
 
+// Wrapper function to calculate potential WCP if put field FieldNum at
+// the back of NewOrder list
 double FieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum) {
   NewOrder.push_back(FieldNum);
   auto WCP = getWCP();
@@ -313,6 +370,8 @@ double FieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum) {
   return WCP;
 }
 
+// Wrapper function to calculate potential WCP if put field FieldNum at
+// the front of NewOrder list
 double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum) {
   NewOrder.push_front(FieldNum);
   auto WCP = getWCP();
@@ -320,6 +379,12 @@ double FieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum) {
   return WCP;
 }
 
+// Main function to make suggestions.
+// The algorithm is to find a pair of fields that has the largest CP value of
+// all fields and put them into NewOrder as seeds (already done in constructor)
+// Then try to insert all fields to either front or back of the list and see
+// which one can generate the best score (WCP) improvement. Repeat this
+// procedure until NewOrder list is established.
 void FieldReorderAnalyzer::makeSuggestions() {
   if (!Eligibility) {
     outs() << "Struct has too few fields or cold in profiling for reordering\n";
@@ -332,6 +397,7 @@ void FieldReorderAnalyzer::makeSuggestions() {
     bool InFront = false;
     MaxWCP = 0;
     for (auto &F : FieldsToTransform) {
+      // Check if it's better to insert F in the back
       auto WCP = estimateWCPAtBack(F);
       if (WCP > MaxWCP) {
         DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
@@ -344,6 +410,7 @@ void FieldReorderAnalyzer::makeSuggestions() {
         MaxField = F;
         InFront = false;
       }
+      // Check if it's better to insert F in the front
       WCP = estimateWCPAtFront(F);
       if (WCP > MaxWCP) {
         DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
@@ -371,12 +438,14 @@ void FieldReorderAnalyzer::makeSuggestions() {
     if (FieldDI[i])
       NewOrder.push_back(i);
   }
+
+  // Calculate the overall score of old ordering. Used to compare if it's worth
+  // to reorder fields
   auto OldWCP = getWCP();
   DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
                   dbgs() << "New WCP: " << DEBUG_PRINT_COUNT(MaxWCP)
                          << " vs Old WCP: " << DEBUG_PRINT_COUNT(OldWCP)
                          << "\n");
-  // assert(MaxWCP >= OldWCP || std::abs(OldWCP-MaxWCP)/OldWCP < 1e-3);
   auto Confidence = 100.0 * (MaxWCP - OldWCP) / OldWCP;
   if (Confidence > 100.0)
     Confidence = 100.0;
@@ -401,7 +470,10 @@ void FieldReorderAnalyzer::makeSuggestions() {
   }
 }
 
-// Functions for StructSplitAnalyzer
+// Functions of StructSplitAnalyzer
+// Constructor of StructSplitAnalyzer. Also need to calculate CP relations by
+// calling its calculateCloseProximity() functions. Other initializations
+// are performed by base class
 StructSplitAnalyzer::StructSplitAnalyzer(const Module &CM, const StructType *ST,
                                          const CloseProximityBuilder *CPB,
                                          const DICompositeType *DI)
@@ -438,6 +510,13 @@ StructSplitAnalyzer::StructSplitAnalyzer(const Module &CM, const StructType *ST,
   DEBUG_WITH_TYPE(DEBUG_TYPE_SPLIT, dbgs() << "Finish constructor\n");
 }
 
+// Function to calculate CP value based on CloseProximityBuilder passed in
+// Return a floating point value equals to a portion of the count part of
+// the CP relations. The portion (SizePenalty) is used to penalize two fields
+// with different sizes. (Derived from the paper). Special cases are
+// when distance of the pair is larger than a threshold (DistanceThreshold),
+// the pair is no longer considered "close" and same applies to when two
+// fields are too large (larger than MaxSize).
 double StructSplitAnalyzer::calculateCloseProximity(FieldNumType Field1,
                                                     FieldNumType Field2) const {
   auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
@@ -454,6 +533,8 @@ double StructSplitAnalyzer::calculateCloseProximity(FieldNumType Field1,
   return Pair->first / Ratio;
 }
 
+// Function to find maximum CP value of all pairs in remaining fields
+// Return a std::pair type of the two fields
 FieldPairType StructSplitAnalyzer::findMaxRemainCP() const {
   double MaxCP = 0;
   auto it = FieldsToTransform.begin();
@@ -477,6 +558,18 @@ FieldPairType StructSplitAnalyzer::findMaxRemainCP() const {
   return std::make_pair(Field1, Field2);
 }
 
+// Main functions to make suggestions on struct splitting
+// The algorithm is to greedily find a pair of fields that has the largest
+// CP value in remaining fields and group them together in a new sub-struct.
+// Then keep trying to find a remaing field that keeps the total size of
+// sub-struct smaller than MaxSize while the average CP value of the newly added
+// field with existing fields in the sub-struct is larger enough than a
+// threshold (in order to make sure fields in a sub-struct are similarly "close"
+// to each other). If we can't such a candidate field, it's done on this
+// sub-struct and we move on to create another sub-struct. If we can't find
+// a pair of fields with non-zero CP value to create sub-struct, meaning all
+// remaining fields are "far" to each other, we will create one single
+// sub-struct to hold all the remaining fields.
 void StructSplitAnalyzer::makeSuggestions() {
   if (!Eligibility) {
     outs() << "Struct has too few fields or cold in profiling for splitting\n";
@@ -597,6 +690,9 @@ void StructSplitAnalyzer::makeSuggestions() {
   }
 }
 
+// Functions of OldFieldReorderAnalyzer. Here "old" just means the algorithm
+// used to reorder fields is derived from prior work in GCC and not necessarily
+// mean it's deprecated or worse compared to the other FieldReorderAnalyzer
 OldFieldReorderAnalyzer::OldFieldReorderAnalyzer(
     const Module &CM, const StructType *ST, const CloseProximityBuilder *CPB,
     const DICompositeType *DI)
@@ -630,6 +726,9 @@ OldFieldReorderAnalyzer::OldFieldReorderAnalyzer(
   }
 }
 
+// Function to calculate CP values. In this algorithm, it interprets (count,
+// distance) as using count as it's CP value, if the distance is within a
+// predefined threshold.
 double
 OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
                                                  FieldNumType Field2) const {
@@ -645,6 +744,10 @@ OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
   return Pair->first;
 }
 
+// Function to calculate FanOut of a field. Here, FanOut means the sum of
+// CP values that this field can generate with all the other remaining fields.
+// It's used to measure a potential benefit of bringing this field into NewOrder
+// and it can provide more opportunites to bring other fields.
 double OldFieldReorderAnalyzer::calculateFanOut(FieldNumType FieldNum) const {
   double CPSum = 0;
   for (auto &F : FieldsToTransform) {
@@ -655,6 +758,7 @@ double OldFieldReorderAnalyzer::calculateFanOut(FieldNumType FieldNum) const {
   return CPSum;
 }
 
+// Function to find maximum FanOut among remaining fields
 FieldNumType OldFieldReorderAnalyzer::findMaxFanOut() const {
   assert(FieldsToTransform.size());
   double MaxFanOut = 0;
@@ -672,6 +776,8 @@ FieldNumType OldFieldReorderAnalyzer::findMaxFanOut() const {
   return MaxI;
 }
 
+// Function to estimate a potential score (WCP) if put the field at back
+// of NewOrder. Return a WCP value
 double OldFieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum) {
   // FIXME: This code is inefficient because of reverse() is called twice on the
   // list It's written like this to reuse the other function but can write
@@ -682,6 +788,8 @@ double OldFieldReorderAnalyzer::estimateWCPAtBack(FieldNumType FieldNum) {
   return WCP;
 }
 
+// Function to estimate a potential score (WCP) if put the field at front
+// of NewOrder. Return a WCP value
 double OldFieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum) {
   double WCP = 0;
   unsigned TotalSizes = 1;
@@ -691,6 +799,15 @@ double OldFieldReorderAnalyzer::estimateWCPAtFront(FieldNumType FieldNum) {
   }
   return WCP;
 }
+
+// Main function to make suggestions on field reordering.
+// The algorithm is to find a field that has the largest FanOut in the remaining
+// fields and put it in the NewOrder. Then iterate through all other fields and
+// see if putting it in front or back of NewOrder can generate largest WCP. If
+// the largest WCP of all remaining fields are zero, find a field with largest
+// FanOut again and put it in the front the order. (Put it in the back should
+// also be OK. Here we just follow the old GCC implementation). Repeat this
+// process until all fields are put into the NewOrder.
 void OldFieldReorderAnalyzer::makeSuggestions() {
   if (!Eligibility) {
     outs() << "Struct has too few fields or cold in profiling for reordering\n";
