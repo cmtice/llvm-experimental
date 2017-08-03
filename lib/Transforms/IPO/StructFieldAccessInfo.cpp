@@ -8,22 +8,26 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This file implements StructFieldAccessInfo that is used in
-// StructFieldCacheAnalysis pass.
+// This file implements class StructFieldAccessInfo and class HotnessAnalyzer
+//
+// Class StructFieldAccessInfo organizes all memory accesses or function calls
+// on each field of this struct type in the whole program. It provides
+// interfaces to StructFieldAccessManager to insert new field accesses info and
+// provides interfaces to StructFieldAccessManager and CloseProximityBuilder to
+// obtain which instruction accesses which field.
+//
+// Class HotnessAnalyzer provides interfaces for StructFieldAccessManager to
+// apply specific filters on all structs in the program according to hotness to
+// narrow down the analyze scope or get statistics.
 //
 //===------------------------------------------------------------------------===//
 
 #include "StructFieldCacheAnalysisImpl.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
 
 using namespace llvm;
-
-#define DEBUG_TYPE "struct-analysis"
-#define DEBUG_TYPE_IR "struct-analysis-IR"
-#define DEBUG_TYPE_STATS "struct-analysis-detailed-stats"
 
 static cl::opt<unsigned> HistogramSizeForStats(
     "struct-analysis-number-buckets", cl::init(10), cl::Hidden,
@@ -41,6 +45,7 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   assert(isa<LoadInst>(I) || isa<StoreInst>(I)); // Only loads and stores
   assert(LoadStoreFieldAccessMap.find(I) == LoadStoreFieldAccessMap.end());
   LoadStoreFieldAccessMap[I] = FieldNum;
+  FunctionsToAnalyze.insert(I->getParent()->getParent());
 }
 
 // Add a record of call/invoke Instruction I using field FieldNum as its
@@ -62,6 +67,7 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
     assert(CallSite->FunctionDeclaration == F);
     CallSite->insertCallInfo(Arg, FieldNum);
   }
+  // FIXME: add the function F to Functions to analyze
 }
 
 Optional<FieldNumType>
@@ -79,11 +85,6 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: "
                                         << *U << "\n");
   // Operand 0 should be a pointer to the struct
-  assert(isa<GetElementPtrInst>(U) || isa<GEPOperator>(U) ||
-         (isa<ConstantExpr>(U) &&
-          cast<ConstantExpr>(U)->getOpcode() == Instruction::GetElementPtr));
-  // Have to use getOpcode to check
-  // opcode of GetElementPtrConstantExpr because it's private to lib/IR
   auto *Op = U->getOperand(0);
   // Make sure Operand 0 is a struct type and matches the current struct type of
   // StructFieldAccessInfo
@@ -182,12 +183,6 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
         // Only support access struct through GEP for now
         if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
           ImmutableCallSite Call(Inst);
-          /*
-          if (isa<CallInst>(Inst))
-            Call = new ImmutableCallSite(cast<CallInst>(Inst));
-          else
-            Call = new ImmutableCallSite(cast<InvokeInst>(Inst));
-          */
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
                                              << "User is a call instruction\n");
           auto *F = Call.getCalledFunction();
@@ -288,8 +283,8 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
   }
 }
 
-ExecutionCountType StructFieldAccessInfo::calculateTotalHotness() const {
-  ExecutionCountType Hotness = 0;
+ProfileCountType StructFieldAccessInfo::calculateTotalHotness() const {
+  ProfileCountType Hotness = 0;
   auto IncrementHotness = [&](const Instruction *I) {
     auto Count = getExecutionCount(I);
     if (Count.hasValue())

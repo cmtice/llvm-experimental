@@ -8,9 +8,55 @@
 //
 //===------------------------------------------------------------------------===//
 //
-// This pass performs analysis on cache-aware structure field accesses based on
-// the following paper and reports recommendations on changes to make on the
-// source code to improve performance.
+// This file implements the main function of StructFieldCacheAnalysis pass. This
+// pass will analyze struct field access patterns in a given program and prints
+// recommendations on how to reorganize the structs to gain performance.
+//
+// The pass is implemented as following steps:
+// 0. Prerequites: BlockFrequencyInfo and BranchProbabilityInfo
+// 1. Perform IR analysis to obtain and record all memory accesses on which
+//    field of all structs defined in the program. This step involves
+//    interaction with class StructFieldAccessManager that calls functions in
+//    class StructFieldAccessInfo to complete IR analysis.
+// 2. Apply filters to structs and gather function arguments info. This step
+//    will filter out some structs due to safety or performance concernts to
+//    narrow down structs to be analyzed. It involves HotnessAnalyzer class.
+//    This step also summarizes function calls that takes field address as
+//    argument into function definitions to facilitate analysis.
+// 3. Build close proximity graph for every pair of fields of each struct. It
+//    needs to interact with StructFieldAccessManager to retrieve info for each
+//    struct and create an object of CloseProximityBuilder to build CP
+//    relations. The CloseProximityBuilder needs to build FieldReferenceGraph
+//    object first to help build CP relations in steps.
+// 4. (Not implemented) Use the results of CP relations between fields and give
+//    suggestions to either reorder struct fields or split structs by grouping
+//    fields into smaller sub-structs. Depending on the flag specified by users,
+//    one or both of FieldReorderTransformAnalyzer or
+//    StructSplitTransformAnalyzer will be created to perform analysis and print
+//    suggestions.
+//
+// Meanwhile, this cpp file also implements the class of
+// StructFieldAccessManager. It works like an organizer of all the informations
+// used in the analysis. It organizes all struct access information as class of
+// StructFieldAccessInfo per each struct with IR analysis and profiling info.
+// With the struct access info, it then processes the info by creating a
+// CloseProximityBuilder object for each struct and build close proximity for
+// each pair of struct fields, which provides important information in making
+// decision of struct reorganizations.
+//
+// There are other C++ files to complete this pass and they are organized as:
+// Header file: lib/Tranforms/IPO/StructFieldCacheAnalysisImpl.h
+//                    -- Includes definitions of all classes used in C++ files
+// C++ files: lib/Tranforms/IPO/StructFieldCacheAnalysis.cpp
+//            |   (Main file, defines main functions and
+//            StructFieldAccessManager)
+//            |
+//            |-- lib/Transforms/IPO/StructFieldAccessInfo.cpp
+//            |       (Implements StructFieldAccessInfo and HotnessAnalyzer)
+//            |-- lib/Transforms/IPO/StructAnalysisCloseProximity.cpp
+//                    (Implements CloseProximityBuilder and FieldReferenceGraph)
+//
+// The tool is derived from the following paper:
 //  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
 //  in GCC”, Proceedings
 //      of the GCC Developers’ Summit,  Ottawa, 2005.
@@ -30,14 +76,18 @@ static cl::opt<unsigned> MinimalAccessCountForAnalysis(
     "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
     cl::desc("Minimal access count to make the struct eligible for analysis"));
 
+static cl::opt<bool> PerformCodeAnalysisOnly(
+    "struct-analysis-IR-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the analysis after performing IR analysis"));
+
 namespace llvm {
 /// This class is inherited from AssemblyAnnotationWriter and used
-/// to print annotated information on IR. This class is private to
+/// to print annotated information on IR.
 class StructFieldCacheAnalysisAnnotatedWriter
     : public AssemblyAnnotationWriter {
 public:
   StructFieldCacheAnalysisAnnotatedWriter(
-      const StructFieldAccessManager *S = NULL)
+      const StructFieldAccessManager *S = nullptr)
       : StructManager(S) {}
 
   /// Override the base class function to print an annotate message after each
@@ -62,7 +112,7 @@ public:
   /// Instruction
   virtual void emitInstructionAnnot(const Instruction *I,
                                     formatted_raw_ostream &OS) {
-    if (StructManager == NULL)
+    if (StructManager == nullptr)
       return;
     if (auto pair = StructManager->getFieldAccessOnInstruction(I)) {
       OS.changeColor(raw_ostream::GREEN, false, false);
@@ -84,6 +134,17 @@ private:
 } // namespace llvm
 
 // Functions for StructFieldAccessManager
+StructFieldAccessManager::~StructFieldAccessManager() {
+  delete HotnessAnalyzer;
+  for (auto &it : StructFieldAccessInfoMap)
+    delete it.second;
+  for (auto &it : CloseProximityBuilderMap)
+    delete it.second;
+  StructFieldAccessInfoMap.clear();
+  CloseProximityBuilderMap.clear();
+  DEBUG(dbgs() << "Finish StructFieldAccessManager destructor\n");
+}
+
 StructFieldAccessInfo *
 StructFieldAccessManager::createOrGetStructFieldAccessInfo(
     const Type *T, const StructDefinitionType SType) {
@@ -95,7 +156,7 @@ StructFieldAccessManager::createOrGetStructFieldAccessInfo(
     // FIXME: retrieve debug info of the struct first: auto* debugInfo =
     // retrieveDebugInfoForStruct(T);
     def = StructFieldAccessInfoMap[ST] =
-        new StructFieldAccessInfo(ST, SType, CurrentModule, this, NULL);
+        new StructFieldAccessInfo(ST, SType, CurrentModule, this, nullptr);
     return def;
   }
 }
@@ -103,13 +164,13 @@ StructFieldAccessManager::createOrGetStructFieldAccessInfo(
 StructFieldAccessInfo *
 StructFieldAccessManager::getStructFieldAccessInfo(const Type *T) const {
   if (!isa<StructType>(T))
-    return NULL;
+    return nullptr;
   auto *ST = cast<StructType>(T);
   auto ret = StructFieldAccessInfoMap.find(ST);
   if (ret != StructFieldAccessInfoMap.end())
     return ret->second;
   else
-    return NULL;
+    return nullptr;
 }
 
 Optional<StructInfoMapPairType>
@@ -169,6 +230,14 @@ void StructFieldAccessManager::applyFiltersToStructs() {
   }
 }
 
+void StructFieldAccessManager::buildCloseProximityRelations() {
+  for (auto &it : StructFieldAccessInfoMap) {
+    auto *CPB = new CloseProximityBuilder(CurrentModule, this, it.second);
+    CPB->buildCloseProximityRelations();
+    CloseProximityBuilderMap[it.first] = CPB;
+  }
+}
+
 void StructFieldAccessManager::debugPrintAllStructAccesses() {
   dbgs() << "------------ Printing all struct accesses: ---------------- \n";
   for (auto &it : StructFieldAccessInfoMap) {
@@ -181,6 +250,24 @@ void StructFieldAccessManager::debugPrintAllStructAccesses() {
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintAllStructAccesses(dbgs());
+    dbgs().resetColor();
+  }
+  dbgs() << "----------------------------------------------------------- \n";
+}
+
+void StructFieldAccessManager::debugPrintAllCPGs() const {
+  dbgs() << "------------ Printing all CPGs: ------------------- \n";
+  for (auto &it : CloseProximityBuilderMap) {
+    dbgs().changeColor(raw_ostream::YELLOW);
+    auto *type = it.first;
+    assert(isa<StructType>(type));
+    if (dyn_cast<StructType>(type)->isLiteral()) {
+      dbgs() << "A literal struct has CPG: \n";
+    } else {
+      dbgs() << "Struct [" << type->getStructName() << "] has FRG: \n";
+    }
+    dbgs().changeColor(raw_ostream::GREEN);
+    it.second->debugPrintCloseProximityGraph(dbgs());
     dbgs().resetColor();
   }
   dbgs() << "----------------------------------------------------------- \n";
@@ -385,18 +472,30 @@ static void performIRAnalysis(Module &M,
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAnnotatedModule());
 }
 
+static void applyFilters(StructFieldAccessManager *StructManager) {
+  StructManager->summarizeFunctionCalls();
+  StructManager->applyFiltersToStructs();
+  StructManager->printStats();
+}
+
 static bool performStructFieldCacheAnalysis(
-    Module &M, function_ref<BlockFrequencyInfo *(Function &)> LookupBFI) {
+    Module &M, function_ref<BlockFrequencyInfo *(Function &)> LookupBFI,
+    function_ref<BranchProbabilityInfo *(Function &)> LookupBPI) {
   DEBUG(dbgs() << "Start of struct field cache analysis\n");
-  StructFieldAccessManager StructManager(M, LookupBFI);
+  StructFieldAccessManager StructManager(M, LookupBFI, LookupBPI);
   // Step 0 - retrieve debug info for all struct TODO: disable for now because
   // it's not supporting annonymous structs
-  // StructManager.retrieveDebugInfoForAllStructs();
   // Step 1 - perform IR analysis to collect info of all structs
   performIRAnalysis(M, &StructManager);
-  StructManager.summarizeFunctionCalls();
-  StructManager.applyFiltersToStructs();
-  StructManager.printStats();
+  // Step 2 - summarize function calls and apply filters
+  applyFilters(&StructManager);
+  // Step 3 - build and collapse Field Reference Graph and create Close
+  // Proximity Graph
+  if (!PerformCodeAnalysisOnly) {
+    StructManager.buildCloseProximityRelations();
+    // DEBUG(StructManager.debugPrintAllCPGs());
+    StructManager.debugPrintAllCPGs();
+  }
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }
@@ -423,6 +522,7 @@ INITIALIZE_PASS_BEGIN(StructFieldCacheAnalysisPass,
                       "struct-field-cache-analysis",
                       "Struct Field Cache Analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
 INITIALIZE_PASS_END(StructFieldCacheAnalysisPass, "struct-field-cache-analysis",
                     "Struct Field Cache Analysis", false, false)
 ModulePass *llvm::createStructFieldCacheAnalysisPass() {
@@ -436,7 +536,10 @@ PreservedAnalyses StructFieldCacheAnalysis::run(Module &M,
   auto LookupBFI = [&FAM](Function &F) {
     return &FAM.getResult<BlockFrequencyAnalysis>(F);
   };
-  if (!performStructFieldCacheAnalysis(M, LookupBFI))
+  auto LookupBPI = [&FAM](Function &F) {
+    return &FAM.getResult<BranchProbabilityAnalysis>(F);
+  };
+  if (!performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI))
     return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
@@ -445,5 +548,8 @@ bool StructFieldCacheAnalysisPass::runOnModule(Module &M) {
   auto LookupBFI = [this](Function &F) {
     return &this->getAnalysis<BlockFrequencyInfoWrapperPass>(F).getBFI();
   };
-  return performStructFieldCacheAnalysis(M, LookupBFI);
+  auto LookupBPI = [this](Function &F) {
+    return &this->getAnalysis<BranchProbabilityInfoWrapperPass>(F).getBPI();
+  };
+  return performStructFieldCacheAnalysis(M, LookupBFI, LookupBPI);
 }
