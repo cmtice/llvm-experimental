@@ -76,9 +76,9 @@ static cl::opt<unsigned> MinimalAccessCountForAnalysis(
     "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
     cl::desc("Minimal access count to make the struct eligible for analysis"));
 
-static cl::opt<bool>
-    PerformIROnly("struct-analysis-IR-only", cl::init(false), cl::Hidden,
-                  cl::desc("Stop the analysis after performing IR analysis"));
+static cl::opt<bool> PerformCodeAnalysisOnly(
+    "struct-analysis-IR-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the analysis after performing IR analysis"));
 
 namespace llvm {
 /// This class is inherited from AssemblyAnnotationWriter and used
@@ -491,7 +491,7 @@ static bool performStructFieldCacheAnalysis(
   applyFilters(&StructManager);
   // Step 3 - build and collapse Field Reference Graph and create Close
   // Proximity Graph
-  if (!PerformIROnly) {
+  if (!PerformCodeAnalysisOnly) {
     StructManager.buildCloseProximityRelations();
     // DEBUG(StructManager.debugPrintAllCPGs());
     StructManager.debugPrintAllCPGs();
