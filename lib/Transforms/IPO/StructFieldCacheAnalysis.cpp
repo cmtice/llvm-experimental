@@ -76,9 +76,9 @@ static cl::opt<unsigned> MinimalAccessCountForAnalysis(
     "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
     cl::desc("Minimal access count to make the struct eligible for analysis"));
 
-static cl::opt<bool>
-    PerformIROnly("struct-analysis-IR-only", cl::init(false), cl::Hidden,
-                  cl::desc("Stop the analysis after performing IR analysis"));
+static cl::opt<bool> PerformCodeAnalysisOnly(
+    "struct-analysis-IR-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the analysis after performing IR analysis"));
 
 static cl::opt<bool> PerformCPGOnly(
     "struct-analysis-CPG-only", cl::init(false), cl::Hidden,
@@ -534,7 +534,7 @@ static void applyFilters(StructFieldAccessManager *StructManager) {
 
 static void
 buildCloseProximityRelations(StructFieldAccessManager *StructManager) {
-  if (!PerformIROnly) {
+  if (!PerformCodeAnalysisOnly) {
     StructManager->buildCloseProximityRelations();
     if (PerformCPGOnly)
       StructManager->debugPrintAllCPGs();
@@ -568,6 +568,7 @@ static bool performStructFieldCacheAnalysis(
   buildCloseProximityRelations(&StructManager);
   // Step 4 - make suggestions
   giveSuggestions(&StructManager);
+
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }
