@@ -768,7 +768,12 @@ protected:
   FieldReorderAnalyzer(const Module &CM, const StructType *ST,
                        const CloseProximityBuilder *CPB,
                        const DICompositeType *DI, bool OldType)
-      : StructTransformAnalyzer(CM, ST, CPB, DI) {}
+      : StructTransformAnalyzer(CM, ST, CPB, DI) {
+    // Only OldFieldReorderAnalyzer is allowed to use this constructor
+    // It doesn't do anything but call the base StructTransformAnalyzer
+    // constructor
+    assert(OldType == true);
+  }
 
   /// Hold a list of new ordering
   std::list<FieldNumType> NewOrder;
@@ -776,8 +781,6 @@ protected:
 private:
   virtual double calculateCloseProximity(FieldNumType Field1,
                                          FieldNumType Field2) const;
-  /// Decide if two fields can fit within one cache block
-  bool canFitInOneCacheBlock(FieldNumType Field1, FieldNumType Field2) const;
 
   /// Calculate WCP for every pair of fields that can fit within a cache block
   double

@@ -286,6 +286,11 @@ void StructFieldAccessManager::suggestStructSplitting() {
     } else {
       outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
     }
+    auto Hotness = HotnessAnalyzer->getHotness(type);
+    assert(Hotness);
+    outs() << " (Hotness "
+           << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
+           << "% of hottest struct):\n";
     auto *SSA = new StructSplitAnalyzer(CurrentModule, type, it.second, NULL);
     SSA->makeSuggestions();
   }

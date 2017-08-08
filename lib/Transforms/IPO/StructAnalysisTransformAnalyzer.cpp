@@ -118,36 +118,43 @@ void StructTransformAnalyzer::mapFieldsToDefinition() {
   FieldDI.resize(NumElements);
   if (DebugInfo) {
     // Not actually using this part because DebugInfo can't be correctly
-    // retrieved now
+    // retrieved now; Also this code has never been executed and might be broken
+    // leave here for future references
     assert(DebugInfo->getElements().size() <= NumElements);
     FieldNumType FieldNum = 0;
     for (unsigned i = 0; i < DebugInfo->getElements().size(); i++) {
+      // Find a field in debug info and find a matching field in LLVM
+      // struct type
       DINode *node = DebugInfo->getElements()[i];
       assert(node && isa<DIDerivedType>(node) &&
              dyn_cast<DIDerivedType>(node)->getTag() ==
                  dwarf::Tag::DW_TAG_member);
       Metadata *T = dyn_cast<DIDerivedType>(node)->getBaseType();
       assert(T && isa<DIType>(T));
-      auto Size =
-          dyn_cast<DIType>(T)->getSizeInBits() / 8 != FieldSizes[FieldNum];
-      if (Size == 0) {
+      auto Size = dyn_cast<DIType>(T)->getSizeInBits() / 8;
+      // Check if the current size of FieldNum in LLVM definitions matches
+      // the debug info definition
+      while (Size != FieldSizes[FieldNum] && FieldNum < NumElements) {
+        // The current FieldNum has to be an array to be a padding
         if (dyn_cast<DIType>(T)->getTag() ==
             dwarf::Tag::DW_TAG_structure_type) {
           assert(isa<DICompositeType>(T));
         }
-      }
-      while (Size && FieldNum < NumElements) {
-        DEBUG_WITH_TYPE(
-            DEBUG_TYPE_REORDER,
-            dbgs() << "Field " << FieldNum + 1
-                   << " might be a padding because its size is "
-                   << FieldSizes[FieldNum] << " Bytes but the actual field is "
-                   << dyn_cast<DIType>(T)->getSizeInBits() / 8 << " Bytes\n");
+        DEBUG_WITH_TYPE(DEBUG_TYPE,
+                        dbgs() << "Field " << FieldNum + 1
+                               << " might be a padding because its size is "
+                               << FieldSizes[FieldNum]
+                               << " Bytes but the actual field is " << Size
+                               << " Bytes\n");
+        // Mark this FieldNum as a padding
         FieldDI[FieldNum] = nullptr;
+        // Move on the next FieldNum to check if we can find a match
         FieldNum++;
+        Size = dyn_cast<DIType>(T)->getSizeInBits() / 8;
       }
+      // There has to be a FieldNum that can match the size of current field
+      // in debug info
       assert(FieldNum < NumElements);
-      assert(dyn_cast<DIType>(T)->getSizeInBits() / 8 == FieldSizes[FieldNum]);
       DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs()
                                               << *dyn_cast<DIType>(T) << "\n");
       FieldDI[FieldNum] =
@@ -265,28 +272,12 @@ FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
                                               FieldNumType Field2) const {
   if (Field1 == Field2)
     return 0;
-  if (!canFitInOneCacheBlock(Field1, Field2))
-    return 0;
   auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
   if (Pair->first < 1e-3)
     return 0;
   if (Pair->second < 1)
     return Pair->first;
   return Pair->first / Pair->second;
-}
-
-// Function to check if any part of the two fields can fit on the same
-// cache block or not. When two fields are too big to fit on one cache block,
-// we check if any part of the first field can be on the same cache block
-// of the second field.
-// This function is used to measure if it could be beneficial to put two
-// fields together because bringing one field will load another field
-// into the cache if the function returns true
-bool FieldReorderAnalyzer::canFitInOneCacheBlock(FieldNumType Field1,
-                                                 FieldNumType Field2) const {
-  if (FieldSizes[Field1] % CacheBlockSize == 0)
-    return false;
-  return true;
 }
 
 // Calculate weighted CP (WCP) value of all fields within a cache block
@@ -431,8 +422,9 @@ void FieldReorderAnalyzer::makeSuggestions() {
     FieldsToTransform.erase(MaxField);
   }
 
-  // Print suggestions
+  // Save the calculate order to BestOrder
   std::list<FieldNumType> BestOrder(NewOrder);
+  // Create a new NewOrder with original field ordering to compare scores
   NewOrder.clear();
   for (unsigned i = 0; i < NumElements; i++) {
     if (FieldDI[i])
