@@ -28,12 +28,11 @@
 //    struct and create an object of CloseProximityBuilder to build CP
 //    relations. The CloseProximityBuilder needs to build FieldReferenceGraph
 //    object first to help build CP relations in steps.
-// 4. (Not implemented) Use the results of CP relations between fields and give
-//    suggestions to either reorder struct fields or split structs by grouping
-//    fields into smaller sub-structs. Depending on the flag specified by users,
-//    one or both of FieldReorderTransformAnalyzer or
-//    StructSplitTransformAnalyzer will be created to perform analysis and print
-//    suggestions.
+// 4. Use the results of CP relations between fields and give suggestions to
+//    either reorder struct fields or split structs by grouping fields into
+//    smaller sub-structs. Depending on the flag specified by users, one or
+//    both of FieldReorderTransformAnalyzer or StructSplitTransformAnalyzer
+//    will be created to perform analysis and print suggestions.
 //
 // Meanwhile, this cpp file also implements the class of
 // StructFieldAccessManager. It works like an organizer of all the informations
@@ -54,7 +53,9 @@
 //            |-- lib/Transforms/IPO/StructFieldAccessInfo.cpp
 //            |       (Implements StructFieldAccessInfo and HotnessAnalyzer)
 //            |-- lib/Transforms/IPO/StructAnalysisCloseProximity.cpp
-//                    (Implements CloseProximityBuilder and FieldReferenceGraph)
+//            |       (Implements CloseProximityBuilder and FieldReferenceGraph)
+//            |-- lib/Transforms/IPO/StructTransformAnalyzer.cpp
+//                    (Implements FieldReorderAnalyzer and StructSplitAnalyzer)
 //
 // The tool is derived from the following paper:
 //  M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization

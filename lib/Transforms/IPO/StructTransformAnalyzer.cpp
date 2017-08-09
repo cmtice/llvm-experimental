@@ -1,4 +1,4 @@
-// lib/Tranforms/IPO/StructAnalysisTransformAnalyzer.cpp - Performs Cache-Aware
+// lib/Tranforms/IPO/StructTransformAnalyzer.cpp - Performs Cache-Aware
 // Structure Analysis-*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -49,28 +49,36 @@ static cl::opt<unsigned>
                    cl::desc("Set cache block size for the analysis"));
 
 // Parameter tuning for struct split
-static cl::opt<unsigned>
-    StructSplitColdRatio("struct-analysis-split-cold-ratio", cl::init(5),
-                         cl::Hidden,
-                         cl::desc("Set COLD_RATIO in struct split algorithm"));
+static cl::opt<unsigned> StructSplitColdRatio(
+    "struct-analysis-split-cold-ratio", cl::init(5), cl::Hidden,
+    cl::desc("Set a ratio of the maximum CP relation of the current "
+             "sub-struct; Below it means it is not benefiical to include the "
+             "field into the current sub-struct"));
 
 static cl::opt<unsigned> StructSplitDistanceThreshold(
     "struct-analysis-split-distance-threshold", cl::init(120), cl::Hidden,
-    cl::desc("Set DISTANCE_THRESHOLD in struct split algorithm"));
+    cl::desc("Set a threshold that if two fields have larger distance, they "
+             "will be classified as no relations during the struct splitting "
+             "algorithm"));
 
-static cl::opt<unsigned>
-    StructSplitMaxSize("struct-analysis-split-max-size", cl::init(32),
-                       cl::Hidden,
-                       cl::desc("Set MAX_SIZE in struct split algorithm"));
+static cl::opt<unsigned> StructSplitMaxSize(
+    "struct-analysis-split-max-size", cl::init(32), cl::Hidden,
+    cl::desc("Set limit size of each sub-struct in struct split algorithm"));
 
 static cl::opt<unsigned> StructSplitSizePenalty(
     "struct-analysis-split-size-penalty", cl::init(20), cl::Hidden,
-    cl::desc("Set SIZE_PENALTY in struct split algorithm"));
+    cl::desc("Set the penalty of two fields with different sizes in struct "
+             "split algorithm"));
 
 static cl::opt<unsigned> StructSplitMaxThresholdUpdates(
     "struct-analysis-split-max-threshold-updates", cl::init(3), cl::Hidden,
     cl::desc(
         "Max number of lowering threshold allowed when making suggestions"));
+
+// Utility functions
+// Function to check if a double variable is small enough to be considered
+// close to zero
+static bool isCloseToZero(double Number) { return (Number < 1e-3); }
 
 // Functions of StructTransformAnalyzer
 // Constructor of base class
@@ -79,12 +87,9 @@ StructTransformAnalyzer::StructTransformAnalyzer(
     const DICompositeType *DI)
     : StructureType(ST), CPBuilder(CPB),
       NumElements(StructureType->getNumElements()), DebugInfo(DI),
-      Eligibility(true) {
-  if (NumElements <= 2) {
-    Eligibility = false;
-  }
-  // Calculate field sizes and establish a set of all fields considered to
-  // transform
+      Eligibility(NumElements > 2) {
+  // Calculate field sizes and establish a set of all fields considered for
+  // transformation
   FieldSizes.resize(NumElements);
   for (unsigned i = 0; i < NumElements; i++) {
     FieldSizes[i] =
@@ -116,92 +121,114 @@ StructTransformAnalyzer::StructTransformAnalyzer(
 // that only contains a field number in original definition (excluding padding)
 void StructTransformAnalyzer::mapFieldsToDefinition() {
   FieldDI.resize(NumElements);
-  if (DebugInfo) {
-    // Not actually using this part because DebugInfo can't be correctly
-    // retrieved now; Also this code has never been executed and might be broken
-    // leave here for future references
-    assert(DebugInfo->getElements().size() <= NumElements);
-    FieldNumType FieldNum = 0;
-    for (unsigned i = 0; i < DebugInfo->getElements().size(); i++) {
-      // Find a field in debug info and find a matching field in LLVM
-      // struct type
-      DINode *node = DebugInfo->getElements()[i];
-      assert(node && isa<DIDerivedType>(node) &&
-             dyn_cast<DIDerivedType>(node)->getTag() ==
-                 dwarf::Tag::DW_TAG_member);
-      Metadata *T = dyn_cast<DIDerivedType>(node)->getBaseType();
-      assert(T && isa<DIType>(T));
-      auto Size = dyn_cast<DIType>(T)->getSizeInBits() / 8;
-      // Check if the current size of FieldNum in LLVM definitions matches
-      // the debug info definition
-      while (Size != FieldSizes[FieldNum] && FieldNum < NumElements) {
-        // The current FieldNum has to be an array to be a padding
-        if (dyn_cast<DIType>(T)->getTag() ==
-            dwarf::Tag::DW_TAG_structure_type) {
-          assert(isa<DICompositeType>(T));
-        }
-        DEBUG_WITH_TYPE(DEBUG_TYPE,
-                        dbgs() << "Field " << FieldNum + 1
-                               << " might be a padding because its size is "
-                               << FieldSizes[FieldNum]
-                               << " Bytes but the actual field is " << Size
-                               << " Bytes\n");
-        // Mark this FieldNum as a padding
-        FieldDI[FieldNum] = nullptr;
-        // Move on the next FieldNum to check if we can find a match
-        FieldNum++;
-        Size = dyn_cast<DIType>(T)->getSizeInBits() / 8;
+  assert(DebugInfo == nullptr);
+// If there's DebugInfo for this struct retrieved, one could possibly go over
+// all the fields in DebugInfo in this struct and for each field in DebugInfo,
+// check if a field (FieldNum) in LLVM StructType has the same size.
+// If so, the two will be the same field and create a new FieldDebugInfo with
+// the information in DebugInfo and save to FieldDI[FieldNum]. If not, the field
+// FieldNum might be a padding so save a nullptr to FieldDI and move on to check
+// the next FieldNum
+#if 0
+  // Not actually using this part because DebugInfo can't be correctly
+  // retrieved now; Also this code has never been executed and might be broken
+  // leave here for future references
+  assert(DebugInfo->getElements().size() <= NumElements);
+  FieldNumType FieldNum = 0;
+  for (unsigned i = 0; i < DebugInfo->getElements().size(); i++) {
+    // Find a field in debug info and find a matching field in LLVM
+    // struct type
+    DINode *node = DebugInfo->getElements()[i];
+    assert(node && isa<DIDerivedType>(node) &&
+           dyn_cast<DIDerivedType>(node)->getTag() ==
+           dwarf::Tag::DW_TAG_member);
+    Metadata *T = dyn_cast<DIDerivedType>(node)->getBaseType();
+    assert(T && isa<DIType>(T));
+    auto Size = dyn_cast<DIType>(T)->getSizeInBits() / 8;
+    // Check if the current size of FieldNum in LLVM definitions matches
+    // the debug info definition
+    while (Size != FieldSizes[FieldNum] && FieldNum < NumElements) {
+      // The current FieldNum has to be an array to be a padding
+      if (dyn_cast<DIType>(T)->getTag() ==
+          dwarf::Tag::DW_TAG_structure_type) {
+        assert(isa<DICompositeType>(T));
       }
-      // There has to be a FieldNum that can match the size of current field
-      // in debug info
-      assert(FieldNum < NumElements);
-      DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs()
-                                              << *dyn_cast<DIType>(T) << "\n");
-      FieldDI[FieldNum] =
-          new FieldDebugInfo(i, dyn_cast<DIDerivedType>(node)->getName(),
-                             dyn_cast<DIType>(T)->getName());
+      DEBUG_WITH_TYPE(DEBUG_TYPE,
+                      dbgs() << "Field " << FieldNum + 1
+                      << " might be a padding because its size is "
+                      << FieldSizes[FieldNum]
+                      << " Bytes but the actual field is " << Size
+                      << " Bytes\n");
+      // Mark this FieldNum as a padding
+      FieldDI[FieldNum] = nullptr;
+      // Move on the next FieldNum to check if we can find a match
       FieldNum++;
+      Size = dyn_cast<DIType>(T)->getSizeInBits() / 8;
     }
-  } else {
-    unsigned Address;
-    unsigned FieldNum = 0;
+    // There has to be a FieldNum that can match the size of current field
+    // in debug info
+    assert(FieldNum < NumElements);
+    DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER, dbgs()
+                    << *dyn_cast<DIType>(T) << "\n");
+    FieldDI[FieldNum] =
+        new FieldDebugInfo(i, dyn_cast<DIDerivedType>(node)->getName(),
+                           dyn_cast<DIType>(T)->getName());
+    FieldNum++;
+  }
+#endif
+  auto checkNoCPRelationWithOtherFields = [&](unsigned Idx) {
+    unsigned MaxCP = 0;
     for (unsigned i = 0; i < NumElements; i++) {
-      auto *Ty = StructureType->getElementType(i);
-      if (!Ty->isArrayTy()) {
-        FieldDI[i] = new FieldDebugInfo(FieldNum++);
-        Address += FieldSizes[i];
-      } else {
-        // ArrayTy is suspicious to be a padding
-        if ((i < NumElements - 1 && FieldSizes[i] > FieldSizes[i + 1]) ||
-            (i == NumElements - 1 && FieldSizes[i] > FieldSizes[i - 1]))
-          // Padding can't be larger than the field before or after
-          FieldDI[i] = new FieldDebugInfo(FieldNum++);
-        else if ((i < NumElements - 1 && Address % FieldSizes[i + 1] != 0 &&
-                  (Address + FieldSizes[i]) % FieldSizes[i + 1] == 0) ||
-                 (i == NumElements - 1 && Address % FieldSizes[i - 1] != 0 &&
-                  (Address + FieldSizes[i]) % FieldSizes[i - 1] == 0)) {
-          // If remove this field, the next/previous field is not aligned and
-          // add this field, it is aligned, it's likely to be a padding
-          unsigned MaxWCP = 0;
-          dbgs() << "Considering F" << i + 1 << "\n";
-          for (unsigned j = 0; j < NumElements; j++) {
-            auto *Pair = CPBuilder->getCloseProximityPair(i, j);
-            dbgs() << "(" << Pair->first << "," << Pair->second << ")\n";
-            if (Pair->first > MaxWCP)
-              MaxWCP = Pair->first;
-          }
-          if (MaxWCP != 0)
-            FieldDI[i] = new FieldDebugInfo(FieldNum++);
-          else
-            // This is highly likely to be a padding because there's no WCP with
-            // other fields
-            FieldDI[i] = nullptr;
-        } else {
-          FieldDI[i] = new FieldDebugInfo(FieldNum++);
-        }
-        Address += FieldSizes[i];
-      }
+      auto *Pair = CPBuilder->getCloseProximityPair(Idx, i);
+      if (Pair->first > MaxCP)
+        MaxCP = Pair->first;
     }
+    return isCloseToZero(MaxCP);
+  };
+
+  auto checkAddressAlignmentWithoutTheField = [&](unsigned AddressOffset,
+                                                  unsigned Idx) {
+    // Check if the current field is suspicious to be a padding:
+    // Return true if the next field is NOT aligned without this field and IS
+    // aligned with the field. For the last field, check its previous field
+    return (
+        (Idx < NumElements - 1 && AddressOffset % FieldSizes[Idx + 1] != 0 &&
+         (AddressOffset + FieldSizes[Idx]) % FieldSizes[Idx + 1] == 0) ||
+        (Idx == NumElements - 1 && AddressOffset % FieldSizes[Idx - 1] != 0 &&
+         (AddressOffset + FieldSizes[Idx]) % FieldSizes[Idx - 1] == 0));
+  };
+
+  auto checkFieldSmallerThanNeighbors = [&](unsigned Idx) {
+    // If the field is not the last field, check if it's smaller than the next
+    // field If the field is the last field, check if it's smaller than the
+    // previous field.
+    return ((Idx < NumElements - 1 && FieldSizes[Idx] <= FieldSizes[Idx + 1]) ||
+            (Idx == NumElements - 1 && FieldSizes[Idx] <= FieldSizes[Idx - 1]));
+  };
+
+  unsigned AddressOffset = 0;
+  unsigned FieldNum = 0;
+  // The loop checks if a field i in StructType can be a padding or not
+  // If it's a padding, assign FieldDI[i] as nullptr; otherwise, create
+  // a FieldDebugInfo storing a possible FieldNum in the definition in
+  // source code
+  for (unsigned i = 0; i < NumElements; i++) {
+    auto *Ty = StructureType->getElementType(i);
+    if (Ty->isArrayTy() && checkNoCPRelationWithOtherFields(i) &&
+        checkAddressAlignmentWithoutTheField(AddressOffset, i) &&
+        checkFieldSmallerThanNeighbors(i)) {
+      // Only ArrayTy can be a padding, as well as:
+      // (1) the field has no CP relation with all other fields
+      // (2) the field that it's possibly padding for is not aligned without the
+      // field (3) its size is smaller than the field it's possibly padding for
+      FieldDI[i] = nullptr;
+    } else {
+      // Only ArrayTy can be a padding, other types is safe. Create a
+      // new FieldDebugInfo showing the current field maps to FieldNum
+      // in the struct definition
+      FieldDI[i] = new FieldDebugInfo(FieldNum++);
+    }
+    AddressOffset += FieldSizes[i];
   }
 }
 
@@ -235,7 +262,7 @@ FieldReorderAnalyzer::FieldReorderAnalyzer(const Module &CM,
       }
     }
   }
-  if (MaxWCP < 1e-3) {
+  if (isCloseToZero(MaxWCP)) {
     Eligibility = false;
     return;
   }
@@ -273,7 +300,7 @@ FieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
   if (Field1 == Field2)
     return 0;
   auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
-  if (Pair->first < 1e-3)
+  if (isCloseToZero(Pair->first))
     return 0;
   if (Pair->second < 1)
     return Pair->first;
@@ -705,7 +732,7 @@ OldFieldReorderAnalyzer::OldFieldReorderAnalyzer(
         MaxWCP = CloseProximityRelations[i][j];
     }
   }
-  if (MaxWCP < 1e-3) {
+  if (isCloseToZero(MaxWCP)) {
     Eligibility = false;
     return;
   }
@@ -729,7 +756,7 @@ OldFieldReorderAnalyzer::calculateCloseProximity(FieldNumType Field1,
     // But we ignore this
     return 0;
   auto *Pair = CPBuilder->getCloseProximityPair(Field1, Field2);
-  if (Pair->first < 1e-3)
+  if (isCloseToZero(Pair->first))
     return 0;
   if (Pair->second > DistanceThreshold)
     return 0;
@@ -830,7 +857,7 @@ void OldFieldReorderAnalyzer::makeSuggestions() {
       }
     }
 
-    if (MaxWCP < 1e-3) {
+    if (isCloseToZero(MaxWCP)) {
       DEBUG_WITH_TYPE(DEBUG_TYPE_REORDER,
                       dbgs() << "No Field contributes to existing order\n");
       // If none of the remaining field can contribute to existing order, start

@@ -72,12 +72,11 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
 
 Optional<FieldNumType>
 StructFieldAccessInfo::getAccessFieldNum(const Instruction *I) const {
-  Optional<FieldNumType> ret;
   auto it = LoadStoreFieldAccessMap.find(I);
   if (it != LoadStoreFieldAccessMap.end()) {
-    ret = it->second;
+    return it->second;
   }
-  return ret;
+  return None;
 }
 
 FieldNumType
