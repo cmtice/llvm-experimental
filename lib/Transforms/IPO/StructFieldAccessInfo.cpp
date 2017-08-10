@@ -29,13 +29,16 @@
 
 using namespace llvm;
 
-static cl::opt<unsigned> HistogramSizeForStats(
-    "struct-analysis-number-buckets", cl::init(10), cl::Hidden,
-    cl::desc("Number of buckets used to analyze struct hotness"));
+static cl::opt<unsigned>
+    HistogramSizeForStats("struct-analysis-number-buckets", cl::init(10),
+                          cl::Hidden,
+                          cl::desc("Number of buckets used in the histogram "
+                                   "for analyzing struct hotness"));
 
 static cl::opt<bool> FilterOutZeroHotness(
     "struct-analysis-filter-zero-hotness", cl::init(false), cl::Hidden,
-    cl::desc("If true, do not analyze struct with zero hotness"));
+    cl::desc(
+        "If true, do not include structs with zero hotness for suggestions"));
 
 static cl::opt<unsigned> HotnessCutoffRatio(
     "struct-analysis-hotness-cutoff", cl::init(0), cl::Hidden,
@@ -84,31 +87,29 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   FunctionsToAnalyze.insert(F);
 }
 
-Optional<FieldNumType> StructFieldAccessInfo::getHottestArgFieldMapping(
+// Function to obtain if the argument is mapped to a field uniquely.
+// Return the field number if the argument has a mapping to a field and
+// the hotness is non-zero. Otherwise, return None type of Optional
+Optional<FieldNumType> StructFieldAccessInfo::getUniqueArgFieldMapping(
     FunctionCallInfoSummary *FuncSummary, ArgNumType ArgNum) const {
-  ProfileCountType MaxHotness = 0;
-  FieldNumType FieldWithMaxHotess;
-  Optional<FieldNumType> ret;
   if (FuncSummary->AllArgFieldMappings.size() > 1)
-    return ret;
-  for (auto *ArgFieldMapping : FuncSummary->AllArgFieldMappings) {
-    assert(ArgNum < ArgFieldMapping->size());
-    auto &FieldAccessPair = (*ArgFieldMapping)[ArgNum];
-    // Only check the hotness info if FieldNum of this ArgNum is none-zero
-    if (FieldAccessPair.first > 0) {
-      if (FieldAccessPair.second > MaxHotness) {
-        // Update max hotness
-        FieldWithMaxHotess = FieldAccessPair.first;
-        MaxHotness = FieldAccessPair.second;
-      }
-    }
-  }
-  if (MaxHotness > 0) {
-    ret = FieldWithMaxHotess;
-  }
-  return ret;
+    return None;
+  auto *ArgFieldMapping = FuncSummary->AllArgFieldMappings[0];
+  assert(ArgNum < ArgFieldMapping->size());
+  auto &FieldAccessPair = (*ArgFieldMapping)[ArgNum];
+  // Only check the hotness info if FieldNum of this ArgNum is none-zero
+  if (FieldAccessPair.first > 0 && FieldAccessPair.second > 0)
+    return FieldAccessPair.first;
+  return None;
 }
 
+// Function to check if the instruction is an access to any field or
+// an argument of the function. If it accesses a field number, i.e. it's
+// stored in LoadStoreFieldAccessMap, the field number will be written
+// onto the reference of AccessedFieldNum as return value. Otherwise,
+// if it access a function argument and it has a unique mapping to a
+// field number, return the field number. Otherwise, return the argument
+// number by assigning it to the reference of AccessedArgNum
 void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
     const Instruction *I, Optional<FieldNumType> &AccessedFieldNum,
     Optional<ArgNumType> &AccessedArgNum) const {
@@ -127,7 +128,7 @@ void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
     if (FuncIter == FunctionCallInfoMap.end())
       return;
     if (auto FieldNum =
-            getHottestArgFieldMapping(FuncIter->second, ArgNum.getValue())) {
+            getUniqueArgFieldMapping(FuncIter->second, ArgNum.getValue())) {
       // If there's only one field can be the argument, return the FieldNum
       // and will be treated as a normal field
       AccessedFieldNum = FieldNum;
@@ -138,6 +139,8 @@ void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
   }
 }
 
+// Given a GEP instruction/operator/constant expr, calculate which field address
+// it calculates. Return the field number.
 FieldNumType
 StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Calculating field number from GEP: "
@@ -200,6 +203,9 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   }
 }
 
+// Given a GEP instruction/operator/contant expr, call
+// addFieldAccessFromGEPOrBitcast() to add the load or store users to the
+// field access map
 void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                   dbgs() << "Analyze all users of GEP: " << *U << "\n");
@@ -214,6 +220,8 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
   addFieldAccessFromGEPOrBitcast(U, FieldLoc);
 }
 
+// Core function to find load/store users from a GEP instruction/operator
+// or a bitcast instruction/operator.
 void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
     const User *U, FieldNumType FieldLoc) {
   for (auto *User : U->users()) {
@@ -252,6 +260,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
                          DS_GepPassedIntoIndirectFunc);
           }
         } else if (isa<BitCastInst>(Inst))
+          // Recursively call the function itself to peel one level of bitcast
           addFieldAccessFromGEPOrBitcast(Inst, FieldLoc);
         else
           // TODO: Collect stats of this kind of access and add analysis later
@@ -261,6 +270,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
     } else if (isa<Operator>(User)) {
       auto *Oper = cast<Operator>(User);
       if (isa<BitCastOperator>(Oper))
+        // Recursively call the function itself to peel one level of bitcast
         addFieldAccessFromGEPOrBitcast(Oper, FieldLoc);
       else
         // TODO: Collect stats of this kind of access and add analysis later
@@ -272,6 +282,7 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
   }
 }
 
+// Main function to analyze field accesses from a struct variable
 void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
   assert(V->getType()->isPointerTy() &&
          V->getType()->getPointerElementType()->isStructTy());
@@ -322,6 +333,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
   }
 }
 
+// Main function to analyze field accesses from a struct pointer value
 void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
   // Analyze users of value defined as struct*
   assert(V->getType()->isPointerTy() &&
@@ -358,6 +370,7 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
   }
 }
 
+// Main function to analyze field accesses from a struct array value
 void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
   // Analyze users of value defined as struct[]
   assert(V->getType()->isPointerTy() &&
@@ -412,6 +425,9 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
   }
 }
 
+// Functions that iterates through all the Call/Invoke instructions that
+// takes field address as an input and summarizes the field address information
+// into the function definition
 void StructFieldAccessInfo::summarizeFunctionCalls() {
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Summarizes call/invokes "
                                            "instructions into function "
@@ -446,6 +462,8 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
   }
 }
 
+// Function to calculate the total hotness of all the field accesses of
+// the struct
 ProfileCountType StructFieldAccessInfo::calculateTotalHotness() const {
   ProfileCountType Hotness = 0;
   auto IncrementHotness = [&](const Instruction *I) {
@@ -463,6 +481,8 @@ ProfileCountType StructFieldAccessInfo::calculateTotalHotness() const {
   return Hotness;
 }
 
+// (For debug only) Debug print all the field access instructions of
+// the struct
 void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream &OS) {
   for (auto &it : LoadStoreFieldAccessMap) {
     OS << "\tInstruction [" << *it.first << "] accesses field number ["
@@ -475,6 +495,7 @@ void StructFieldAccessInfo::debugPrintAllStructAccesses(raw_ostream &OS) {
 }
 
 // Functions for StructHotnessAnalyzer
+// Function to add a struct type to the hotness map for analysis
 void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo *SI) {
   auto Hotness = SI->calculateTotalHotness();
   if (Hotness > MaxHotness)
@@ -482,6 +503,8 @@ void StructHotnessAnalyzer::addStruct(const StructFieldAccessInfo *SI) {
   StructHotness[SI->getStructType()] = Hotness;
 }
 
+// Function to generate a histogram based on the hotness of the structs
+// added to the StructHotness map
 void StructHotnessAnalyzer::generateHistogram() {
   // TODO: vary the number of buckets
   Histogram.resize(HistogramSizeForStats);
@@ -497,6 +520,10 @@ void StructHotnessAnalyzer::generateHistogram() {
            << ": " << Histogram[i] << "\n";
 }
 
+// Function to check if a struct type can be seen as hot or not in the
+// current configuration. Return true if it's regarded as hot.
+// Hot or not is decided by two configuraiton flags: FilterOutZeroHotness
+// and HotnessCutoffRatio, and the hotness of the struct
 bool StructHotnessAnalyzer::isHot(const StructFieldAccessInfo *SI) const {
   auto *T = SI->getStructType();
   auto it = StructHotness.find(T);

@@ -171,6 +171,9 @@ StructFieldAccessManager::~StructFieldAccessManager() {
   DEBUG(dbgs() << "Finish StructFieldAccessManager destructor\n");
 }
 
+// Create a StructFieldAccessInfo for the specified struct type T
+// if never seen before. Otherwise return the previously created
+// object
 StructFieldAccessInfo *
 StructFieldAccessManager::createOrGetStructFieldAccessInfo(
     const Type *T, const StructDefinitionType SType) {
@@ -187,6 +190,7 @@ StructFieldAccessManager::createOrGetStructFieldAccessInfo(
   }
 }
 
+// Get a previous created StructFieldAccessInfo object
 StructFieldAccessInfo *
 StructFieldAccessManager::getStructFieldAccessInfo(const Type *T) const {
   if (!isa<StructType>(T))
@@ -199,10 +203,11 @@ StructFieldAccessManager::getStructFieldAccessInfo(const Type *T) const {
     return nullptr;
 }
 
+// Get a pair of the struct type and field number that the instruction
+// is accessed, if any. Otherwise return None of the Optional type
 Optional<StructInfoMapPairType>
 StructFieldAccessManager::getFieldAccessOnInstruction(
     const Instruction *I) const {
-  Optional<StructInfoMapPairType> ret;
   for (auto &it : StructFieldAccessInfoMap) {
     Optional<FieldNumType> FieldNum;
     Optional<ArgNumType> ArgNum;
@@ -211,9 +216,12 @@ StructFieldAccessManager::getFieldAccessOnInstruction(
       return std::make_pair(it.first, FieldNum.getValue());
     }
   }
-  return ret;
+  return None;
 }
 
+// Function used to count how many struct types that only appears in the field
+// of another struct type (so never created a StructFieldAccessInfo object for
+// it). Used to count the opportunites of suggestions we missed
 void StructFieldAccessManager::countIgnoredStructsInField() {
   std::unordered_set<StructType *> IgnoredStructTypes; // Make sure struct
   // type is not counted multiple times
@@ -247,12 +255,15 @@ void StructFieldAccessManager::countIgnoredStructsInField() {
   }
 }
 
+// Main function to call summarizeFunctionCalls for all StructFieldAccessInfo
 void StructFieldAccessManager::summarizeFunctionCalls() {
   for (auto &it : StructFieldAccessInfoMap) {
     it.second->summarizeFunctionCalls();
   }
 }
 
+// Apply several filters to the structs to narrow down the number of structs
+// to analyze
 void StructFieldAccessManager::applyFiltersToStructs() {
   // TODO: This function needs more work to add more filters to reduce the
   // number of structs for analysis
@@ -296,6 +307,8 @@ void StructFieldAccessManager::applyFiltersToStructs() {
   }
 }
 
+// Main function to build CloseProximityRelations by creating a
+// CloseProximityBuilder for each struct type
 void StructFieldAccessManager::buildCloseProximityRelations() {
   for (auto &it : StructFieldAccessInfoMap) {
     auto *CPB = new CloseProximityBuilder(CurrentModule, this, it.second);
@@ -304,6 +317,7 @@ void StructFieldAccessManager::buildCloseProximityRelations() {
   }
 }
 
+// Main function to suggest field reordering
 void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
   outs() << "------------- Suggestions on Reordering ------------------\n";
   for (auto &it : CloseProximityBuilderMap) {
@@ -328,6 +342,7 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
   outs() << "----------------------------------------------------------\n";
 }
 
+// Main function to suggest struct splitting
 void StructFieldAccessManager::suggestStructSplitting() {
   outs() << "------------- Suggestions on Splitting ------------------\n";
   for (auto &it : CloseProximityBuilderMap) {
@@ -348,6 +363,8 @@ void StructFieldAccessManager::suggestStructSplitting() {
   outs() << "----------------------------------------------------------\n";
 }
 
+// (Debug only) Main function to print all the struct field accesses for all
+// the struct types
 void StructFieldAccessManager::debugPrintAllStructAccesses() {
   dbgs() << "------------ Printing all struct accesses: ---------------- \n";
   for (auto &it : StructFieldAccessInfoMap) {
@@ -365,6 +382,7 @@ void StructFieldAccessManager::debugPrintAllStructAccesses() {
   dbgs() << "----------------------------------------------------------- \n";
 }
 
+// (Debug only) Main function to print all CPGs
 void StructFieldAccessManager::debugPrintAllCPGs() const {
   dbgs() << "------------ Printing all CPGs: ------------------- \n";
   for (auto &it : CloseProximityBuilderMap) {
@@ -383,6 +401,8 @@ void StructFieldAccessManager::debugPrintAllCPGs() const {
   dbgs() << "----------------------------------------------------------- \n";
 }
 
+// (Debug only) Print annotated IR to a file that has all the field accesses
+// marked with the struct type and field number it accesses
 void StructFieldAccessManager::debugPrintAnnotatedModule() {
   StructFieldCacheAnalysisAnnotatedWriter Writer(this);
   std::error_code EC;
@@ -394,17 +414,14 @@ void StructFieldAccessManager::debugPrintAnnotatedModule() {
   FILE_OS.resetColor();
 }
 
+// (Debug only) Print statistics
 void StructFieldAccessManager::printStats() {
   std::error_code EC;
-  raw_fd_ostream FILE_OS("/tmp/SFCA-" + CurrentModule.getName().str() + ".csv",
-                         EC, llvm::sys::fs::F_RW);
-  FILE_OS << "Name," << CurrentModule.getName() << "\n";
   outs() << "------------ Printing stats for struct accesses: "
             "---------------- \n";
   outs().changeColor(raw_ostream::YELLOW);
   outs() << "There are " << StructFieldAccessInfoMap.size()
          << " struct types are accessed in the program\n";
-  FILE_OS << "Total," << StructFieldAccessInfoMap.size() << "\n";
   for (auto &it : StructFieldAccessInfoMap) {
     auto *type = it.first;
     auto Result = it.second->getTotalNumFieldAccess();
@@ -415,13 +432,11 @@ void StructFieldAccessManager::printStats() {
              << StructDefinitionTypeNames[it.second->getStructDefinition()]
              << " has " << Result << " accesses and " << Hotness
              << " execution count.\n";
-      FILE_OS << "Literal," << Result << "\n";
     } else {
       outs() << "Struct [" << type->getStructName() << "] defined as "
              << StructDefinitionTypeNames[it.second->getStructDefinition()]
              << " has " << Result << " accesses and " << Hotness
              << " execution count.\n";
-      FILE_OS << type->getStructName() << "," << Result << "\n";
     }
   }
   outs().resetColor();
@@ -444,9 +459,10 @@ void StructFieldAccessManager::printStats() {
   outs().resetColor();
   outs() << "----------------------------------------------------------------"
             "- \n";
-  FILE_OS.close();
 }
 
+// Helper function to decide which StructFieldAccessInfo to call based on the
+// definition type of a struct (struct, struct* or struct [])
 static void analyzeStructDefinitions(StructFieldAccessManager *StructManager,
                                      Value *Definition) {
   assert(isa<GlobalValue>(Definition) || isa<AllocaInst>(Definition));
@@ -513,6 +529,9 @@ static void analyzeStructDefinitions(StructFieldAccessManager *StructManager,
   }
 }
 
+// Main function to perform program (IR) analysis by finding struct/class
+// variables defined as a global or local variable. Also track of uses of
+// function arguments that are of struct types (step 1)
 static void performIRAnalysis(Module &M,
                               StructFieldAccessManager *StructManager) {
   // Find all global structs
@@ -601,12 +620,14 @@ static void performIRAnalysis(Module &M,
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAnnotatedModule());
 }
 
+// Wrapper function to apply filters (step 2)
 static void applyFilters(StructFieldAccessManager *StructManager) {
   StructManager->summarizeFunctionCalls();
   StructManager->applyFiltersToStructs();
   StructManager->printStats();
 }
 
+// Wrapper function to build CP relations (step 3)
 static void
 buildCloseProximityRelations(StructFieldAccessManager *StructManager) {
   if (!PerformCodeAnalysisOnly) {
@@ -618,6 +639,7 @@ buildCloseProximityRelations(StructFieldAccessManager *StructManager) {
   }
 }
 
+// Wrapper function to make suggestions (step 4)
 static void giveSuggestions(StructFieldAccessManager *StructManager) {
   if (EnableFieldReorderingSuggestions)
     StructManager->suggestFieldReordering(false);

@@ -466,8 +466,8 @@ private:
   /// Use to retrieve the hottest field num of this arg of all the function
   /// invocations. Used by getAccessFieldNum()
   Optional<FieldNumType>
-  getHottestArgFieldMapping(FunctionCallInfoSummary *FuncSummary,
-                            ArgNumType ArgNum) const;
+  getUniqueArgFieldMapping(FunctionCallInfoSummary *FuncSummary,
+                           ArgNumType ArgNum) const;
 
   /// Calculate which field of the struct is the GEP pointing to, from
   /// GetElementPtrInst or GEPOperator
