@@ -259,21 +259,22 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
   outs() << "------------- Suggestions on Reordering ------------------\n";
   for (auto &it : CloseProximityBuilderMap) {
     auto *type = it.first;
-    if (type->isLiteral()) {
+    if (type->isLiteral())
       outs() << "Recommendation on an anonymous struct ";
-    } else {
+    else
       outs() << "Recommendation on struct [" << type->getStructName() << "] ";
-    }
     auto Hotness = HotnessAnalyzer->getHotness(type);
     assert(Hotness);
     outs() << " (Hotness "
            << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
            << "% of hottest struct):\n";
-    auto *FRA =
-        UseOld
-            ? new OldFieldReorderAnalyzer(CurrentModule, type, it.second, NULL)
-            : new FieldReorderAnalyzer(CurrentModule, type, it.second, NULL);
-    FRA->makeSuggestions();
+    if (UseOld) {
+      OldFieldReorderAnalyzer OFRA(CurrentModule, type, it.second, NULL);
+      OFRA.makeSuggestions();
+    } else {
+      NewFieldReorderAnalyzer NFRA(CurrentModule, type, it.second, NULL);
+      NFRA.makeSuggestions();
+    }
   }
   outs() << "----------------------------------------------------------\n";
 }
@@ -292,8 +293,8 @@ void StructFieldAccessManager::suggestStructSplitting() {
     outs() << " (Hotness "
            << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
            << "% of hottest struct):\n";
-    auto *SSA = new StructSplitAnalyzer(CurrentModule, type, it.second, NULL);
-    SSA->makeSuggestions();
+    StructSplitAnalyzer SSA(CurrentModule, type, it.second, NULL);
+    SSA.makeSuggestions();
   }
   outs() << "----------------------------------------------------------\n";
 }

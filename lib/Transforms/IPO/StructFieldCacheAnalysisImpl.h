@@ -742,35 +742,33 @@ protected:
   std::unordered_set<FieldNumType> FieldsToTransform;
 
 protected:
-  // Map fields to the debug info, useful to give recommendation and filter out
-  // padding
+  /// Map fields to the debug info, useful to give recommendation and filter out
+  /// padding
   void mapFieldsToDefinition();
+
+  /// Function to calculate CP value for the pair (Field1, Field2). Need to be
+  /// implemented in a derived class
   virtual double calculateCloseProximity(FieldNumType Field1,
                                          FieldNumType Field2) const = 0;
+
+  /// Function to print suggestion message for a field
+  void printSuggestionMessage(FieldNumType F) const;
+
+  /// Function to calculate CloseProximityRelations array
+  void calculateCloseProximityRelations();
+
 }; // end of class StructTransformAnalyzer
 
-class FieldReorderAnalyzer : public StructTransformAnalyzer {
+class NewFieldReorderAnalyzer : public StructTransformAnalyzer {
 public:
-  FieldReorderAnalyzer(const Module &CM, const StructType *ST,
-                       const CloseProximityBuilder *CPB,
-                       const DICompositeType *DI);
-  ~FieldReorderAnalyzer() {}
+  NewFieldReorderAnalyzer(const Module &CM, const StructType *ST,
+                          const CloseProximityBuilder *CPB,
+                          const DICompositeType *DI);
+  ~NewFieldReorderAnalyzer() {}
 
   virtual void makeSuggestions();
 
-protected:
-  // Protected constructor that is used to initialize derived class and override
-  // the public version of constructor of this class
-  FieldReorderAnalyzer(const Module &CM, const StructType *ST,
-                       const CloseProximityBuilder *CPB,
-                       const DICompositeType *DI, bool OldType)
-      : StructTransformAnalyzer(CM, ST, CPB, DI) {
-    // Only OldFieldReorderAnalyzer is allowed to use this constructor
-    // It doesn't do anything but call the base StructTransformAnalyzer
-    // constructor
-    assert(OldType == true);
-  }
-
+private:
   /// Hold a list of new ordering
   std::list<FieldNumType> NewOrder;
 
@@ -822,7 +820,7 @@ private:
   FieldPairType findMaxRemainCP() const;
 }; // end of class StructSplitAnalyzer
 
-class OldFieldReorderAnalyzer : public FieldReorderAnalyzer {
+class OldFieldReorderAnalyzer : public StructTransformAnalyzer {
 public:
   OldFieldReorderAnalyzer(const Module &CM, const StructType *ST,
                           const CloseProximityBuilder *CPB,
@@ -831,6 +829,8 @@ public:
   virtual void makeSuggestions();
 
 private:
+  /// Hold a list of new ordering
+  std::list<FieldNumType> NewOrder;
   unsigned DistanceThreshold;
 
 private:

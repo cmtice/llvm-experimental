@@ -60,9 +60,9 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
   // Create a new record FunctionCallInfo if this Arg->FieldNum pair of the
   // Instruction is the first pair. Otherwise, insert a new pair of
   // Arg->FieldNum to an existing FunctionCallInfo object
-  if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end()) {
+  if (CallInstFieldAccessMap.find(I) == CallInstFieldAccessMap.end())
     CallInstFieldAccessMap[I] = new FunctionCallInfo(F, Arg, FieldNum);
-  } else {
+  else {
     auto *CallSite = CallInstFieldAccessMap[I];
     assert(CallSite->FunctionDeclaration == F);
     CallSite->insertCallInfo(Arg, FieldNum);
@@ -73,9 +73,8 @@ void StructFieldAccessInfo::addFieldAccessNum(const Instruction *I,
 Optional<FieldNumType>
 StructFieldAccessInfo::getAccessFieldNum(const Instruction *I) const {
   auto it = LoadStoreFieldAccessMap.find(I);
-  if (it != LoadStoreFieldAccessMap.end()) {
+  if (it != LoadStoreFieldAccessMap.end())
     return it->second;
-  }
   return None;
 }
 
@@ -135,38 +134,34 @@ void StructFieldAccessInfo::addFieldAccessFromGEP(const User *U) {
           ImmutableCallSite Call(Inst);
           auto *Func = Call.getCalledFunction();
           if (Func && Func->arg_size() == Call.getNumArgOperands()) {
-            for (unsigned i = 0; i < Call.getNumArgOperands(); i++) {
+            for (unsigned i = 0; i < Call.getNumArgOperands(); i++)
               if (Call.getArgOperand(i) == U)
                 addFieldAccessNum(Inst, Func, i, FieldLoc);
-            }
           } else {
             // Bail out if Gep is used in an indirect function or a function
             // that has undetermined args
             addStats(StructFieldAccessManager::DebugStats::
                          DS_GepPassedIntoIndirectFunc);
           }
-        } else if (isa<BitCastInst>(Inst)) {
+        } else if (isa<BitCastInst>(Inst))
           addStats(
               StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
-        } else {
+        else
           // TODO: Collect stats of this kind of access and add analysis later
           addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
                    Inst->getOpcode());
-        }
       }
     } else if (isa<Operator>(User)) {
       auto *Oper = cast<Operator>(User);
-      if (isa<BitCastOperator>(Oper)) {
+      if (isa<BitCastOperator>(Oper))
         addStats(StructFieldAccessManager::DebugStats::DS_GepPassedIntoBitcast);
-      } else {
+      else
         // TODO: Collect stats of this kind of access and add analysis later
         addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
                  Oper->getOpcode());
-      }
-    } else {
+    } else
       addStats(StructFieldAccessManager::DebugStats::
                    DS_UserNotInstructionNorOperator);
-    }
   }
 }
 
@@ -185,33 +180,29 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
                                              << "User is a call instruction\n");
           auto *F = Call.getCalledFunction();
-          if (!F || F->isDeclaration()) {
+          if (!F || F->isDeclaration())
             // If a struct is passed to an indirect or a function not declared
             // in the program, we can't analyze it...
             Eligiblity = false;
-          }
         }
         continue;
       }
       addFieldAccessFromGEP(Inst);
     } else if (isa<Operator>(U)) {
       auto *Oper = cast<Operator>(U);
-      if (!isa<GEPOperator>(Oper)) {
+      if (!isa<GEPOperator>(Oper))
         // Only support access struct through GEP for now
         continue;
-      }
       addFieldAccessFromGEP(Oper);
     } else if (isa<ConstantExpr>(U)) {
       auto *Const = cast<ConstantExpr>(U);
-      if (Const->getOpcode() != Instruction::GetElementPtr) {
+      if (Const->getOpcode() != Instruction::GetElementPtr)
         // if (!isa<GetElementPtrConstantExpr>(Const)) {
         continue;
-      }
       addFieldAccessFromGEP(Const);
-    } else {
+    } else
       addStats(StructFieldAccessManager::DebugStats::
                    DS_UserNotInstructionNorOperator);
-    }
   }
 }
 
@@ -228,26 +219,23 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
                     dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     if (isa<Instruction>(U)) {
       auto *Inst = cast<Instruction>(U);
-      if (isa<LoadInst>(Inst)) {
+      if (isa<LoadInst>(Inst))
         analyzeUsersOfStructValue(Inst);
-      } else if (isa<GetElementPtrInst>(Inst)) {
+      else if (isa<GetElementPtrInst>(Inst))
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else {
+      else
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
-      }
     } else if (isa<Operator>(U)) {
       auto *Oper = cast<Operator>(U);
-      if (isa<GEPOperator>(Oper)) {
+      if (isa<GEPOperator>(Oper))
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else {
+      else
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
-      }
-    } else {
+    } else
       addStats(StructFieldAccessManager::DebugStats::
                    DS_UserNotInstructionNorOperator);
-    }
   }
 }
 
@@ -260,25 +248,22 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
     assert(CallSiteInfo);
     auto *F = CallSiteInfo->FunctionDeclaration;
     assert(F);
-    if (FunctionAccessMap.find(F) == FunctionAccessMap.end()) {
+    if (FunctionAccessMap.find(F) == FunctionAccessMap.end())
       FunctionAccessMap[F] =
           new FunctionAccessPattern(&CallSiteInfo->Arguments);
-    } else {
+    else
       FunctionAccessMap[F]->insertCallInfo(&CallSiteInfo->Arguments);
-    }
   }
   for (auto &it : FunctionAccessMap) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Function " << it.first->getName()
                            << " is called with fields as argument:\n");
-    for (auto *Args : it.second->CallSites) {
-      for (unsigned i = 0; i < Args->size(); i++) {
+    for (auto *Args : it.second->CallSites)
+      for (unsigned i = 0; i < Args->size(); i++)
         if ((*Args)[i] > 0)
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Arg " << i
                                                 << " is called as field "
                                                 << (*Args)[i] << "\n");
-      }
-    }
   }
 }
 
