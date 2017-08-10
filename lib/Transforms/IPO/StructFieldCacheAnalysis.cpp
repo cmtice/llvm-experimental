@@ -28,12 +28,11 @@
 //    struct and create an object of CloseProximityBuilder to build CP
 //    relations. The CloseProximityBuilder needs to build FieldReferenceGraph
 //    object first to help build CP relations in steps.
-// 4. (Not implemented) Use the results of CP relations between fields and give
-//    suggestions to either reorder struct fields or split structs by grouping
-//    fields into smaller sub-structs. Depending on the flag specified by users,
-//    one or both of FieldReorderTransformAnalyzer or
-//    StructSplitTransformAnalyzer will be created to perform analysis and print
-//    suggestions.
+// 4. Use the results of CP relations between fields and give suggestions to
+//    either reorder struct fields or split structs by grouping fields into
+//    smaller sub-structs. Depending on the flag specified by users, one or
+//    both of FieldReorderTransformAnalyzer or StructSplitTransformAnalyzer
+//    will be created to perform analysis and print suggestions.
 //
 // Meanwhile, this cpp file also implements the class of
 // StructFieldAccessManager. It works like an organizer of all the informations
@@ -54,10 +53,12 @@
 //            |-- lib/Transforms/IPO/StructFieldAccessInfo.cpp
 //            |       (Implements StructFieldAccessInfo and HotnessAnalyzer)
 //            |-- lib/Transforms/IPO/StructAnalysisCloseProximity.cpp
-//                    (Implements CloseProximityBuilder and FieldReferenceGraph)
+//            |       (Implements CloseProximityBuilder and FieldReferenceGraph)
+//            |-- lib/Transforms/IPO/StructTransformAnalyzer.cpp
+//                    (Implements FieldReorderAnalyzer and StructSplitAnalyzer)
 //
 // The tool is derived from the following paper:
-//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
+//  M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
 //  in GCC”, Proceedings
 //      of the GCC Developers’ Summit,  Ottawa, 2005.
 //
@@ -85,9 +86,9 @@ static cl::opt<unsigned> FilterOutSmallStructs(
     cl::desc("If true, filter out structs with fewer number of fields than"
              "the specified number"));
 
-static cl::opt<bool>
-    PerformIROnly("struct-analysis-IR-only", cl::init(false), cl::Hidden,
-                  cl::desc("Stop the analysis after performing IR analysis"));
+static cl::opt<bool> PerformCodeAnalysisOnly(
+    "struct-analysis-IR-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the analysis after performing IR analysis"));
 
 static cl::opt<bool> PerformCPGOnly(
     "struct-analysis-CPG-only", cl::init(false), cl::Hidden,
@@ -307,6 +308,30 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
   outs() << "------------- Suggestions on Reordering ------------------\n";
   for (auto &it : CloseProximityBuilderMap) {
     auto *type = it.first;
+    if (type->isLiteral())
+      outs() << "Recommendation on an anonymous struct ";
+    else
+      outs() << "Recommendation on struct [" << type->getStructName() << "] ";
+    auto Hotness = HotnessAnalyzer->getHotness(type);
+    assert(Hotness);
+    outs() << " (Hotness "
+           << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
+           << "% of hottest struct):\n";
+    if (UseOld) {
+      OldFieldReorderAnalyzer OFRA(CurrentModule, type, it.second, nullptr);
+      OFRA.makeSuggestions();
+    } else {
+      NewFieldReorderAnalyzer NFRA(CurrentModule, type, it.second, nullptr);
+      NFRA.makeSuggestions();
+    }
+  }
+  outs() << "----------------------------------------------------------\n";
+}
+
+void StructFieldAccessManager::suggestStructSplitting() {
+  outs() << "------------- Suggestions on Splitting ------------------\n";
+  for (auto &it : CloseProximityBuilderMap) {
+    auto *type = it.first;
     if (type->isLiteral()) {
       outs() << "Recommendation on an anonymous struct ";
     } else {
@@ -317,27 +342,8 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
     outs() << " (Hotness "
            << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
            << "% of hottest struct):\n";
-    auto *FRA = UseOld ? new OldFieldReorderAnalyzer(CurrentModule, type,
-                                                     it.second, nullptr)
-                       : new FieldReorderAnalyzer(CurrentModule, type,
-                                                  it.second, nullptr);
-    FRA->makeSuggestions();
-  }
-  outs() << "----------------------------------------------------------\n";
-}
-
-void StructFieldAccessManager::suggestStructSplitting() {
-  outs() << "------------- Suggestions on Splitting ------------------\n";
-  for (auto &it : CloseProximityBuilderMap) {
-    auto *type = it.first;
-    if (type->isLiteral()) {
-      outs() << "Recommendation on an anonymous struct:\n";
-    } else {
-      outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
-    }
-    auto *SSA =
-        new StructSplitAnalyzer(CurrentModule, type, it.second, nullptr);
-    SSA->makeSuggestions();
+    StructSplitAnalyzer SSA(CurrentModule, type, it.second, nullptr);
+    SSA.makeSuggestions();
   }
   outs() << "----------------------------------------------------------\n";
 }
@@ -603,7 +609,7 @@ static void applyFilters(StructFieldAccessManager *StructManager) {
 
 static void
 buildCloseProximityRelations(StructFieldAccessManager *StructManager) {
-  if (!PerformIROnly) {
+  if (!PerformCodeAnalysisOnly) {
     StructManager->buildCloseProximityRelations();
     if (PerformCPGOnly)
       StructManager->debugPrintAllCPGs();
@@ -637,6 +643,7 @@ static bool performStructFieldCacheAnalysis(
   buildCloseProximityRelations(&StructManager);
   // Step 4 - make suggestions
   giveSuggestions(&StructManager);
+
   DEBUG(dbgs() << "End of struct field cache analysis\n");
   return false;
 }

@@ -30,7 +30,7 @@
 // exponential that can complete with reasonable amount of time.
 //
 // Some of the algorithms in this file is derived from the following paper:
-//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
+//  M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
 //  in GCC”, Proceedings of the GCC Developers’ Summit,  Ottawa, 2005.
 //
 //===------------------------------------------------------------------------===//
@@ -822,13 +822,13 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
                                          FieldReferenceGraph::Node *Root) {
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
                   dbgs() << "Collapse Node " << Root->Id << " as root\n");
-  bool change = true;
+  bool Change = true;
   bool SubtreeChange = false;
-  while (change) {
-    change = false;
+  while (Change) {
+    Change = false;
     for (auto *E : Root->OutEdges) {
       if (!E->LoopArc)
-        change |= collapseRoot(FRG, E->ToNode);
+        Change |= collapseRoot(FRG, E->ToNode);
     }
     for (auto *E : Root->OutEdges) {
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check out edge: ("
@@ -842,7 +842,7 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
                         dbgs() << "Found a successor can be collapsed\n");
         if (collapseSuccessor(FRG, E)) {
           SubtreeChange = true;
-          change = true;
+          Change = true;
         }
       } else {
         DEBUG_WITH_TYPE(
@@ -850,14 +850,14 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
             dbgs() << "Successor cannot collapse and not a loop arc\n");
       }
     }
-    if (change)
+    if (Change)
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
                       dbgs() << "Subtree changes, need to collapse again\n");
   }
   return SubtreeChange;
 }
 
-// Function to create CP relations on a collapsed FRG. If an FRG is not not
+// Function to create CP relations on a collapsed FRG. If an FRG is not
 // collapsed to a single Root node, we need to use this function to find all
 // the non-collapsed nodes from bottom to up (first for-loop) and use brutal
 // force to build CP relations between the node and its subtree (second
@@ -898,8 +898,10 @@ void CloseProximityBuilder::collapseFieldReferenceGraph(
   // of remaining nodes with brutal force
   auto AllCollapsed = true;
   for (auto *E : Root->OutEdges) {
-    if (!E->Collapsed)
+    if (!E->Collapsed) {
       AllCollapsed = false;
+      break;
+    }
   }
   // FIXME: Use this assertion to detect if this happens.
   if (AllCollapsed)

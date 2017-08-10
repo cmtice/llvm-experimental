@@ -251,27 +251,24 @@ void StructFieldAccessInfo::addFieldAccessFromGEPOrBitcast(
             addStats(StructFieldAccessManager::DebugStats::
                          DS_GepPassedIntoIndirectFunc);
           }
-        } else if (isa<BitCastInst>(Inst)) {
+        } else if (isa<BitCastInst>(Inst))
           addFieldAccessFromGEPOrBitcast(Inst, FieldLoc);
-        } else {
+        else
           // TODO: Collect stats of this kind of access and add analysis later
           addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
                    Inst->getOpcode());
-        }
       }
     } else if (isa<Operator>(User)) {
       auto *Oper = cast<Operator>(User);
-      if (isa<BitCastOperator>(Oper)) {
+      if (isa<BitCastOperator>(Oper))
         addFieldAccessFromGEPOrBitcast(Oper, FieldLoc);
-      } else {
+      else
         // TODO: Collect stats of this kind of access and add analysis later
         addStats(StructFieldAccessManager::DebugStats::DS_GepUnknownUse,
                  Oper->getOpcode());
-      }
-    } else {
+    } else
       addStats(StructFieldAccessManager::DebugStats::
                    DS_UserNotInstructionNorOperator);
-    }
   }
 }
 
@@ -290,19 +287,18 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
           DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
                                              << "User is a call instruction\n");
           auto *F = Call.getCalledFunction();
-          if (!F || F->isDeclaration()) {
+          if (!F || F->isDeclaration())
             // If a struct is passed to an indirect or a function not declared
             // in the program, we can't analyze it...
             Eligiblity = false;
-          }
         }
         continue;
       } else {
         assert(cast<GetElementPtrInst>(Inst)->getPointerOperand() == V);
         if (Inst->getType()->getPointerElementType() ==
             V->getType()->getPointerElementType()) {
-          // If an GEP is used to calculate a struct type from a struct type, it
-          // should be an array index of a struct array
+          // If an GEP is used to calculate a struct type from a struct type,
+          // it should be an array index of a struct array
           analyzeUsersOfStructValue(Inst);
         } else {
           addFieldAccessFromGEP(Inst);
@@ -310,22 +306,19 @@ void StructFieldAccessInfo::analyzeUsersOfStructValue(const Value *V) {
       }
     } else if (isa<Operator>(U)) {
       auto *Oper = cast<Operator>(U);
-      if (!isa<GEPOperator>(Oper)) {
+      if (!isa<GEPOperator>(Oper))
         // Only support access struct through GEP for now
         continue;
-      }
       addFieldAccessFromGEP(Oper);
     } else if (isa<ConstantExpr>(U)) {
       auto *Const = cast<ConstantExpr>(U);
-      if (Const->getOpcode() != Instruction::GetElementPtr) {
+      if (Const->getOpcode() != Instruction::GetElementPtr)
         // if (!isa<GetElementPtrConstantExpr>(Const)) {
         continue;
-      }
       addFieldAccessFromGEP(Const);
-    } else {
+    } else
       addStats(StructFieldAccessManager::DebugStats::
                    DS_UserNotInstructionNorOperator);
-    }
   }
 }
 
@@ -343,26 +336,24 @@ void StructFieldAccessInfo::analyzeUsersOfStructPointerValue(const Value *V) {
                     dbgs() << "Analyzing user of " << *V << ": " << *U << "\n");
     if (isa<Instruction>(U)) {
       auto *Inst = cast<Instruction>(U);
-      if (isa<LoadInst>(Inst)) {
-        if (Inst->getType()->getPointerElementType()->isStructTy())
-          analyzeUsersOfStructValue(Inst);
-      } else if (isa<GetElementPtrInst>(Inst)) {
+      if (isa<LoadInst>(Inst) &&
+          Inst->getType()->getPointerElementType()->isStructTy())
+        analyzeUsersOfStructValue(Inst);
+      else if (isa<GetElementPtrInst>(Inst))
         addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else if (!isa<StoreInst>(Inst) && !isa<BitCastInst>(Inst)) {
+      else if (!isa<StoreInst>(Inst) && !isa<BitCastInst>(Inst)) {
         addStats(
             StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
-      }
-    } else if (isa<Operator>(U)) {
-      auto *Oper = cast<Operator>(U);
-      if (isa<GEPOperator>(Oper)) {
-        addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
-      } else if (!isa<BitCastOperator>(Oper)) {
-        addStats(
-            StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
-      }
-    } else {
-      addStats(StructFieldAccessManager::DebugStats::
-                   DS_UserNotInstructionNorOperator);
+      } else if (isa<Operator>(U)) {
+        auto *Oper = cast<Operator>(U);
+        if (isa<GEPOperator>(Oper))
+          addStats(StructFieldAccessManager::DebugStats::DS_GepUsedOnStructPtr);
+        else if (!isa<BitCastOperator>(Oper))
+          addStats(
+              StructFieldAccessManager::DebugStats::DS_UnknownUsesOnStructPtr);
+      } else
+        addStats(StructFieldAccessManager::DebugStats::
+                     DS_UserNotInstructionNorOperator);
     }
   }
 }
@@ -391,9 +382,9 @@ void StructFieldAccessInfo::analyzeUsersOfStructArrayValue(const Value *V) {
             // can store an address of base class
             analyzeUsersOfStructValue(Inst);
         } else {
-          // If the result of GEP is not a struct, then the GEP is directly used
-          // to calculate a field of this struct, directly send it to add field
-          // access
+          // If the result of GEP is not a struct, then the GEP is directly
+          // used to calculate a field of this struct, directly send it to
+          // add field access
           addFieldAccessFromGEP(Inst);
         }
       } else if (!isa<BitCastInst>(Inst)) {
@@ -430,22 +421,20 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
     assert(CallInfo);
     auto *F = CallInfo->FunctionDeclaration;
     assert(F);
-    if (FunctionCallInfoMap.find(F) == FunctionCallInfoMap.end()) {
+    if (FunctionCallInfoMap.find(F) == FunctionCallInfoMap.end())
       FunctionCallInfoMap[F] =
           new FunctionCallInfoSummary(&CallInfo->ArgFieldMappingArray);
-    } else {
+    else
       FunctionCallInfoMap[F]->insertCallInfo(&CallInfo->ArgFieldMappingArray);
-    }
   }
   for (auto &it : FunctionCallInfoMap) {
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
                     dbgs() << "Function " << it.first->getName()
                            << " is called with fields as argument:\n");
-    if (it.second->AllArgFieldMappings.size() > 1) {
+    if (it.second->AllArgFieldMappings.size() > 1)
       addStats(StructFieldAccessManager::DebugStats::
                    DS_DifferentFieldsPassedIntoArg);
-    }
-    for (auto *Args : it.second->AllArgFieldMappings) {
+    for (auto *Args : it.second->AllArgFieldMappings)
       for (unsigned i = 0; i < Args->size(); i++) {
         auto &FieldAccessPair = (*Args)[i];
         if (FieldAccessPair.first > 0)
@@ -454,7 +443,6 @@ void StructFieldAccessInfo::summarizeFunctionCalls() {
                                  << FieldAccessPair.first << " with hotness "
                                  << FieldAccessPair.second << "\n");
       }
-    }
   }
 }
 
