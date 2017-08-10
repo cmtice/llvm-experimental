@@ -10,16 +10,16 @@
 ; 5. Test the ability to connect a BB and its successors with branch probability, e.g. Node 2 -> Node 3/8, Node 3 -> Node 4/5
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -o %t2 %t1 2>&1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -struct-analysis-CPG-only -o %t2 %t1 2>&1 | FileCheck %s
 ; CHECK: Field Reference Graph for function: main
 ; CHECK: Node 0 accesses 0 and has 3.00 out sum and 0.00 in sum: connect with { Node 1 (3.00,16.000)  }
 ; CHECK: Node 1 accesses 0 and has 303.00 out sum and 303.00 in sum: connect with { Node 2 (303.00,0.000)  }
 ; CHECK: Node 2 accesses 1 and has 303.00 out sum and 303.00 in sum: connect with { Node 8 (3.00,0.000)   Node 3 (300.00,0.000)  }
 ; CHECK: Node 8 accesses 0 and has 0.00 out sum and 3.00 in sum: connect with {}
-; CHECK: Node 3 accesses 2 and has 298.00 out sum and 300.00 in sum: connect with { Node 5 (169.00,4.000)   Node 4 (129.00,4.000)  }
-; CHECK: Node 5 accesses 0 and has 169.00 out sum and 169.00 in sum: connect with { Node 6 (169.00,0.000)  }
-; CHECK: Node 4 accesses 2 and has 129.00 out sum and 129.00 in sum: connect with { Node 6 (129.00,0.000)  }
-; CHECK: Node 6 accesses 0 and has 300.00 out sum and 298.00 in sum: connect with { Node 7 (300.00,4.000)  }
+; CHECK: Node 3 accesses 2 and has 300.00 out sum and 300.00 in sum: connect with { Node 5 (170.00,4.000)   Node 4 (130.00,4.000)  }
+; CHECK: Node 5 accesses 0 and has 170.00 out sum and 170.00 in sum: connect with { Node 6 (170.00,0.000)  }
+; CHECK: Node 4 accesses 2 and has 130.00 out sum and 130.00 in sum: connect with { Node 6 (130.00,0.000)  }
+; CHECK: Node 6 accesses 0 and has 300.00 out sum and 300.00 in sum: connect with { Node 7 (300.00,4.000)  }
 ; CHECK: Node 7 accesses 3 and has 300.00 out sum and 300.00 in sum: connect with { Node 1 (300.00,0.000) B }
 
 %struct.FooBar = type { i32, i8, double }

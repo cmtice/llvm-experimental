@@ -30,7 +30,7 @@
 // exponential that can complete with reasonable amount of time.
 //
 // Some of the algorithms in this file is derived from the following paper:
-//  [1] M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
+//  M. Hagog, C. Tice “Cache Aware Data Layout Reorganization Optimization
 //  in GCC”, Proceedings of the GCC Developers’ Summit,  Ottawa, 2005.
 //
 //===------------------------------------------------------------------------===//
@@ -480,11 +480,13 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
   }
   auto *BBI = FRG->getBasicBlockHelperInfo(&F->getEntryBlock());
   FRG->setRootNode(BBI->FirstNode);
-  DEBUG(dbgs() << "---------- FRG for function " << F->getName()
-               << "----------------\n");
-  DEBUG(FRG->debugPrint(dbgs()));
-  DEBUG(dbgs() << "------------------------------------------------------------"
-                  "------------\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs()
+                                      << "---------- FRG for function "
+                                      << F->getName() << "----------------\n");
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, FRG->debugPrint(dbgs()));
+  DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "----------------------------------"
+                                            "----------------------------------"
+                                            "----\n");
   return FRG;
 }
 

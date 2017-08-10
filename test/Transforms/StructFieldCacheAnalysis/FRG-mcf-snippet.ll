@@ -3,7 +3,7 @@
 ; it failed to detect the backedge from BB591 to BB581. The test is created to make sure the problem solved.
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -struct-analysis-FRG-include-zeros -o %t2 %t1 2>&1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-FRG-only -struct-analysis-FRG-include-zeros -debug-only=struct-analysis -o %t2 %t1 2>&1 | FileCheck %s
 ; CHECK: Field Reference Graph for function: main
 ; Node 0 accesses 0 and has 1.00 out sum and 0.00 in sum: connect with { Node 1 (1.00,16.000)  }
 ; Node 1 accesses 1 and has 1.71 out sum and 1.50 in sum: connect with { Node 2 (1.71,4.000)  }

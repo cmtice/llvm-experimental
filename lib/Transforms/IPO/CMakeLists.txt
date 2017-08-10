@@ -31,6 +31,7 @@ add_llvm_library(LLVMipo
   StructAnalysisCloseProximity.cpp
   StructFieldAccessInfo.cpp
   StructFieldCacheAnalysis.cpp
+  StructTransformAnalyzer.cpp
   ThinLTOBitcodeWriter.cpp
   WholeProgramDevirt.cpp
 
