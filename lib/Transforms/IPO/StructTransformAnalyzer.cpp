@@ -482,7 +482,9 @@ void FieldReorderAnalyzer::makeSuggestions() {
     outs() << "Suggest to reorder the fields according to: ";
     for (auto &FieldNum : BestOrder) {
       assert(FieldDI[FieldNum]);
-      outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << " ";
+      outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << "("
+             << *StructureType->getElementType(FieldNum) << ")"
+             << " ";
     }
     outs() << " might improve performance with " << format("%.0f", Confidence)
            << " % confidence\n";
@@ -703,7 +705,9 @@ void StructSplitAnalyzer::makeSuggestions() {
   for (unsigned i = 0; i < SubRecords.size(); i++) {
     outs() << "Group #" << i + 1 << ":{ ";
     for (auto &F : *SubRecords[i]) {
-      outs() << "F" << F + 1 << " ";
+      outs() << "F" << FieldDI[F]->FieldNum + 1 << "("
+             << *StructureType->getElementType(F) << ")"
+             << " ";
     }
     outs() << "}\n";
   }
@@ -886,7 +890,9 @@ void OldFieldReorderAnalyzer::makeSuggestions() {
   outs() << "Suggest to reorder the fields according to: ";
   for (auto &FieldNum : NewOrder) {
     assert(FieldDI[FieldNum]);
-    outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << " ";
+    outs() << "F" << FieldDI[FieldNum]->FieldNum + 1 << "("
+           << *StructureType->getElementType(FieldNum) << ")"
+           << " ";
   }
   outs() << "\n";
 }

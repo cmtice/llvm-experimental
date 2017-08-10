@@ -283,9 +283,9 @@ void StructFieldAccessManager::suggestStructSplitting() {
   for (auto &it : CloseProximityBuilderMap) {
     auto *type = it.first;
     if (type->isLiteral()) {
-      outs() << "Recommendation on an anonymous struct:\n";
+      outs() << "Recommendation on an anonymous struct ";
     } else {
-      outs() << "Recommendation on struct [" << type->getStructName() << "]:\n";
+      outs() << "Recommendation on struct [" << type->getStructName() << "] ";
     }
     auto Hotness = HotnessAnalyzer->getHotness(type);
     assert(Hotness);
