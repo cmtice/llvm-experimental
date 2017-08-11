@@ -77,6 +77,15 @@ static cl::opt<unsigned> MinimalAccessCountForAnalysis(
     "struct-analysis-minimal-count", cl::init(1), cl::Hidden,
     cl::desc("Minimal access count to make the struct eligible for analysis"));
 
+static cl::opt<bool> PrintHistogramOnStructHotness(
+    "struct-analysis-hotness-histogram", cl::init(false), cl::Hidden,
+    cl::desc("If true, print a histogram on struct hotness"));
+
+static cl::opt<unsigned> FilterOutSmallStructs(
+    "struct-analysis-filter-small-structs", cl::init(1), cl::Hidden,
+    cl::desc("If true, filter out structs with fewer number of fields than"
+             "the specified number"));
+
 static cl::opt<bool> PerformCodeAnalysisOnly(
     "struct-analysis-IR-only", cl::init(false), cl::Hidden,
     cl::desc("Stop the analysis after performing IR analysis"));
@@ -162,6 +171,9 @@ StructFieldAccessManager::~StructFieldAccessManager() {
   DEBUG(dbgs() << "Finish StructFieldAccessManager destructor\n");
 }
 
+// Create a StructFieldAccessInfo for the specified struct type T
+// if never seen before. Otherwise return the previously created
+// object
 StructFieldAccessInfo *
 StructFieldAccessManager::createOrGetStructFieldAccessInfo(
     const Type *T, const StructDefinitionType SType) {
@@ -178,6 +190,7 @@ StructFieldAccessManager::createOrGetStructFieldAccessInfo(
   }
 }
 
+// Get a previous created StructFieldAccessInfo object
 StructFieldAccessInfo *
 StructFieldAccessManager::getStructFieldAccessInfo(const Type *T) const {
   if (!isa<StructType>(T))
@@ -190,28 +203,70 @@ StructFieldAccessManager::getStructFieldAccessInfo(const Type *T) const {
     return nullptr;
 }
 
+// Get a pair of the struct type and field number that the instruction
+// is accessed, if any. Otherwise return None of the Optional type
 Optional<StructInfoMapPairType>
 StructFieldAccessManager::getFieldAccessOnInstruction(
     const Instruction *I) const {
-  Optional<StructInfoMapPairType> ret;
   for (auto &it : StructFieldAccessInfoMap) {
-    if (auto FieldNum = it.second->getAccessFieldNum(I)) {
+    Optional<FieldNumType> FieldNum;
+    Optional<ArgNumType> ArgNum;
+    it.second->getAccessFieldNumOrArgNum(I, FieldNum, ArgNum);
+    if (FieldNum) {
       return std::make_pair(it.first, FieldNum.getValue());
     }
   }
-  return ret;
+  return None;
 }
 
+// Function used to count how many struct types that only appears in the field
+// of another struct type (so never created a StructFieldAccessInfo object for
+// it). Used to count the opportunites of suggestions we missed
+void StructFieldAccessManager::countIgnoredStructsInField() {
+  std::unordered_set<StructType *> IgnoredStructTypes; // Make sure struct
+  // type is not counted multiple times
+  for (auto &it : StructFieldAccessInfoMap) {
+    for (unsigned i = 0; i < it.first->getNumElements(); i++) {
+      auto *Ty = it.first->getElementType(i);
+      StructType *StructTypeToFind = nullptr;
+      if (Ty->isStructTy()) {
+        StructTypeToFind = cast<StructType>(Ty);
+      } else if (Ty->isPointerTy() &&
+                 Ty->getPointerElementType()->isStructTy()) {
+        StructTypeToFind = cast<StructType>(Ty->getPointerElementType());
+      } else if (Ty->isArrayTy() && Ty->getArrayElementType()->isStructTy()) {
+        StructTypeToFind = cast<StructType>(Ty->getArrayElementType());
+      } else if (Ty->isPointerTy() &&
+                 Ty->getPointerElementType()->isPointerTy() &&
+                 Ty->getPointerElementType()
+                     ->getPointerElementType()
+                     ->isStructTy()) {
+        addStats(DebugStats::DS_StructPtrPtrAsField);
+      }
+      if (StructTypeToFind && IgnoredStructTypes.find(StructTypeToFind) ==
+                                  IgnoredStructTypes.end()) {
+        auto it = StructFieldAccessInfoMap.find(StructTypeToFind);
+        if (it == StructFieldAccessInfoMap.end()) {
+          addStats(DebugStats::DS_StructAsFieldIgnored);
+          IgnoredStructTypes.insert(StructTypeToFind);
+        }
+      }
+    }
+  }
+}
+
+// Main function to call summarizeFunctionCalls for all StructFieldAccessInfo
 void StructFieldAccessManager::summarizeFunctionCalls() {
   for (auto &it : StructFieldAccessInfoMap) {
     it.second->summarizeFunctionCalls();
   }
 }
 
+// Apply several filters to the structs to narrow down the number of structs
+// to analyze
 void StructFieldAccessManager::applyFiltersToStructs() {
   // TODO: This function needs more work to add more filters to reduce the
   // number of structs for analysis
-  DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "To apply filters to structs\n");
   auto RemoveEntry =
       [&](std::unordered_map<const StructType *,
                              StructFieldAccessInfo *>::iterator &it) {
@@ -229,13 +284,18 @@ void StructFieldAccessManager::applyFiltersToStructs() {
                MinimalAccessCountForAnalysis) {
       RemoveEntry(it);
       addStats(DebugStats::DS_NoAccess);
+    } else if (it->second->getNumElements() < FilterOutSmallStructs) {
+      RemoveEntry(it);
+      addStats(DebugStats::DS_StructTooSmall);
     } else {
       HotnessAnalyzer->addStruct(it->second);
       it++;
     }
   }
 
-  DEBUG_WITH_TYPE(DEBUG_TYPE_STATS, HotnessAnalyzer->generateHistogram());
+  if (PrintHistogramOnStructHotness)
+    HotnessAnalyzer->generateHistogram();
+
   for (auto it = StructFieldAccessInfoMap.begin();
        it != StructFieldAccessInfoMap.end();) {
     if (!HotnessAnalyzer->isHot(it->second)) {
@@ -247,6 +307,8 @@ void StructFieldAccessManager::applyFiltersToStructs() {
   }
 }
 
+// Main function to build CloseProximityRelations by creating a
+// CloseProximityBuilder for each struct type
 void StructFieldAccessManager::buildCloseProximityRelations() {
   for (auto &it : StructFieldAccessInfoMap) {
     auto *CPB = new CloseProximityBuilder(CurrentModule, this, it.second);
@@ -255,6 +317,7 @@ void StructFieldAccessManager::buildCloseProximityRelations() {
   }
 }
 
+// Main function to suggest field reordering
 void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
   outs() << "------------- Suggestions on Reordering ------------------\n";
   for (auto &it : CloseProximityBuilderMap) {
@@ -269,16 +332,17 @@ void StructFieldAccessManager::suggestFieldReordering(bool UseOld) {
            << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
            << "% of hottest struct):\n";
     if (UseOld) {
-      OldFieldReorderAnalyzer OFRA(CurrentModule, type, it.second, NULL);
+      OldFieldReorderAnalyzer OFRA(CurrentModule, type, it.second, nullptr);
       OFRA.makeSuggestions();
     } else {
-      NewFieldReorderAnalyzer NFRA(CurrentModule, type, it.second, NULL);
+      NewFieldReorderAnalyzer NFRA(CurrentModule, type, it.second, nullptr);
       NFRA.makeSuggestions();
     }
   }
   outs() << "----------------------------------------------------------\n";
 }
 
+// Main function to suggest struct splitting
 void StructFieldAccessManager::suggestStructSplitting() {
   outs() << "------------- Suggestions on Splitting ------------------\n";
   for (auto &it : CloseProximityBuilderMap) {
@@ -293,12 +357,14 @@ void StructFieldAccessManager::suggestStructSplitting() {
     outs() << " (Hotness "
            << 100 * Hotness.getValue() / HotnessAnalyzer->getMaxHotness()
            << "% of hottest struct):\n";
-    StructSplitAnalyzer SSA(CurrentModule, type, it.second, NULL);
+    StructSplitAnalyzer SSA(CurrentModule, type, it.second, nullptr);
     SSA.makeSuggestions();
   }
   outs() << "----------------------------------------------------------\n";
 }
 
+// (Debug only) Main function to print all the struct field accesses for all
+// the struct types
 void StructFieldAccessManager::debugPrintAllStructAccesses() {
   dbgs() << "------------ Printing all struct accesses: ---------------- \n";
   for (auto &it : StructFieldAccessInfoMap) {
@@ -316,6 +382,7 @@ void StructFieldAccessManager::debugPrintAllStructAccesses() {
   dbgs() << "----------------------------------------------------------- \n";
 }
 
+// (Debug only) Main function to print all CPGs
 void StructFieldAccessManager::debugPrintAllCPGs() const {
   dbgs() << "------------ Printing all CPGs: ------------------- \n";
   for (auto &it : CloseProximityBuilderMap) {
@@ -325,7 +392,7 @@ void StructFieldAccessManager::debugPrintAllCPGs() const {
     if (dyn_cast<StructType>(type)->isLiteral()) {
       dbgs() << "A literal struct has CPG: \n";
     } else {
-      dbgs() << "Struct [" << type->getStructName() << "] has FRG: \n";
+      dbgs() << "Struct [" << type->getStructName() << "] has CPG: \n";
     }
     dbgs().changeColor(raw_ostream::GREEN);
     it.second->debugPrintCloseProximityGraph(dbgs());
@@ -334,6 +401,8 @@ void StructFieldAccessManager::debugPrintAllCPGs() const {
   dbgs() << "----------------------------------------------------------- \n";
 }
 
+// (Debug only) Print annotated IR to a file that has all the field accesses
+// marked with the struct type and field number it accesses
 void StructFieldAccessManager::debugPrintAnnotatedModule() {
   StructFieldCacheAnalysisAnnotatedWriter Writer(this);
   std::error_code EC;
@@ -345,17 +414,14 @@ void StructFieldAccessManager::debugPrintAnnotatedModule() {
   FILE_OS.resetColor();
 }
 
+// (Debug only) Print statistics
 void StructFieldAccessManager::printStats() {
   std::error_code EC;
-  raw_fd_ostream FILE_OS("/tmp/SFCA-" + CurrentModule.getName().str() + ".csv",
-                         EC, llvm::sys::fs::F_RW);
-  FILE_OS << "Name," << CurrentModule.getName() << "\n";
-  outs()
-      << "------------ Printing stats for struct accesses: ---------------- \n";
+  outs() << "------------ Printing stats for struct accesses: "
+            "---------------- \n";
   outs().changeColor(raw_ostream::YELLOW);
   outs() << "There are " << StructFieldAccessInfoMap.size()
          << " struct types are accessed in the program\n";
-  FILE_OS << "Total," << StructFieldAccessInfoMap.size() << "\n";
   for (auto &it : StructFieldAccessInfoMap) {
     auto *type = it.first;
     auto Result = it.second->getTotalNumFieldAccess();
@@ -366,13 +432,11 @@ void StructFieldAccessManager::printStats() {
              << StructDefinitionTypeNames[it.second->getStructDefinition()]
              << " has " << Result << " accesses and " << Hotness
              << " execution count.\n";
-      FILE_OS << "Literal," << Result << "\n";
     } else {
       outs() << "Struct [" << type->getStructName() << "] defined as "
              << StructDefinitionTypeNames[it.second->getStructDefinition()]
              << " has " << Result << " accesses and " << Hotness
              << " execution count.\n";
-      FILE_OS << type->getStructName() << "," << Result << "\n";
     }
   }
   outs().resetColor();
@@ -392,16 +456,82 @@ void StructFieldAccessManager::printStats() {
              << " times\n";
     }
   };
-  outs().changeColor(raw_ostream::BLUE);
-  outs() << "Stats are stored into "
-         << "/tmp/SFCA-" + CurrentModule.getName().str() + ".csv"
-         << "\n";
   outs().resetColor();
-  outs()
-      << "----------------------------------------------------------------- \n";
-  FILE_OS.close();
+  outs() << "----------------------------------------------------------------"
+            "- \n";
 }
 
+// Helper function to decide which StructFieldAccessInfo to call based on the
+// definition type of a struct (struct, struct* or struct [])
+static void analyzeStructDefinitions(StructFieldAccessManager *StructManager,
+                                     Value *Definition) {
+  assert(isa<GlobalValue>(Definition) || isa<AllocaInst>(Definition));
+  const StructFieldAccessManager::StructDefinitionType GlobalDefinitionTypes[] =
+      {StructFieldAccessManager::StructDefinitionType::SDT_GlobalStruct,
+       StructFieldAccessManager::StructDefinitionType::SDT_GlobalStructPtr,
+       StructFieldAccessManager::StructDefinitionType::SDT_GlobalStructArray};
+  const StructFieldAccessManager::StructDefinitionType LocalDefinitionTypes[] =
+      {StructFieldAccessManager::StructDefinitionType::SDT_LocalStruct,
+       StructFieldAccessManager::StructDefinitionType::SDT_LocalStructPtr,
+       StructFieldAccessManager::StructDefinitionType::SDT_LocalStructArray};
+
+  Type *DefType;
+  const StructFieldAccessManager::StructDefinitionType *DefinitionTypes;
+  StringRef TypeName;
+  if (isa<GlobalValue>(Definition)) {
+    DefType = cast<GlobalValue>(Definition)->getValueType();
+    DefinitionTypes = GlobalDefinitionTypes;
+    TypeName = "global";
+  } else {
+    DefType = cast<AllocaInst>(Definition)->getAllocatedType();
+    DefinitionTypes = LocalDefinitionTypes;
+    TypeName = "local";
+  }
+  if (DefType->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a " << TypeName
+                                          << " defined as struct: " << *DefType
+                                          << "\n");
+    auto *StructInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
+        DefType, DefinitionTypes[0]);
+    StructInfoPtr->analyzeUsersOfStructValue(Definition);
+  }
+  // Case for struct*
+  else if (DefType->isPointerTy() &&
+           DefType->getPointerElementType()->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a " << TypeName
+                                          << " has struct* type: " << *DefType
+                                          << "\n");
+    auto *StructInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
+        DefType->getPointerElementType(), DefinitionTypes[1]);
+    StructInfoPtr->analyzeUsersOfStructPointerValue(Definition);
+  }
+  // Case for struct []
+  else if (DefType->isArrayTy() &&
+           DefType->getArrayElementType()->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a " << TypeName
+                                          << " has struct[] type: " << *DefType
+                                          << "\n");
+    auto *StructInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
+        DefType->getArrayElementType(), DefinitionTypes[2]);
+    StructInfoPtr->analyzeUsersOfStructArrayValue(Definition);
+  }
+  // Case for struct**
+  else if (DefType->isPointerTy() &&
+           DefType->getPointerElementType()->isPointerTy() &&
+           DefType->getPointerElementType()
+               ->getPointerElementType()
+               ->isStructTy()) {
+    DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs() << "Found a " << TypeName
+                                          << " has struct** type: " << *DefType
+                                          << " but we ignored this\n");
+    StructManager->addStats(
+        StructFieldAccessManager::DebugStats::DS_StructPtrPtr);
+  }
+}
+
+// Main function to perform program (IR) analysis by finding struct/class
+// variables defined as a global or local variable. Also track of uses of
+// function arguments that are of struct types (step 1)
 static void performIRAnalysis(Module &M,
                               StructFieldAccessManager *StructManager) {
   // Find all global structs
@@ -411,40 +541,7 @@ static void performIRAnalysis(Module &M,
     if (G.isDeclaration())
       continue;
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().changeColor(raw_ostream::YELLOW));
-    // G is always a pointer
-    if (G.getValueType()->isStructTy()) {
-      DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                      dbgs()
-                          << "Found a global defined as struct: " << G << "\n");
-      auto *structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
-          G.getValueType(),
-          StructFieldAccessManager::StructDefinitionType::SDT_GlobalStruct);
-      structInfoPtr->analyzeUsersOfStructValue(&G);
-    }
-    // Case for struct*
-    else if (G.getValueType()->isPointerTy() &&
-             G.getValueType()->getPointerElementType()->isStructTy()) {
-      DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                      dbgs()
-                          << "Found a global has struct* type: " << G << "\n");
-      auto *structInfoPtr = StructManager->createOrGetStructFieldAccessInfo(
-          G.getValueType()->getPointerElementType(),
-          StructFieldAccessManager::StructDefinitionType::SDT_GlobalStructPtr);
-      structInfoPtr->analyzeUsersOfStructPointerValue(&G);
-    }
-    // Case for struct**
-    else if (G.getType()->isPointerTy() &&
-             G.getType()->getPointerElementType()->isPointerTy() &&
-             G.getType()
-                 ->getPointerElementType()
-                 ->getPointerElementType()
-                 ->isStructTy()) {
-      DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                      dbgs() << "Found a global has struct** type: " << G
-                             << " but we ignored this\n");
-      StructManager->addStats(
-          StructFieldAccessManager::DebugStats::DS_StructPtrPtr);
-    }
+    analyzeStructDefinitions(StructManager, &G);
     DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs().resetColor());
   }
 
@@ -455,40 +552,8 @@ static void performIRAnalysis(Module &M,
     // Find all alloca of structs inside the function body
     for (auto &BB : F) {
       for (auto &I : BB) {
-        if (I.getOpcode() == Instruction::Alloca) {
-          auto *type = I.getType()->getPointerElementType();
-          if (type->isStructTy()) {
-            // Identified I is an alloca of a struct
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Found an alloca of a struct: " << I
-                                   << "\n");
-            auto *structInfoPtr =
-                StructManager->createOrGetStructFieldAccessInfo(
-                    type, StructFieldAccessManager::StructDefinitionType::
-                              SDT_LocalStruct);
-            structInfoPtr->analyzeUsersOfStructValue(&I);
-          } else if (type->isPointerTy() &&
-                     type->getPointerElementType()->isStructTy()) {
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Found an alloca of a struct*: " << I
-                                   << "\n");
-            auto *structInfoPtr =
-                StructManager->createOrGetStructFieldAccessInfo(
-                    type->getPointerElementType(),
-                    StructFieldAccessManager::StructDefinitionType::
-                        SDT_LocalStructPtr);
-            structInfoPtr->analyzeUsersOfStructPointerValue(&I);
-          } else if (type->isPointerTy() &&
-                     type->getPointerElementType()->isPointerTy() &&
-                     type->getPointerElementType()
-                         ->getPointerElementType()
-                         ->isStructTy()) {
-            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
-                            dbgs() << "Found an alloca of a struct**: " << I
-                                   << " but we ignore this\n");
-            StructManager->addStats(
-                StructFieldAccessManager::DebugStats::DS_StructPtrPtr);
-          }
+        if (isa<AllocaInst>(I)) {
+          analyzeStructDefinitions(StructManager, &I);
         }
       }
     }
@@ -497,6 +562,7 @@ static void performIRAnalysis(Module &M,
   for (auto &F : M) {
     if (F.isDeclaration())
       continue;
+    unsigned ArgNum = 0;
     for (auto &AG : F.args()) {
       if (AG.getType()->isStructTy()) {
         DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
@@ -505,40 +571,63 @@ static void performIRAnalysis(Module &M,
                             << AG << " and no support for this yet\n");
         StructManager->addStats(
             StructFieldAccessManager::DebugStats::DS_FuncArgValue);
-      }
-      if (AG.getType()->isPointerTy() &&
-          AG.getType()->getPointerElementType()->isStructTy()) {
-        // Identified AG is an argument with a struct type
-        auto *StructPtr = StructManager->getStructFieldAccessInfo(
-            AG.getType()->getPointerElementType());
-        if (StructPtr) {
-          DEBUG_WITH_TYPE(
-              DEBUG_TYPE_IR,
-              dbgs() << "Found an argument of a struct defined in the module: "
-                     << AG << "\n");
-          StructPtr->analyzeUsersOfStructValue(&AG);
+      } else if (AG.getType()->isPointerTy()) {
+        // AG is an address of a struct
+        if (AG.getType()->getPointerElementType()->isStructTy()) {
+          // Identified AG is an argument with a struct type
+          auto *StructPtr = StructManager->getStructFieldAccessInfo(
+              AG.getType()->getPointerElementType());
+          if (StructPtr) {
+            DEBUG_WITH_TYPE(
+                DEBUG_TYPE_IR,
+                dbgs()
+                    << "Found an argument of a struct defined in the module: "
+                    << AG << "\n");
+            StructPtr->analyzeUsersOfStructValue(&AG);
+          } else {
+            DEBUG_WITH_TYPE(DEBUG_TYPE_IR,
+                            dbgs() << "Found an argument of a struct "
+                                      "not defined in the program: "
+                                   << AG << "\n");
+            StructManager->addStats(
+                StructFieldAccessManager::DebugStats::DS_FuncArgNotDefined);
+          }
         } else {
-          DEBUG_WITH_TYPE(DEBUG_TYPE_IR, dbgs()
-                                             << "Found an argument of a struct "
-                                                "not defined in the program: "
-                                             << AG << "\n");
-          StructManager->addStats(
-              StructFieldAccessManager::DebugStats::DS_FuncArgNotDefined);
+          // AG is a pointer, which could points to a field address when
+          // the function is called
+          for (auto *User : AG.users()) {
+            if (isa<LoadInst>(User)) {
+              StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
+                                                   ArgNum);
+            } else if (isa<StoreInst>(User)) {
+              if (cast<StoreInst>(User)->getPointerOperand() == &AG)
+                StructManager->addLoadStoreArgAccess(cast<Instruction>(User),
+                                                     ArgNum);
+              else
+                StructManager->addStats(StructFieldAccessManager::DebugStats::
+                                            DS_FuncArgStoredInAnotherVariable);
+            }
+          }
         }
       }
+      ArgNum++;
     }
   }
+  // Add stats to count struct as a field of another struct
+  StructManager->countIgnoredStructsInField();
   // Summarizes all uses of fields in function calls
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAllStructAccesses());
   DEBUG_WITH_TYPE(DEBUG_TYPE_IR, StructManager->debugPrintAnnotatedModule());
 }
 
+// Wrapper function to apply filters (step 2)
 static void applyFilters(StructFieldAccessManager *StructManager) {
   StructManager->summarizeFunctionCalls();
   StructManager->applyFiltersToStructs();
   StructManager->printStats();
 }
 
+// Wrapper function to build CP relations (step 3)
 static void
 buildCloseProximityRelations(StructFieldAccessManager *StructManager) {
   if (!PerformCodeAnalysisOnly) {
@@ -550,6 +639,7 @@ buildCloseProximityRelations(StructFieldAccessManager *StructManager) {
   }
 }
 
+// Wrapper function to make suggestions (step 4)
 static void giveSuggestions(StructFieldAccessManager *StructManager) {
   if (EnableFieldReorderingSuggestions)
     StructManager->suggestFieldReordering(false);

@@ -45,9 +45,12 @@ using namespace llvm;
 
 namespace llvm {
 typedef unsigned FieldNumType;
+typedef unsigned ArgNumType;
 typedef std::pair<const StructType *, FieldNumType> StructInfoMapPairType;
 typedef uint64_t ProfileCountType;
-typedef std::vector<FieldNumType> FieldNumArrayType;
+typedef std::pair<FieldNumType, ProfileCountType> FieldAccessInfoPairType;
+typedef std::vector<FieldAccessInfoPairType> ArgFieldMappingArrayType;
+typedef std::vector<ArgFieldMappingArrayType *> ArgFieldMappingArrayArrayType;
 typedef double ExecutionCountType;
 typedef double DistanceInBytesType;
 typedef std::unordered_set<const BasicBlock *> BasicBlockSetType;
@@ -95,9 +98,11 @@ public:
   enum StructDefinitionType {
     SDT_GlobalStruct,
     SDT_GlobalStructPtr,
+    SDT_GlobalStructArray,
     SDT_GlobalStructPtrPtr,
     SDT_LocalStruct,
     SDT_LocalStructPtr,
+    SDT_LocalStructArray,
     SDT_LocalStructPtrPtr
   };
 
@@ -115,7 +120,14 @@ public:
     DS_PassedIntoOutsideFunction,
     DS_GepUsedOnStructPtr,
     DS_UnknownUsesOnStructPtr,
+    DS_UnknownUsesOnStructArray,
     DS_FilterColdStructs,
+    DS_DifferentFieldsPassedIntoArg,
+    DS_FuncArgStoredInAnotherVariable,
+    DS_StructTooSmall,
+    DS_FieldAddressStoredInAnotherVariable,
+    DS_StructPtrPtrAsField,
+    DS_StructAsFieldIgnored,
     DS_MaxNumStats
   };
 
@@ -152,6 +164,23 @@ public:
     Function *func = const_cast<Function *>(FromBB->getParent());
     return LookupBPI(*func)->getEdgeProbability(FromBB, ToBB);
   }
+
+  /// Insert Instruction I into a map showing I accesses ArgNum of its function
+  void addLoadStoreArgAccess(const Instruction *I, ArgNumType ArgNum) {
+    LoadStoreArgAccessMap[I] = ArgNum;
+  }
+
+  Optional<ArgNumType> getLoadStoreArgAccess(const Instruction *I) const {
+    Optional<ArgNumType> ret;
+    auto it = LoadStoreArgAccessMap.find(I);
+    if (it != LoadStoreArgAccessMap.end())
+      ret = it->second;
+    return ret;
+  }
+
+  /// For stats only: count how many structs defined as field of another
+  /// struct ignored in analysis
+  void countIgnoredStructsInField();
 
   /// Summarizes all CallInst and InvokeInst into function declarations
   void summarizeFunctionCalls();
@@ -203,6 +232,10 @@ private:
   /// Function reference that is used to calculate branch probability
   function_ref<BranchProbabilityInfo *(Function &)> LookupBPI;
 
+  /// A map records all load/store instructions accessing which argument of
+  /// its function
+  std::unordered_map<const Instruction *, ArgNumType> LoadStoreArgAccessMap;
+
   /// A map storing access info of all structs
   std::unordered_map<const StructType *, StructFieldAccessInfo *>
       StructFieldAccessInfoMap;
@@ -228,13 +261,20 @@ private:
       "Struct passed into functions defined out of scope",
       "GEP instruction directly used on struct*",
       "Unknown instruction directly used on struct*",
-      "Struct filtered out due to colder than a ratio of maximum hotness"};
+      "Unknown instruction directly used on struct[]",
+      "Struct filtered out due to colder than a ratio of maximum hotness",
+      "Different function calls taking different arguments found",
+      "Function pointer argument stored in a local variable",
+      "Struct has small number of fields",
+      "Field address is stored to another variable",
+      "Struct** in the field of another struct",
+      "Struct defined in another struct but ignored"};
   /// %}
 
   /// Used to print name of each StructDefinitionType
   const std::vector<std::string> StructDefinitionTypeNames = {
-      "global struct", "global struct*", "global struct**",
-      "local struct",  "local struct*",  "local struct**"};
+      "global struct", "global struct*", "global struct[]", "global struct**",
+      "local struct",  "local struct*",  "local struct[]",  "local struct**"};
 }; // end of class StructFieldAccessManager
 
 /// This class is used to store all access information for each struct
@@ -244,33 +284,36 @@ private:
 /// and StructFieldAccessInfo.cpp
 class StructFieldAccessInfo {
 private:
-  /// This struct organizes a call on a function with each argument access which
-  /// struct field
+  /// This struct organizes a call/invoke on a function with a mapping
+  /// between each argument access and a struct field with its hotness
   struct FunctionCallInfo {
-    FunctionCallInfo(const Function *F, unsigned ArgNum, FieldNumType FieldNum)
+    FunctionCallInfo(const Function *F, ArgNumType ArgNum,
+                     FieldNumType FieldNum, ProfileCountType Hotness)
         : FunctionDeclaration(F) {
-      Arguments.resize(FunctionDeclaration->arg_size());
-      assert(ArgNum < Arguments.size());
-      Arguments[ArgNum] = FieldNum;
+      ArgFieldMappingArray.resize(FunctionDeclaration->arg_size());
+      assert(ArgNum < ArgFieldMappingArray.size());
+      ArgFieldMappingArray[ArgNum] = std::make_pair(FieldNum, Hotness);
     }
-    void insertCallInfo(unsigned ArgNum, FieldNumType FieldNum) {
-      assert(ArgNum < Arguments.size());
-      Arguments[ArgNum] = FieldNum;
+    void insertArgFieldMapping(ArgNumType ArgNum, FieldNumType FieldNum,
+                               ProfileCountType Hotness) {
+      assert(ArgNum < ArgFieldMappingArray.size());
+      ArgFieldMappingArray[ArgNum] = std::make_pair(FieldNum, Hotness);
     }
     const Function *FunctionDeclaration;
-    FieldNumArrayType Arguments;
+    ArgFieldMappingArrayType ArgFieldMappingArray;
   };
-  /// This struct organizes all calls on a function definition with all mappings
-  /// of arguments and struct field number
-  struct FunctionAccessPattern {
-    FunctionAccessPattern(FieldNumArrayType *CallSite) {
-      CallSites.clear();
-      CallSites.push_back(CallSite);
+
+  /// This struct organizes all ArgNum->FieldNum mappings of all calls/invokes
+  /// of a function
+  struct FunctionCallInfoSummary {
+    FunctionCallInfoSummary(ArgFieldMappingArrayType *ArgFieldMapping) {
+      AllArgFieldMappings.clear();
+      AllArgFieldMappings.push_back(ArgFieldMapping);
     }
-    void insertCallInfo(FieldNumArrayType *CallSite) {
-      CallSites.push_back(CallSite);
+    void insertCallInfo(ArgFieldMappingArrayType *ArgFieldMapping) {
+      AllArgFieldMappings.push_back(ArgFieldMapping);
     }
-    std::vector<FieldNumArrayType *> CallSites;
+    ArgFieldMappingArrayArrayType AllArgFieldMappings;
   };
 
 public:
@@ -288,11 +331,11 @@ public:
     for (auto &it : CallInstFieldAccessMap) {
       delete it.second;
     }
-    for (auto &it : FunctionAccessMap) {
+    for (auto &it : FunctionCallInfoMap) {
       delete it.second;
     }
     CallInstFieldAccessMap.clear();
-    FunctionAccessMap.clear();
+    FunctionCallInfoMap.clear();
   }
 
   /// Functions that used to check or get some attribute of the struct
@@ -314,6 +357,15 @@ public:
 
   /// Calculate total hotness of all load/store field accesses
   ProfileCountType calculateTotalHotness() const;
+
+  /// Get ArgFieldMappings array
+  const ArgFieldMappingArrayArrayType *
+  getArgFieldMappings(const Function *F) const {
+    auto it = FunctionCallInfoMap.find(F);
+    if (it == FunctionCallInfoMap.end())
+      return nullptr;
+    return &it->second->AllArgFieldMappings;
+  }
   /// %}
 
   /// Analyze a value pointing to a struct and collect struct access from it. It
@@ -324,9 +376,15 @@ public:
   /// It can be allocas/function args/globals
   void analyzeUsersOfStructPointerValue(const Value *V);
 
-  /// Obtain which field the instruction is accessing and return no val if not
-  /// accessing any struct field
-  Optional<FieldNumType> getAccessFieldNum(const Instruction *I) const;
+  /// Analyze a value pointing to a struct[] and collect struct access from it.
+  /// It can be allocas/globals and only value use is GEP instructions/operators
+  void analyzeUsersOfStructArrayValue(const Value *V);
+
+  /// Obtain which struct field or an argument that will be a struct field that
+  /// the instruction is accessing and return according FieldNum or ArgNum
+  void getAccessFieldNumOrArgNum(const Instruction *I,
+                                 Optional<FieldNumType> &AccessedFieldNum,
+                                 Optional<ArgNumType> &AccessedArgNum) const;
 
   /// Obtain total number of instructions that access the struct fields
   unsigned getTotalNumFieldAccess() const {
@@ -357,7 +415,7 @@ public:
     StatCounts[Category]++;
     if (Category == StructFieldAccessManager::DebugStats::DS_GepUnknownUse) {
       if (UnknownOpcodes.find(Opcode) == UnknownOpcodes.end())
-        UnknownOpcodes[Opcode] = 0;
+        UnknownOpcodes[Opcode] = 1;
       else
         UnknownOpcodes[Opcode]++;
     }
@@ -389,7 +447,7 @@ private:
 
   /// A map records all load/store instructions accessing which field of the
   /// structure
-  std::unordered_map<const Instruction *, unsigned> LoadStoreFieldAccessMap;
+  std::unordered_map<const Instruction *, FieldNumType> LoadStoreFieldAccessMap;
 
   /// A map records all call/invoke instructions accessing which field of the
   /// structure
@@ -398,16 +456,26 @@ private:
 
   /// A map records all functions that has calls with field accesses and their
   /// calling patterns
-  std::unordered_map<const Function *, FunctionAccessPattern *>
-      FunctionAccessMap;
+  std::unordered_map<const Function *, FunctionCallInfoSummary *>
+      FunctionCallInfoMap;
 
   /// A map records all functions that have at least one struct field accesses
   std::unordered_set<const Function *> FunctionsToAnalyze;
 
 private:
+  /// Use to retrieve the hottest field num of this arg of all the function
+  /// invocations. Used by getAccessFieldNum()
+  Optional<FieldNumType>
+  getUniqueArgFieldMapping(FunctionCallInfoSummary *FuncSummary,
+                           ArgNumType ArgNum) const;
+
   /// Calculate which field of the struct is the GEP pointing to, from
   /// GetElementPtrInst or GEPOperator
   FieldNumType calculateFieldNumFromGEP(const User *U) const;
+
+  /// Record all users of a GEP instruction/operator OR a bitcast of a GEP
+  /// with given FieldNum calculated by GEP
+  void addFieldAccessFromGEPOrBitcast(const User *U, FieldNumType FieldLoc);
 
   /// Record all users of a GEP instruction/operator that calculates the address
   /// of a field.
@@ -422,17 +490,29 @@ private:
 }; // end of class StructFieldAccessInfo
 
 /// This class implements creation and organization of FieldReferenceGraph
+struct FieldVariableType {
+  FieldVariableType(FieldNumType N) : isFieldNum(true), FieldNum(N) {}
+  FieldVariableType(ArgNumType N, const ArgFieldMappingArrayArrayType *AFM,
+                    ProfileCountType TH)
+      : isFieldNum(false), ArgNum(N), ArgFieldMappings(AFM), TotalHotness(TH) {}
+  bool isFieldNum;
+  FieldNumType FieldNum;
+  ArgNumType ArgNum;
+  const ArgFieldMappingArrayArrayType *ArgFieldMappings;
+  ProfileCountType TotalHotness;
+};
+
 class FieldReferenceGraph {
 public:
   struct Edge;
 
   /// This structure represents a collapsed entry in collapsed FRG
   struct Entry {
-    Entry(unsigned I, FieldNumType N, ExecutionCountType C,
+    Entry(unsigned I, FieldVariableType FV, ExecutionCountType C,
           DistanceInBytesType D)
-        : Id(I), FieldNum(N), ExecutionCount(C), DataSize(D) {}
+        : Id(I), FieldVariable(FV), ExecutionCount(C), DataSize(D) {}
     unsigned Id;
-    FieldNumType FieldNum;
+    FieldVariableType FieldVariable;
     ExecutionCountType ExecutionCount;
     DistanceInBytesType DataSize;
   };
@@ -440,9 +520,14 @@ public:
   /// This structure represents a general node in FRG
   struct Node {
     Node(unsigned I, FieldNumType N, DistanceInBytesType S)
-        : Id(I), FieldNum(N), Size(S), Visited(false), InSum(0), OutSum(0) {}
+        : Id(I), FieldVariable(N), Size(S), Visited(false), InSum(0),
+          OutSum(0) {}
+    Node(unsigned I, ArgNumType N, const ArgFieldMappingArrayArrayType *AFM,
+         ProfileCountType TH, DistanceInBytesType S)
+        : Id(I), FieldVariable(N, AFM, TH), Size(S), Visited(false), InSum(0),
+          OutSum(0) {}
     unsigned Id;
-    FieldNumType FieldNum;
+    FieldVariableType FieldVariable;
     DistanceInBytesType Size;
     bool Visited;
     ExecutionCountType InSum;
@@ -526,6 +611,9 @@ public:
   /// with other nodes, and return the pointer to the Node
   /// %{
   Node *createNewNode(FieldNumType FieldNum, DistanceInBytesType S);
+  Node *createNewNode(ArgNumType ArgNum,
+                      const ArgFieldMappingArrayArrayType *AFM,
+                      DistanceInBytesType S);
   Node *createNewNode() { return createNewNode(0, 0); }
   /// %}
 
@@ -636,12 +724,18 @@ private:
   void updateCPT(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
                  DistanceInBytesType D, CloseProximityTableType &CPT);
 
+  /// Update a specified CPT with given CP pair but the field can be a variable
+  void updateCPT(const FieldVariableType &Src, const FieldVariableType &Dest,
+                 ExecutionCountType C, DistanceInBytesType D,
+                 CloseProximityTableType &CPT);
+
   /// Update CloseProximityTable by calling updateCPT function
-  void updateCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
-                 DistanceInBytesType D);
+  void updateCPG(const FieldVariableType &Src, const FieldVariableType &Dest,
+                 ExecutionCountType C, DistanceInBytesType D);
 
   /// Update GoldCPT by calling updateCPT function
-  void updateGoldCPG(FieldNumType Src, FieldNumType Dest, ExecutionCountType C,
+  void updateGoldCPG(const FieldVariableType &Src,
+                     const FieldVariableType &Dest, ExecutionCountType C,
                      DistanceInBytesType D);
   /// %}
 
