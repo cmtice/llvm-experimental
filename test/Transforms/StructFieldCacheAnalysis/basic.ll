@@ -1,7 +1,7 @@
 ; Test a program defined a local struct and has access on each field
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -o %t2 %t1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-filter-zero-hotness=false -o %t2 %t1 | FileCheck %s
 ; CHECK: There are 1 struct types are accessed in the program
 ; CHECK: Struct [struct.FooBar] defined as local struct has 4 accesses and 0 execution count.
 

@@ -129,12 +129,12 @@ void FieldReferenceGraph::Edge::reconnect(FieldReferenceGraph::Node *From,
   assert(From != FromNode || To != ToNode); // Assume never reconnect two nodes
                                             // already connected with this Edge
   Edge *ExistEdge = nullptr;
-  for (auto *E : From->OutEdges) {
+  for (auto *E : From->OutEdges)
     if (E->ToNode == To) {
       ExistEdge = E;
       break;
     }
-  }
+
   // Case #2
   if (ExistEdge) {
     assert(To->InEdges.find(ExistEdge) != To->InEdges.end());
@@ -200,9 +200,9 @@ FieldReferenceGraph::createNewNode(ArgNumType ArgNum,
   DEBUG_WITH_TYPE(DEBUG_TYPE_FRG, dbgs() << "Create Node #" << NodeList.size()
                                          << " for argument " << ArgNum << "\n");
   ProfileCountType TotalHotness = 0;
-  for (auto *ArgFieldMapping : *AFM) {
+  for (auto *ArgFieldMapping : *AFM)
     TotalHotness += (*ArgFieldMapping)[ArgNum].second;
-  }
+
   auto *Node = new FieldReferenceGraph::Node(NodeList.size(), ArgNum, AFM,
                                              TotalHotness, S);
   NodeList.push_back(Node);
@@ -216,17 +216,16 @@ void FieldReferenceGraph::connectNodes(FieldReferenceGraph::Node *From,
                                        FieldReferenceGraph::Node *To,
                                        ExecutionCountType C,
                                        DistanceInBytesType D, bool BackEdge) {
-  if (From == To) {
+  if (From == To)
     // Don't connect a node back to itself to avoid a node never be able to
     // collapse
     return;
-  }
   // Try to find existing edge between From and To
   Edge *ExistEdge = nullptr;
-  for (auto *E : From->OutEdges) {
+  for (auto *E : From->OutEdges)
     if (E->ToNode == To)
       ExistEdge = E;
-  }
+
   if (ExistEdge) {
     // If there's already an edge between the two nodes, only increase count and
     // distance but not create a new edge
@@ -321,7 +320,7 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(
     raw_ostream &OS, FieldReferenceGraph::Edge *E) const {
   OS << "Collapsed entry for edge: (" << E->FromNode->Id << "," << E->ToNode->Id
      << ")\n";
-  for (auto *CE : E->CollapsedEntries) {
+  for (auto *CE : E->CollapsedEntries)
     if (CE->FieldVariable.isFieldNum)
       OS << "Collapsed entry " << CE->Id
          << " field num: " << CE->FieldVariable.FieldNum
@@ -332,7 +331,6 @@ void FieldReferenceGraph::debugPrintCollapsedEntries(
          << " arg num: " << CE->FieldVariable.ArgNum
          << ", count: " << DEBUG_PRINT_COUNT(CE->ExecutionCount)
          << ", distance: " << DEBUG_PRINT_DIST(CE->DataSize) << "\n";
-  }
 }
 
 // Functions for CloseProximityBuilder
@@ -349,9 +347,8 @@ CloseProximityBuilder::CloseProximityBuilder(const Module &M,
   CloseProximityTable.resize(NumElements);
   for (unsigned i = 0; i < NumElements; i++) {
     CloseProximityTable[i].resize(NumElements);
-    for (unsigned j = 0; j < NumElements; j++) {
+    for (unsigned j = 0; j < NumElements; j++)
       CloseProximityTable[i][j] = std::make_pair(0, 0);
-    }
   }
   if (PerformCPGCheck) {
     // If the flag is enabled, a golden version of CloseProximityTable (GoldCPT)
@@ -361,9 +358,8 @@ CloseProximityBuilder::CloseProximityBuilder(const Module &M,
     GoldCPT.resize(NumElements);
     for (unsigned i = 0; i < NumElements; i++) {
       GoldCPT[i].resize(NumElements);
-      for (unsigned j = 0; j < NumElements; j++) {
+      for (unsigned j = 0; j < NumElements; j++)
         GoldCPT[i][j] = std::make_pair(0, 0);
-      }
     }
   }
 }
@@ -410,10 +406,10 @@ void CloseProximityBuilder::detectBackEdges(const FieldReferenceGraph *FRG,
 //    bytes accessed after the last node.
 FieldReferenceGraph *
 CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
-  auto createNewFRGNode = [&](FieldReferenceGraph *FRG,
-                              FieldReferenceGraph::BasicBlockHelperInfo *BBI,
-                              FieldReferenceGraph::Node *NewNode,
-                              const Instruction *I) {
+  auto insertNewNodeInFRG = [&](FieldReferenceGraph *FRG,
+                                FieldReferenceGraph::BasicBlockHelperInfo *BBI,
+                                FieldReferenceGraph::Node *NewNode,
+                                const Instruction *I) {
     if (BBI->LastNode) {
       // If there's already a node created in the BB, connect the current
       // node with previous one
@@ -454,7 +450,7 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
                                             << FieldNum.getValue() << "]\n");
         auto *NewNode =
             FRG->createNewNode(FieldNum.getValue(), getMemAccessDataSize(&I));
-        createNewFRGNode(FRG, BBI, NewNode, &I);
+        insertNewNodeInFRG(FRG, BBI, NewNode, &I);
       } else if (ArgNum.hasValue()) {
         // Case that I is not struct access but a memory access to an argument
         // In this case, the argument ArgNum has at least two invocations to be
@@ -462,7 +458,7 @@ CloseProximityBuilder::buildFieldReferenceGraph(const Function *F) {
         auto *NewNode = FRG->createNewNode(ArgNum.getValue(),
                                            StructInfo->getArgFieldMappings(F),
                                            getMemAccessDataSize(&I));
-        createNewFRGNode(FRG, BBI, NewNode, &I);
+        insertNewNodeInFRG(FRG, BBI, NewNode, &I);
       } else {
         // Case that I is not struct access nor an argument access but a normal
         // memory access
@@ -552,9 +548,8 @@ void CloseProximityBuilder::updateCPT(FieldNumType Src, FieldNumType Dest,
     // Give up update if from or to a dummy node, or if the count is zero
     return;
   assert(!std::isnan(C));
-  if (Src > Dest) {
+  if (Src > Dest)
     std::swap(Src, Dest);
-  }
 
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
                   dbgs() << "Will update between " << Src << " and " << Dest
@@ -583,10 +578,10 @@ void CloseProximityBuilder::updateCPT(const FieldVariableType &Src,
                                       DistanceInBytesType D,
                                       CloseProximityTableType &CPT) {
   if (Src.isFieldNum) {
-    if (Dest.isFieldNum) {
+    if (Dest.isFieldNum)
       // Case when both Src and Dest is only a FieldNum
       updateCPT(Src.FieldNum, Dest.FieldNum, C, D, CPT);
-    } else {
+    else {
       // Case when Src is a FieldNum but Dest contains Arg->Field mappings
       for (auto DestMappings : *Dest.ArgFieldMappings) {
         auto DestCount =
@@ -598,11 +593,11 @@ void CloseProximityBuilder::updateCPT(const FieldVariableType &Src,
   } else {
     for (auto SrcMappings : *Src.ArgFieldMappings) {
       auto SrcCount = C * (*SrcMappings)[Src.ArgNum].second / Src.TotalHotness;
-      if (Dest.isFieldNum) {
+      if (Dest.isFieldNum)
         // Case when Src contains Arc->Field mappings but Dest is a FieldNum
         updateCPT((*SrcMappings)[Src.ArgNum].first, Dest.FieldNum, SrcCount, D,
                   CPT);
-      } else {
+      else {
         // Case when Src and Dest both contain Arg->Field mappings
         for (auto DestMappings : *Dest.ArgFieldMappings) {
           auto DestCount = SrcCount * (*DestMappings)[Dest.ArgNum].second /
@@ -826,17 +821,17 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
   bool SubtreeChange = false;
   while (Change) {
     Change = false;
-    for (auto *E : Root->OutEdges) {
+    for (auto *E : Root->OutEdges)
       if (!E->LoopArc)
         Change |= collapseRoot(FRG, E->ToNode);
-    }
+
     for (auto *E : Root->OutEdges) {
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Check out edge: ("
                                              << E->FromNode->Id << ","
                                              << E->ToNode->Id << "): ");
-      if (E->LoopArc) {
+      if (E->LoopArc)
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "It is a loop arc\n");
-      } else if (E->ToNode->InEdges.size() == 1 && !E->Collapsed) {
+      else if (E->ToNode->InEdges.size() == 1 && !E->Collapsed) {
         // if SUCC can be collapsed, i.e. only has one predecessor
         DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
                         dbgs() << "Found a successor can be collapsed\n");
@@ -844,11 +839,10 @@ bool CloseProximityBuilder::collapseRoot(FieldReferenceGraph *FRG,
           SubtreeChange = true;
           Change = true;
         }
-      } else {
+      } else
         DEBUG_WITH_TYPE(
             DEBUG_TYPE_CPG,
             dbgs() << "Successor cannot collapse and not a loop arc\n");
-      }
     }
     if (Change)
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG,
@@ -868,21 +862,21 @@ void CloseProximityBuilder::createCloseProximityRelations(
                   dbgs() << "Finalize Node " << Root->Id << " as root\n");
   // Traverse the remaining FRG and calculate CP relations from bottom of the
   // FRG
-  for (auto *E : Root->OutEdges) {
+  for (auto *E : Root->OutEdges)
     if (!E->LoopArc && !E->Collapsed && !E->ToNode->Visited)
       createCloseProximityRelations(FRG, E->ToNode);
-  }
+
   // Calculate CP relations between each node and its non-collapsed successors
   DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Calculate CP-relations with Node "
                                          << Root->Id << " as root\n");
-  for (auto *E : Root->OutEdges) {
+  for (auto *E : Root->OutEdges)
     if (!E->Collapsed) {
       DEBUG_WITH_TYPE(DEBUG_TYPE_CPG, dbgs() << "Found a non-collapsed edge: ("
                                              << E->FromNode->Id << ","
                                              << E->ToNode->Id << ")\n");
       updateCPGFromNodeToSubtree(E);
     }
-  }
+
   Root->Visited = true;
 }
 
@@ -897,12 +891,12 @@ void CloseProximityBuilder::collapseFieldReferenceGraph(
   // If the FRG is not collapsed to a single node, need calculate CP relations
   // of remaining nodes with brutal force
   auto AllCollapsed = true;
-  for (auto *E : Root->OutEdges) {
+  for (auto *E : Root->OutEdges)
     if (!E->Collapsed) {
       AllCollapsed = false;
       break;
     }
-  }
+
   // FIXME: Use this assertion to detect if this happens.
   if (AllCollapsed)
     return;
@@ -1016,23 +1010,20 @@ void CloseProximityBuilder::createGoldCloseProximityRelations(
 // (Debug only) Function to compare results of CloseProximityTable and
 // GoldCPT. The error tolerance is 10% on count and distance.
 void CloseProximityBuilder::compareCloseProximityRelations() const {
-  for (unsigned i = 0; i < NumElements; i++) {
-    for (unsigned j = i + 1; j < NumElements; j++) {
+  for (unsigned i = 0; i < NumElements; i++)
+    for (unsigned j = i + 1; j < NumElements; j++)
       if (std::abs(GoldCPT[i][j].first - CloseProximityTable[i][j].first) /
                   GoldCPT[i][j].first >
               0.1 ||
           std::abs(GoldCPT[i][j].second - CloseProximityTable[i][j].second) /
                   GoldCPT[i][j].second >
-              0.1) {
+              0.1)
         outs() << "Found error in CPG: F" << i + 1 << " and F" << j + 1
                << " should be (" << DEBUG_PRINT_COUNT(GoldCPT[i][j].first)
                << "," << DEBUG_PRINT_DIST(GoldCPT[i][j].second)
                << ") but calculated as ("
                << DEBUG_PRINT_COUNT(CloseProximityTable[i][j].first) << ","
                << DEBUG_PRINT_DIST(CloseProximityTable[i][j].second) << ")\n";
-      }
-    }
-  }
 }
 
 // Main function to build CP relations. Called by StructFieldAccessManager
@@ -1073,9 +1064,8 @@ void CloseProximityBuilder::buildCloseProximityRelations() {
 // (Debug only) Debug print FRG
 void CloseProximityBuilder::debugPrintFieldReferenceGraph(
     raw_ostream &OS) const {
-  for (auto *FRG : FRGArray) {
+  for (auto *FRG : FRGArray)
     FRG->debugPrint(OS);
-  }
 }
 
 // (Debug only) Main debug print function. If the pass only performs FRG
@@ -1089,13 +1079,12 @@ void CloseProximityBuilder::debugPrintCloseProximityGraph(
   }
   for (unsigned i = 0; i < NumElements; i++) {
     OS << "F" << i + 1 << ": ";
-    for (unsigned j = 0; j < NumElements; j++) {
+    for (unsigned j = 0; j < NumElements; j++)
       if (j <= i)
         OS << "-\t";
       else
         OS << "(" << DEBUG_PRINT_COUNT(CloseProximityTable[i][j].first) << ","
            << DEBUG_PRINT_DIST(CloseProximityTable[i][j].second) << ")\t";
-    }
     OS << "\n";
   }
   if (PerformCPGCheck)
@@ -1106,13 +1095,12 @@ void CloseProximityBuilder::debugPrintCloseProximityGraph(
 void CloseProximityBuilder::debugPrintGoldCPT(raw_ostream &OS) const {
   for (unsigned i = 0; i < NumElements; i++) {
     OS << "F" << i + 1 << ": ";
-    for (unsigned j = 0; j < NumElements; j++) {
+    for (unsigned j = 0; j < NumElements; j++)
       if (j <= i)
         OS << "-\t";
       else
         OS << "(" << DEBUG_PRINT_COUNT(GoldCPT[i][j].first) << ","
            << DEBUG_PRINT_DIST(GoldCPT[i][j].second) << ")\t";
-    }
     OS << "\n";
   }
 }

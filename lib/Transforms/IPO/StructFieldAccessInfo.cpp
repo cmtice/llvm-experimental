@@ -36,7 +36,7 @@ static cl::opt<unsigned>
                                    "for analyzing struct hotness"));
 
 static cl::opt<bool> FilterOutZeroHotness(
-    "struct-analysis-filter-zero-hotness", cl::init(false), cl::Hidden,
+    "struct-analysis-filter-zero-hotness", cl::init(true), cl::Hidden,
     cl::desc(
         "If true, do not include structs with zero hotness for suggestions"));
 
@@ -97,7 +97,7 @@ Optional<FieldNumType> StructFieldAccessInfo::getUniqueArgFieldMapping(
   auto *ArgFieldMapping = FuncSummary->AllArgFieldMappings[0];
   assert(ArgNum < ArgFieldMapping->size());
   auto &FieldAccessPair = (*ArgFieldMapping)[ArgNum];
-  // Only check the hotness info if FieldNum of this ArgNum is none-zero
+  // Only check the hotness info if FieldNum of this ArgNum is non-zero
   if (FieldAccessPair.first > 0 && FieldAccessPair.second > 0)
     return FieldAccessPair.first;
   return None;
@@ -139,6 +139,21 @@ void StructFieldAccessInfo::getAccessFieldNumOrArgNum(
   }
 }
 
+// static function for StructFieldAccessInfo::calculateFieldNumFromGEP to check
+// if the address operand in the GEP is an array type of the same struct type
+// to analyze
+static bool
+checkGEPAddressOperandIsArrayStructType(Value *Op,
+                                        const StructType *StructureType) {
+  return Op->getType()->getPointerElementType()->isArrayTy() &&
+         Op->getType()
+             ->getPointerElementType()
+             ->getArrayElementType()
+             ->isStructTy() &&
+         Op->getType()->getPointerElementType()->getArrayElementType() ==
+             StructureType;
+}
+
 // Given a GEP instruction/operator/constant expr, calculate which field address
 // it calculates. Return the field number.
 FieldNumType
@@ -151,9 +166,9 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
   // StructFieldAccessInfo
   if (Op->getType()->getPointerElementType()->isStructTy() &&
       Op->getType()->getPointerElementType() == StructureType) {
-    if (U->getNumOperands() <
-        3) // GEP to calculate struct field needs at least 2
-           // indices (operand 1 and 2)
+    if (U->getNumOperands() < 3)
+      // GEP to calculate struct field needs at least 2 indices (operand 1 and
+      // 2)
       return 0;
     // Operand 1 should be first index to the struct, usually 0; if not 0, it's
     // like goto an element of an array of structs
@@ -170,16 +185,10 @@ StructFieldAccessInfo::calculateFieldNumFromGEP(const User *U) const {
     // TODO: ignore indices after this one. If there's indices, the field has to
     // be an array or struct
     return Offset + 1; // return field number starting from 1
-  } else if (Op->getType()->getPointerElementType()->isArrayTy() &&
-             Op->getType()
-                 ->getPointerElementType()
-                 ->getArrayElementType()
-                 ->isStructTy() &&
-             Op->getType()->getPointerElementType()->getArrayElementType() ==
-                 StructureType) {
-    if (U->getNumOperands() <
-        4) // GEP to calculate struct field needs at least 3
-           // indices (operand 1, 2, 3)
+  } else if (checkGEPAddressOperandIsArrayStructType(Op, StructureType)) {
+    if (U->getNumOperands() < 4)
+      // GEP to calculate struct field of an array of struct needs at least 3
+      // indices (operand 1, 2, 3)
       return 0;
     // Operand 1 should be first index to the struct, usually 0; if not 0, it's
     // like goto an element of an array of structs

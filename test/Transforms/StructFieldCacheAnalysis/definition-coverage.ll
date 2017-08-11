@@ -5,7 +5,7 @@
 ; All of the array types should be detected. So all six structs will be printed out.
 ;
 ; RUN: llvm-as < %s > %t1
-; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-IR-only -o %t2 %t1 | FileCheck %s
+; RUN: llvm-lto -O0 -struct-field-cache-analysis -struct-analysis-IR-only -struct-analysis-filter-zero-hotness=false -o %t2 %t1 | FileCheck %s
 ; CHECK: There are 6 struct types are accessed in the program
 ; CHECK: Struct [struct.FooBar4] defined as local struct has 1 accesses and 0 execution count.
 ; CHECK: Struct [struct.FooBar5] defined as local struct* has 2 accesses and 0 execution count.
